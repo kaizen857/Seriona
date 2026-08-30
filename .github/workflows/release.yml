@@ -60,7 +60,7 @@ jobs:
           set -eux
           apt-get update
           apt-get install -y --no-install-recommends \
-            git ca-certificates wget curl sudo software-properties-common gnupg \
+            git ca-certificates wget curl sudo software-properties-common gnupg file \
             build-essential cmake ninja-build pkg-config python3 python3-pip yasm nasm \
             libgl1-mesa-dev libxkbcommon-dev \
             libspdlog-dev libsqlite3-dev libxxhash-dev libsdbus-c++-dev libpipewire-0.3-dev libsystemd-dev \
@@ -161,9 +161,15 @@ jobs:
       # ---- A2 顺序链 ③：Seriona 前端 find_package 复用 ①② → 建测（打包见后） ----
       - name: ③ Seriona 前端构建（find_package 复用）
         run: |
+          # 本 job 是 ubuntu:22.04 容器 + PPA 的 GCC 13 + Qt 官方二进制（由 GCC 10 构建）。
+          # 这套组合下开 LTO 会让前端 10 个用例在首次触碰 QObject 时段错误
+          # （QObject::doSetProperty / QObject::thread 内崩，栈帧带 .lto_priv/.isra 克隆），
+          # 关掉 LTO 后 139 个用例全过。deb/rpm job 用发行版 GCC + 发行版 Qt，开 LTO 正常，
+          # 故只在此 job 关闭。
           cmake --preset release -G Ninja \
             -DCMAKE_PREFIX_PATH=/opt/seriona-deps \
             -DSERIONA_INSTALLED_MODE=ON \
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=OFF \
             -DSERIONA_VERSION=${{ env.SERIONA_VERSION }}
           cmake --build --preset release --parallel 2
       - name: 前端全量测试
