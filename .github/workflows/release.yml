@@ -683,8 +683,10 @@ jobs:
           QT_QPA_PLATFORM: offscreen
       - name: lldb 抓崩溃栈（仅失败轮诊断用）
         if: failure()
+        continue-on-error: true
         run: |
-          cd build/release
+          # 纯诊断步骤：失败轮里尽量多抓信息，本身不再制造一个失败标记。
+          cd build/release || exit 0
           for t in \
             "seriona_frontend_backend_bridge_tests threading" \
             "seriona_frontend_app_facade_smoke_mode" \
