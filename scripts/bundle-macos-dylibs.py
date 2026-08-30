@@ -51,19 +51,39 @@ def is_macho(path: Path) -> bool:
     }
 
 
-def install_name(binary: Path) -> str:
-    # otool -D 输出：第一行是文件名，第二行才是 install name（可执行文件无此行）。
-    lines = run(["otool", "-D", str(binary)]).splitlines()[1:]
-    return lines[0].strip() if lines else ""
+def install_names(binary: Path) -> set[str]:
+    """取二进制自身的 install name（可执行文件返回空集）。
+
+    通用二进制（Qt 官方包是 x86_64+arm64）会按架构分段输出，每段一个
+    install name，故返回集合。
+    """
+    names: set[str] = set()
+    for line in run(["otool", "-D", str(binary)]).splitlines():
+        text = line.strip()
+        # 跳过 "xxx:" 与 "xxx (architecture arm64):" 这类头部行
+        if not text or text.endswith(":"):
+            continue
+        names.add(text)
+    return names
 
 
 def dependencies(binary: Path) -> list[str]:
-    # otool -L 对 dylib/framework 会把它自己的 install name 也列在第一条，
-    # 那不是依赖；误当依赖会把 bundle 里每个 framework 都报成构建机路径泄漏。
-    own = install_name(binary)
-    lines = run(["otool", "-L", str(binary)]).splitlines()[1:]
-    refs = [line.split(" (", 1)[0].strip() for line in lines if line.strip()]
-    return [ref for ref in refs if ref != own]
+    """取二进制的真实依赖。
+
+    otool -L 的依赖行带 tab 缩进，不缩进的是文件头（通用二进制会每个架构
+    一个："xxx (architecture arm64):"）。按行号切片会把头行当成依赖，把 bundle 里
+    每个 framework 都误报成构建机路径泄漏，故按缩进识别。
+    dylib/framework 自身的 install name 也会以缩进行出现，需单独剔除。
+    """
+    own = install_names(binary)
+    refs = []
+    for line in run(["otool", "-L", str(binary)]).splitlines():
+        if not line[:1].isspace():
+            continue
+        ref = line.split(" (", 1)[0].strip()
+        if ref and ref not in own:
+            refs.append(ref)
+    return refs
 
 
 def needs_bundling(ref: str) -> bool:
