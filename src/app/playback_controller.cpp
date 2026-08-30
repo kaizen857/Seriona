@@ -420,15 +420,15 @@ void PlaybackController::applyQueueEntries(const QVariantList &entries)
     emit queueEntriesChanged();
 }
 
+void PlaybackController::setTrackStartedHandler(TrackStartedHandler handler)
+{
+    m_trackStartedHandler = std::move(handler);
+}
+
 #if SERIONA_HAS_BACKEND
 void PlaybackController::setCommandExecutor(CommandExecutor executor)
 {
     m_commandExecutor = std::move(executor);
-}
-
-void PlaybackController::setTrackStartedHandler(TrackStartedHandler handler)
-{
-    m_trackStartedHandler = std::move(handler);
 }
 
 void PlaybackController::applyPlayerStateSnapshot(
