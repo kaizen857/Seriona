@@ -51,9 +51,19 @@ def is_macho(path: Path) -> bool:
     }
 
 
+def install_name(binary: Path) -> str:
+    # otool -D 输出：第一行是文件名，第二行才是 install name（可执行文件无此行）。
+    lines = run(["otool", "-D", str(binary)]).splitlines()[1:]
+    return lines[0].strip() if lines else ""
+
+
 def dependencies(binary: Path) -> list[str]:
+    # otool -L 对 dylib/framework 会把它自己的 install name 也列在第一条，
+    # 那不是依赖；误当依赖会把 bundle 里每个 framework 都报成构建机路径泄漏。
+    own = install_name(binary)
     lines = run(["otool", "-L", str(binary)]).splitlines()[1:]
-    return [line.split(" (", 1)[0].strip() for line in lines if line.strip()]
+    refs = [line.split(" (", 1)[0].strip() for line in lines if line.strip()]
+    return [ref for ref in refs if ref != own]
 
 
 def needs_bundling(ref: str) -> bool:
