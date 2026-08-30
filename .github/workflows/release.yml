@@ -65,7 +65,8 @@ jobs:
             libgl1-mesa-dev libxkbcommon-dev \
             libspdlog-dev libsqlite3-dev libxxhash-dev libsdbus-c++-dev libpipewire-0.3-dev libsystemd-dev \
             libavformat-dev libavcodec-dev libavutil-dev libavfilter-dev libswresample-dev \
-            libvorbis-dev libopus-dev libmp3lame-dev
+            libvorbis-dev libopus-dev libmp3lame-dev \
+            zlib1g-dev
           # C++23 完整支持需要 GCC 13+（22.04 默认 GCC 11 缺 std::string::contains 等）
           add-apt-repository -y ppa:ubuntu-toolchain-r/test
           apt-get install -y gcc-13 g++-13
@@ -101,6 +102,13 @@ jobs:
           ldconfig
           pkg-config --modversion libavformat libavcodec
           ffmpeg -version | head -1
+          # PNG 编解码依赖 zlib，而 FFmpeg 对 zlib 是自动探测：容器里缺 zlib1g-dev 时
+          # configure 不报错，只是静默去掉 png 编解码器，导致封面类用例成批失败且
+          # 报错与真因无关。这里显式断言，避免再次静默退化。
+          ffmpeg -hide_banner -encoders 2>/dev/null | grep -qw png \
+            || { echo "FFmpeg 构建缺 png 编码器（zlib 未被探测到）"; exit 1; }
+          ffmpeg -hide_banner -decoders 2>/dev/null | grep -qw png \
+            || { echo "FFmpeg 构建缺 png 解码器（zlib 未被探测到）"; exit 1; }
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
         with:
