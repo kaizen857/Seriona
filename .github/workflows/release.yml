@@ -10,6 +10,7 @@
 #   - deb：Debian 13 trixie / Ubuntu 26.04 resolute（原生 Qt ≥ 6.8，dpkg-shlibdeps 自动依赖）
 #   - rpm：Fedora 42 / Rocky 10（qt6-qtbase >= 6.8 显式声明）
 #   - Windows：portable zip（MSVC 2022 + Qt 6.8 官方二进制）
+#   - macOS：.app bundle zip（Apple Silicon，macdeployqt 自包含 Qt）
 # 老 LTS（Ubuntu 22.04/24.04、Debian 12、RHEL 9，Qt < 6.8）不产出 deb/rpm。
 
 name: release
@@ -608,11 +609,139 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
+  # macOS：.app bundle zip（macos-15 = Apple Silicon，依赖走 Homebrew + 官方 Qt）
+  #
+  # 与 Linux/Windows 的差异点：
+  #   - 设备格式枚举（PipeWire/WASAPI）与 MPRIS metadata 均为 Linux/Windows 专用，
+  #     macOS 由后端工厂自动退回 noop；播放本身走 miniaudio（CoreAudio）不受影响。
+  #   - SERIONA_INSTALLED_MODE 是 Linux XDG 专用，这里保持 OFF（便携式，数据在 .app 旁）。
+  #   - 产物未签名未公证；zip 分发会带 quarantine，需用户手动放行。
+  # ---------------------------------------------------------------------------
+  macos:
+    name: macOS (app zip, arm64)
+    runs-on: macos-15
+    env:
+      SERIONA_VERSION: ${{ inputs.version || '0.1' }}
+      BACKEND_REF: ${{ inputs.backend_ref || 'main' }}
+      TAGREADER_REF: ${{ inputs.tagreader_ref || 'main' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: kaizen857/Seriona_Backend
+          ref: ${{ env.BACKEND_REF }}
+          path: Seriona_Backend
+      - uses: actions/checkout@v7
+        with:
+          repository: kaizen857/TagReader
+          ref: ${{ env.TAGREADER_REF }}
+          path: TagReader
+      - name: 安装构建依赖（Homebrew）
+        run: |
+          set -eux
+          # runner 自带 cmake；其余为后端/TagReader 的 pkg-config 依赖。
+          # sqlite 是 keg-only，find_package(SQLite3) 会命中 SDK 自带的 3.5x，够用。
+          brew install ninja pkg-config ffmpeg spdlog xxhash
+          cmake --version | head -1
+          pkg-config --modversion libavformat libavcodec
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: mac
+          arch: clang_64
+          cache: true
+          modules: qt5compat qtshadertools
+      # ---- A2 顺序链 ①：TagReader 独立建测 → install 共享前缀 ----
+      - name: ① TagReader 构建+测试+install
+        working-directory: TagReader
+        run: |
+          cmake --preset release -G Ninja
+          cmake --build --preset release --parallel 3
+          ctest --preset release --output-on-failure
+          cmake --install build/release --prefix "$GITHUB_WORKSPACE/seriona-deps"
+      # ---- A2 顺序链 ②：Seriona_Backend find_package 复用 ① → 建测 → install ----
+      - name: ② Seriona_Backend 构建+测试+install
+        working-directory: Seriona_Backend
+        run: |
+          cmake --preset release -G Ninja \
+            -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/seriona-deps" \
+            -DSERIONA_BUILD_APP=OFF \
+            -DSERIONA_INSTALL_EXPORT=ON
+          cmake --build --preset release --parallel 3
+          ctest --preset release --output-on-failure
+          cmake --install build/release --prefix "$GITHUB_WORKSPACE/seriona-deps"
+      # ---- A2 顺序链 ③：Seriona 前端 find_package 复用 ①② → 建测 ----
+      - name: ③ Seriona 前端构建（find_package 复用）
+        run: |
+          cmake --preset release -G Ninja \
+            -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/seriona-deps" \
+            -DSERIONA_VERSION=${{ env.SERIONA_VERSION }}
+          cmake --build --preset release --parallel 3
+      - name: 前端全量测试
+        run: ctest --preset release --output-on-failure
+        env:
+          QT_QPA_PLATFORM: offscreen
+      - name: lldb 抓崩溃栈（仅失败轮诊断用）
+        if: failure()
+        run: |
+          cd build/release
+          for t in \
+            "seriona_frontend_backend_bridge_tests threading" \
+            "seriona_frontend_app_facade_smoke_mode" \
+            "seriona_frontend_startup_restore_tests" \
+            "seriona_frontend_track_detail_tests"; do
+            set -- $t
+            bin="./$1"; shift
+            echo "========== $t =========="
+            if [ ! -x "$bin" ]; then
+              echo "二进制不存在（配置/构建失败所致）：$bin"
+              continue
+            fi
+            lldb -b -o run -o "thread backtrace all" -- "$bin" "$@" 2>&1 || true
+          done
+        env:
+          QT_QPA_PLATFORM: offscreen
+      - name: macdeployqt 打包 .app
+        run: |
+          set -eux
+          # qt_add_executable + MACOSX_BUNDLE 已产出 build/release/seriona.app；
+          # macdeployqt 把 Qt 框架与 QML 插件拷进 bundle 并重写 rpath，
+          # -qmldir 让它扫描源码里的 import（Qt5Compat.GraphicalEffects 等）。
+          macdeployqt build/release/seriona.app -qmldir=qml -verbose=1
+          # macdeployqt 只部署 cocoa 平台插件；runner 无桌面会话时冒烟验证需要 offscreen，
+          # 手动补一份（它的依赖由下面的脚本一并收拢）。
+          cp "$QT_ROOT_DIR/plugins/platforms/libqoffscreen.dylib" \
+             build/release/seriona.app/Contents/PlugIns/platforms/
+          # Homebrew 的 ffmpeg/spdlog 等非 Qt 库不在 macdeployqt 职责范围，
+          # 后端是静态库但 FFmpeg 是动态链，需自行收拢进 Frameworks 并改写引用。
+          # --strict：若仍残留构建机绝对路径引用则直接失败，不把“只在 runner 上能跑”
+          # 的包发出去（这类问题在构建机上永远复现不了）
+          python3 scripts/bundle-macos-dylibs.py build/release/seriona.app --strict
+          # 未签名二进制在 arm64 上不可执行，ad-hoc 签名是最低要求（非公证）
+          codesign --force --deep --sign - build/release/seriona.app
+      - name: .app 冒烟验证
+        run: |
+          set -eux
+          export QT_QPA_PLATFORM=offscreen
+          ./build/release/seriona.app/Contents/MacOS/seriona \
+            --smoke-scenario=startup --smoke-exit-ms=1000 --smoke-output-dir=smoke-macos
+          cat smoke-macos/smoke-startup.log
+      - name: 打包 zip
+        run: |
+          ditto -c -k --keepParent build/release/seriona.app \
+            "Seriona-${{ env.SERIONA_VERSION }}-macos-arm64.zip"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos-app-zip
+          path: '*.zip'
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
   # 发布：仅发版按钮（workflow_dispatch）触发；push main 只构建不发布
   # ---------------------------------------------------------------------------
   publish:
     name: 发布 GitHub Release
-    needs: [linux, deb-trixie, deb-resolute, rpm-fedora, rpm-rocky, windows]
+    needs: [linux, deb-trixie, deb-resolute, rpm-fedora, rpm-rocky, windows, macos]
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
@@ -641,6 +770,10 @@ jobs:
 
             ### Windows
             - **portable zip**（Qt 6.8 + MSVC 2022）
+
+            ### macOS
+            - **app zip**（Apple Silicon / arm64，Qt 6.8 由 macdeployqt 打包进 .app）
+              未签名未公证，首次运行需在「系统设置 → 隐私与安全性」放行。
 
             引用版本：后端 `${{ inputs.backend_ref }}` / 标签库 `${{ inputs.tagreader_ref }}`
           files: artifacts/**

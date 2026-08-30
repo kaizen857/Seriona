@@ -15,7 +15,8 @@ include(FetchContent)
 # CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE 提供（GCC -flto / MSVC /GL+/LTCG），
 # 编译选项由 CMake 默认 Release 提供（GCC -O3 -DNDEBUG / MSVC /O2 /DNDEBUG）；
 # 指令集显式 x86-64 基线（替代 -march=native，保证产物可跨机器分发）。
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"
+   AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
     add_compile_options(-march=x86-64)
 endif()
 
