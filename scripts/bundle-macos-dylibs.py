@@ -158,6 +158,26 @@ def bundle(app: Path, strict: bool) -> int:
     for name in sorted(copied):
         print(f"  {name}")
 
+    # 构建机的绝对 rpath（如 Homebrew 的 /opt/homebrew/lib）必须清掉：
+    # Qt 依赖记的是 @rpath/QtCore.framework/...，dyld 按 LC_RPATH 顺序查找，
+    # 只要这条排在 @executable_path/../Frameworks 前面，装了同名库的用户机
+    # 就会加载宿主的 Qt 而不是 bundle 里的，版本不匹配直接 qFatal。
+    # 构建机上没有这些库，所以这类问题在 CI 上永远复现不了。
+    stripped = strip_build_machine_rpaths(seen)
+    if stripped:
+        print(f"已清除 {len(stripped)} 条构建机 rpath：")
+        for binary, rpath in sorted(stripped):
+            print(f"  {binary}: {rpath}")
+
+    bad_rpaths = leftover_build_machine_rpaths(seen)
+    if bad_rpaths:
+        print("error: 以下二进制仍残留构建机 rpath，分发后会加载到宿主库：",
+              file=sys.stderr)
+        for binary, rpath in sorted(bad_rpaths):
+            print(f"  {binary}: {rpath}", file=sys.stderr)
+        if strict:
+            return 1
+
     stale = leftover_framework_refs(seen)
     if stale:
         level = "error" if strict else "warning"
@@ -171,6 +191,59 @@ def bundle(app: Path, strict: bool) -> int:
             # 所以只在 --strict（CI）下当错误，本地仅提示。
             return 1
     return 0
+
+
+def rpaths(binary: Path) -> list[str]:
+    """取二进制的 LC_RPATH 列表（按 load command 顺序）。"""
+    out: list[str] = []
+    pending = False
+    for line in run(["otool", "-l", str(binary)]).splitlines():
+        stripped = line.strip()
+        if stripped.startswith("cmd LC_RPATH"):
+            pending = True
+        elif pending and stripped.startswith("path "):
+            # 形如 "path /opt/homebrew/lib (offset 12)"
+            out.append(stripped.split(" (offset", 1)[0][len("path "):])
+            pending = False
+    return out
+
+
+def is_build_machine_rpath(rpath: str) -> bool:
+    # @executable_path / @loader_path / @rpath 是可重定位的，保留；
+    # 系统前缀由 dyld 共享缓存提供，无害。其余绝对路径都是构建机残留。
+    if not rpath.startswith("/"):
+        return False
+    return not rpath.startswith(SYSTEM_PREFIXES)
+
+
+def strip_build_machine_rpaths(binaries: set[Path]) -> list[tuple[str, str]]:
+    removed: list[tuple[str, str]] = []
+    for binary in binaries:
+        if not binary.exists() or not is_macho(binary):
+            continue
+        for rpath in rpaths(binary):
+            if not is_build_machine_rpath(rpath):
+                continue
+            make_writable(binary)
+            result = subprocess.run(
+                ["install_name_tool", "-delete_rpath", rpath, str(binary)],
+                check=False,
+                capture_output=True,
+            )
+            if result.returncode == 0:
+                removed.append((binary.name, rpath))
+    return removed
+
+
+def leftover_build_machine_rpaths(binaries: set[Path]) -> list[tuple[str, str]]:
+    bad: list[tuple[str, str]] = []
+    for binary in binaries:
+        if not binary.exists() or not is_macho(binary):
+            continue
+        for rpath in rpaths(binary):
+            if is_build_machine_rpath(rpath):
+                bad.append((binary.name, rpath))
+    return bad
 
 
 def leftover_framework_refs(binaries: set[Path]) -> set[str]:
