@@ -614,7 +614,10 @@ jobs:
   # 与 Linux/Windows 的差异点：
   #   - 设备格式枚举（PipeWire/WASAPI）与 MPRIS metadata 均为 Linux/Windows 专用，
   #     macOS 由后端工厂自动退回 noop；播放本身走 miniaudio（CoreAudio）不受影响。
-  #   - SERIONA_INSTALLED_MODE 是 Linux XDG 专用，这里保持 OFF（便携式，数据在 .app 旁）。
+  #   - SERIONA_INSTALLED_MODE 必须开：macOS 下它让运行时数据落到 ~/Library，
+#     而不是 .app 内部。向 bundle 内写文件会破坏代码签名封印，带 quarantine 的
+#     分发产物会被 Gatekeeper 直接 SIGKILL。注意该宏在 Seriona_Backend 编译期
+#     求值（resolveRuntimePaths 在后端库里），只传给前端无效。
   #   - 产物未签名未公证；zip 分发会带 quarantine，需用户手动放行。
   # ---------------------------------------------------------------------------
   macos:
@@ -666,7 +669,8 @@ jobs:
           cmake --preset release -G Ninja \
             -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/seriona-deps" \
             -DSERIONA_BUILD_APP=OFF \
-            -DSERIONA_INSTALL_EXPORT=ON
+            -DSERIONA_INSTALL_EXPORT=ON \
+            -DSERIONA_INSTALLED_MODE=ON
           cmake --build --preset release --parallel 3
           ctest --preset release --output-on-failure
           cmake --install build/release --prefix "$GITHUB_WORKSPACE/seriona-deps"
@@ -686,7 +690,15 @@ jobs:
         continue-on-error: true
         run: |
           # 纯诊断步骤：失败轮里尽量多抓信息，本身不再制造一个失败标记。
-          cd build/release || exit 0
+          # 前端失败时构建目录是 build/release；后端步骤失败时前端根本没配置过，
+          # 目录不存在，要退回到 Seriona_Backend/build/release，否则白白错过现场。
+          if [ -d build/release ]; then
+            cd build/release
+          elif [ -d Seriona_Backend/build/release ]; then
+            cd Seriona_Backend/build/release
+          else
+            echo "没有可用的构建目录，跳过 lldb 诊断"; exit 0
+          fi
           for t in \
             "seriona_frontend_backend_bridge_tests threading" \
             "seriona_frontend_app_facade_smoke_mode" \
@@ -719,6 +731,12 @@ jobs:
           # --strict：若仍残留构建机绝对路径引用则直接失败，不把“只在 runner 上能跑”
           # 的包发出去（这类问题在构建机上永远复现不了）
           python3 scripts/bundle-macos-dylibs.py build/release/seriona.app --strict
+      # 顺序不能调换：install_name_tool 改写会让既有签名失效，而 arm64 上
+      # 签名无效的二进制会被内核直接 SIGKILL（CODESIGNING/Invalid Page），
+      # 所以必须“改写完 → 签名 → 才能运行冒烟”。
+      - name: ad-hoc 签名
+        run: |
+          set -eux
           # 未签名二进制在 arm64 上不可执行，ad-hoc 签名是最低要求（非公证）
           codesign --force --deep --sign - build/release/seriona.app
       - name: .app 冒烟验证
@@ -728,8 +746,14 @@ jobs:
           ./build/release/seriona.app/Contents/MacOS/seriona \
             --smoke-scenario=startup --smoke-exit-ms=1000 --smoke-output-dir=smoke-macos
           cat smoke-macos/smoke-startup.log
-      - name: 打包 zip
+      - name: 打包 zip（先校验签名封印）
         run: |
+          set -eux
+          # 闸门：冒烟跑完后封印必须仍然完好。若应用把运行时数据写进了 bundle
+          # （SERIONA_INSTALLED_MODE 没生效时会写 Contents/MacOS/SerionaData），
+          # 这里会报 "a sealed resource is missing or invalid"，带 quarantine 的
+          # 分发产物随即被 Gatekeeper SIGKILL —— 必须在发包前拦住。
+          codesign --verify --strict --verbose=2 build/release/seriona.app
           ditto -c -k --keepParent build/release/seriona.app \
             "Seriona-${{ env.SERIONA_VERSION }}-macos-arm64.zip"
       - uses: actions/upload-artifact@v7
