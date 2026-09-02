@@ -1501,7 +1501,8 @@ Item {
             }
             PropertyChanges {
                 target: coverIcon
-                font.pixelSize: 20
+                // 字号恒 72，以 scale(20/72) 模拟 20px 视觉：消除逐帧 setFont 的字体查找/shaping 成本（不改变视觉终态）
+                scale: 20 / 72
             }
             PropertyChanges {
                 target: coverGlow
@@ -1619,8 +1620,15 @@ Item {
             }
 
             NumberAnimation {
-                targets: [coverRect, coverIcon, coverGlow, titleText, artistText, albumText, dashText, metaCombinedText, prevButton, nextButton]
+                targets: [coverRect, coverGlow, titleText, artistText, albumText, dashText, metaCombinedText, prevButton, nextButton] // coverIcon 独立动画（scale 模拟字号，见契约测试锚点）
                 properties: "radius,font.pixelSize,opacity,spacing,anchors.topMargin,anchors.leftMargin,anchors.rightMargin,anchors.bottomMargin"
+                duration: 400
+                easing.type: Easing.InOutCubic
+            }
+
+            NumberAnimation {
+                target: coverIcon // coverIcon 独立动画（scale 模拟字号，见契约测试锚点）
+                properties: "opacity,scale"
                 duration: 400
                 easing.type: Easing.InOutCubic
             }
@@ -1684,8 +1692,15 @@ Item {
             }
 
             NumberAnimation {
-                targets: [coverRect, coverIcon, coverGlow, titleText, artistText, albumText, dashText, metaCombinedText, prevButton, nextButton]
+                targets: [coverRect, coverGlow, titleText, artistText, albumText, dashText, metaCombinedText, prevButton, nextButton] // coverIcon 独立动画（scale 模拟字号，见契约测试锚点）
                 properties: "radius,font.pixelSize,opacity,spacing,anchors.topMargin,anchors.leftMargin,anchors.rightMargin,anchors.bottomMargin"
+                duration: 400
+                easing.type: Easing.InOutCubic
+            }
+
+            NumberAnimation {
+                target: coverIcon // coverIcon 独立动画（scale 模拟字号，见契约测试锚点）
+                properties: "opacity,scale"
                 duration: 400
                 easing.type: Easing.InOutCubic
             }

@@ -253,7 +253,7 @@ void UiOnlyHandlerPolicyTest::qmlLayoutSourceContractsStayStable()
         "target: coverRect",
         "radius: 12",
         "target: coverIcon",
-        "font.pixelSize: 20"
+        "scale: 20 / 72"
     });
     expectInOrder(mainContentQml, {
         "id: positionHelper",
