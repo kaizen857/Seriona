@@ -1122,10 +1122,28 @@ Item {
             from: 0
             to: root.playbackTimelineDuration
             value: root.boundedPlaybackTimelinePosition
-            onMoved: {
-                if (root.playbackTimelineDuration > 0) {
-                    root.playbackController.seek(value);
+
+            // 与播放界面波形进度条一致的实时流程：按下即定位 seek，拖动中随
+            // 鼠标移动实时 seek（每个鼠标动作一次）。Qt 的 Slider 在一次手势中
+            // 会多次发 moved()（按下定位、拖动中每段移动、释放再提交一次），
+            // 其中释放那次与上一次同值 —— 同值 seek 只会无谓重启音频设备
+            // （后端日志成对出现 "seek to …ms"）。这里按手势去重：按下重置标记，
+            // 同一手势内与上一次已 seek 的值相同则跳过；跨手势（再次点击同一处）
+            // 不受影响。键盘/滚轮步进无 pressed 参与，值不同每次均 seek。
+            property real gestureSeekedValue: NaN
+
+            onPressedChanged: {
+                if (pressed) {
+                    gestureSeekedValue = NaN;
                 }
+            }
+            onMoved: {
+                if (root.playbackTimelineDuration <= 0)
+                    return;
+                if (value === gestureSeekedValue)
+                    return;
+                gestureSeekedValue = value;
+                root.playbackController.seek(value);
             }
 
             background: Rectangle {
