@@ -76,6 +76,9 @@ Item {
 
     // 相位① 退场：对可视范围内旧行逐行划出，随后协调器进入换数据
     function beginLyricsSwitch() {
+        // 终止可能进行中的行切换滚动：切歌动画独占内容区，
+        // 避免退场动画与"滚向旧高亮行"的平滑滚动并行（视觉上构成"先滚一下再切"）
+        lyricsScrollAnim.stop();
         if (lyricsAnimBusy) {
             // 动画中再次切歌：打断重排（现有行全部复位，重新退场）
             lyricsContainer.resetAllLines();
@@ -117,7 +120,9 @@ Item {
         lyricsAnimEntering = true;
         var range = lyricsContainer.visibleLineRange();
         if (range[1] < range[0]) {
-            finishLyricsEnterPhase();
+            // 无可见行（新歌无歌词）：此时 lyricsAnimEntering 已置 true，
+            // finishLyricsPhase 走恢复分支（清 busy/entering 并定位），避免相位状态卡住
+            finishLyricsPhase();
             return;
         }
         var n = range[1] - range[0] + 1;
@@ -654,6 +659,13 @@ Item {
         // 主动平滑滚动到当前行锚点（切行/点击跳转/闲置恢复/切歌后定位）
         function snapToCurrentLyric() {
             snapPending = false;
+            // 切歌动画（退场/进入相位）期间不执行主动定位：此刻 C++ currentIndex 已切到新歌、
+            // 显示层可能仍是旧歌（错配窗口），定位会把列表滚到旧显示层的错误位置；
+            // 动画完成由 finishLyricsPhase 重新 schedule，统一收敛到新歌当前行。
+            // snapPending 已在守卫前释放：换数据帧的 compensateLayoutChange 不被阻塞，
+            // 瞬时对齐新显示层，进入动画从新歌当前行位置开始
+            if (root.lyricsAnimBusy)
+                return;
             const targetY = snapToCurrentLyricTarget();
             if (targetY < 0)
                 return;
