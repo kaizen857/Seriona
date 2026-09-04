@@ -76,6 +76,9 @@ Item {
 
     // 相位① 退场：对可视范围内旧行逐行划出，随后协调器进入换数据
     function beginLyricsSwitch() {
+        // 终止可能进行中的行切换滚动：切歌动画独占内容区，
+        // 避免退场动画与"滚向旧高亮行"的平滑滚动并行（视觉上构成"先滚一下再切"）
+        lyricsScrollAnim.stop();
         if (lyricsAnimBusy) {
             // 动画中再次切歌：打断重排（现有行全部复位，重新退场）
             lyricsContainer.resetAllLines();
@@ -117,7 +120,9 @@ Item {
         lyricsAnimEntering = true;
         var range = lyricsContainer.visibleLineRange();
         if (range[1] < range[0]) {
-            finishLyricsEnterPhase();
+            // 无可见行（新歌无歌词）：此时 lyricsAnimEntering 已置 true，
+            // finishLyricsPhase 走恢复分支（清 busy/entering 并定位），避免相位状态卡住
+            finishLyricsPhase();
             return;
         }
         var n = range[1] - range[0] + 1;
@@ -580,8 +585,10 @@ Item {
     }
 
     // 4. 歌词滚动区域 (仅在 lyrics 状态下显示)
-    // Flickable + Column + Repeater：滚动动画由 Behavior on contentY 驱动（VLC 式），
-    // 避免 ListView highlight 机制在行高变化（加粗折行/翻译行）时重置 moveReason 导致滚动动画瞬移。
+    // Flickable + Column + Repeater：主动滚动（切行/点击/恢复）由显式 SmoothedAnimation
+    // （lyricsScrollAnim）驱动；行高/容器尺寸变化的被动补偿在 onContentHeightChanged 内同帧瞬时写
+    // contentY（保持锚点行屏幕位置，无中间帧跳变）。两路分离避免常驻 Behavior on contentY 把
+    // 同帧补偿变成动画（跳走再滚回），且不依赖 ListView highlight 机制（行高变化不会瞬移）。
     Flickable {
         id: lyricsContainer
         clip: true
@@ -600,6 +607,18 @@ Item {
         // 播放同步滚动：true=自动跟随当前行；用户拖动浏览时置 false，避免动画与手指竞争
         property bool lyricsSyncToPlayback: true
 
+        // 翻译区展开因子（0..1）：showTranslation 翻转时由 Behavior 平滑动画。
+        // 所有行共享同一条动画曲线（单动画驱动全表同步展开/收缩），
+        // 各行翻译容器的高度/透明度均绑定该因子；行间距随因子连续增长，无首帧台阶
+        property real translationExpand: lyricsState.showTranslation ? 1 : 0
+
+        Behavior on translationExpand {
+            NumberAnimation {
+                duration: 240
+                easing.type: Easing.InOutQuad
+            }
+        }
+
         // 底部填充（容器高 3/4，显式加在 contentHeight 上）：最后一行行中心需滚到上 1/4 锚点，
         // 其下需有 3/4 容器高的内容空间；不加则内容滚到底即 clamp，最后几句歌词停在视口底部。
         // 显式加法不依赖 Column/Positioner 对动态子项的布局行为（与 Qcm 等歌词实现用
@@ -607,27 +626,82 @@ Item {
         contentWidth: lyricsColumn.width
         contentHeight: lyricsColumn.height + lyricsContainer.height * 3 / 4
 
-        // 定位：当前行行中心锚定容器上 1/4 处；
-        // 行顶保护（超长折行行高 > 容器高/2 时，行中心锚定会把行顶推出视口顶，行首被裁）：
-        // 目标位置不得超过 item.y（行顶贴视口顶），普通行（行高 < 容器高/2）时取行中心锚点，行为不变
-        function snapToCurrentLyric() {
-            const idx = lyricsState.currentIndex;
-            if (idx < 0)
-                return;
-            const item = lyricsRepeater.itemAt(idx);
-            if (!item)
-                return;
-            const centerTarget = item.y + item.height / 2 - lyricsContainer.height / 4;
-            const targetY = Math.min(centerTarget, item.y);
-            lyricsContainer.contentY = Math.max(0, Math.min(targetY, lyricsContainer.contentHeight - lyricsContainer.height));
+        // 显式滚动动画（替代常驻 Behavior on contentY）：只在主动滚动点启动，
+        // 运行中改 to 平滑重定向；行高变化的被动补偿走瞬时写，不受动画拦截
+        SmoothedAnimation {
+            id: lyricsScrollAnim
+            target: lyricsContainer
+            property: "contentY"
+            velocity: 400
+            duration: 400
         }
 
-        // 延迟到布局稳定后（行高变化完成）再定位
+        // 有未决的主动定位（scheduleSnapToCurrentLyric 已排队、动画未启动）：
+        // 期间的行高变化（切行加粗）并入该定位，不做瞬时补偿，避免打断切行平滑滚动
+        property bool snapPending: false
+
+        // 当前行锚点目标：行中心锚定容器上 1/4 处。
+        // 行顶保护（超长折行行高 > 容器高/2 时，行中心锚定会把行顶推出视口顶，行首被裁）：
+        // 目标位置不得超过 item.y（行顶贴视口顶），普通行（行高 < 容器高/2）时取行中心锚点，行为不变。
+        // 无有效当前行/行尚未实例化时返回 -1
+        function snapToCurrentLyricTarget() {
+            const idx = lyricsState.currentIndex;
+            if (idx < 0)
+                return -1;
+            const item = lyricsRepeater.itemAt(idx);
+            if (!item)
+                return -1;
+            const centerTarget = item.y + item.height / 2 - lyricsContainer.height / 4;
+            const targetY = Math.min(centerTarget, item.y);
+            return Math.max(0, Math.min(targetY, lyricsContainer.contentHeight - lyricsContainer.height));
+        }
+
+        // 主动平滑滚动到当前行锚点（切行/点击跳转/闲置恢复/切歌后定位）
+        function snapToCurrentLyric() {
+            snapPending = false;
+            // 切歌动画（退场/进入相位）期间不执行主动定位：此刻 C++ currentIndex 已切到新歌、
+            // 显示层可能仍是旧歌（错配窗口），定位会把列表滚到旧显示层的错误位置；
+            // 动画完成由 finishLyricsPhase 重新 schedule，统一收敛到新歌当前行。
+            // snapPending 已在守卫前释放：换数据帧的 compensateLayoutChange 不被阻塞，
+            // 瞬时对齐新显示层，进入动画从新歌当前行位置开始
+            if (root.lyricsAnimBusy)
+                return;
+            const targetY = snapToCurrentLyricTarget();
+            if (targetY < 0)
+                return;
+            lyricsScrollAnim.to = targetY;
+            if (!lyricsScrollAnim.running)
+                lyricsScrollAnim.start();
+        }
+
+        // 被动布局变化（行高/容器尺寸变化）补偿：跟随态下保持锚点行屏幕位置不动。
+        // Positioner 先重排子项、contentHeight 绑定后求值，本处理器读到的是新几何；
+        // 直接写 contentY 与变化同帧完成（无 Qt.callLater 中间帧、无动画拦截 → 不跳不滚回）。
+        // 有主动定位未决/进行中（切行动画）时不打断：未启动则跳过（由 snap 动画收敛），
+        // 运行中则重定向动画目标（SmoothedAnimation 平滑衔接）
+        function compensateLayoutChange() {
+            if (root.state !== "lyrics" || !lyricsSyncToPlayback)
+                return;
+            if (snapPending)
+                return;
+            const targetY = snapToCurrentLyricTarget();
+            if (targetY < 0)
+                return;
+            if (lyricsScrollAnim.running) {
+                lyricsScrollAnim.to = targetY;
+            } else {
+                lyricsContainer.contentY = targetY;
+            }
+        }
+
+        // 主动定位入口：延迟到布局稳定后（行高变化完成）再定位；
+        // 仅歌词态跟随：切换动画期间（锚链驱动 height 连续变化）不重算 contentY，
+        // 避免歌词列表在淡出窗口内整体下移又回位的闪烁
         function scheduleSnapToCurrentLyric() {
-            // 仅歌词态跟随：切换动画期间（锚链驱动 height 连续变化）不重算 contentY，
-            // 避免歌词列表在淡出窗口内整体下移又回位的闪烁
-            if (root.state === "lyrics" && lyricsSyncToPlayback)
+            if (root.state === "lyrics" && lyricsSyncToPlayback) {
+                snapPending = true;
                 Qt.callLater(lyricsContainer.snapToCurrentLyric);
+            }
         }
 
         // 切歌动画：可视范围裁剪——只对 [firstVisible, lastVisible]（±1 行余量）内的行播动画，
@@ -721,9 +795,9 @@ Item {
             }
         }
 
-        // 行高变化（翻译切换/加粗折行）或容器尺寸变化 → 重新计算目标；SmoothedAnimation 平滑重定向
-        onContentHeightChanged: scheduleSnapToCurrentLyric()
-        onHeightChanged: scheduleSnapToCurrentLyric()
+        // 行高变化（翻译展开/加粗折行）或容器尺寸变化 → 同帧瞬时补偿，保持锚点行屏幕位置
+        onContentHeightChanged: compensateLayoutChange()
+        onHeightChanged: compensateLayoutChange()
 
         Connections {
             target: lyricsState
@@ -734,14 +808,9 @@ Item {
             }
         }
 
-        // 行切换滚动动画：目标连续变化时从当前值+当前速度平滑重定向，动画必触发
-        Behavior on contentY {
-            enabled: lyricsContainer.lyricsSyncToPlayback
-            SmoothedAnimation {
-                velocity: 400
-                duration: 400
-            }
-        }
+        // 行切换滚动改由 lyricsScrollAnim（显式 SmoothedAnimation）驱动：
+        // 目标连续变化时从当前值+当前速度平滑重定向，动画必触发；
+        // 行高/容器变化的被动补偿走 compensateLayoutChange（瞬时写），不受此处动画拦截
 
         Column {
             id: lyricsColumn
@@ -852,7 +921,9 @@ Item {
                         anchors.horizontalCenter: parent.horizontalCenter
                         // 跟随歌词容器宽度（小窗口与原 296 一致，最大化时拓宽）
                         width: parent.width - Theme.paddingLarge * 2
-                        spacing: 4
+                        // 行距（主歌词↔翻译的 4px）并入翻译容器高度增量：
+                        // Qt 对 height==0 的子项整项剔除，若依赖 spacing 会在展开首帧产生 4px×行数 的台阶
+                        spacing: 0
 
                         transformOrigin: Item.Center
                         scale: delegateItem.isActive ? 1.0 : 0.75
@@ -876,27 +947,38 @@ Item {
                             }
                         }
 
-                        Text {
-                            id: translationTextCtrl
+                        // 翻译区：布局贡献随 lyricsContainer.translationExpand 从 0 连续增长到
+                        // (翻译自然高 + 4px 行距)，展开/收缩与全表同步；单共享动画驱动，无逐行动画对象。
+                        // 文本自然高排版一次即缓存（显式 height 不触发重新 shaping），外层容器负责裁剪，
+                        // Text.y 随因子下移形成"行距先出、文本自上而下露出"的展开观感。
+                        // 透明度分层：容器承载 factor（开关渐隐渐显），内部 Text 只负责高亮行明暗
+                        // （isActive），两者相乘 = 原 0.8/0.3，且高亮切换仍走独立 Behavior 动画
+                        Item {
+                            id: translationClip
                             width: parent.width
-                            text: delegateItem.translation
-                            color: Theme.secondaryTextColor
-                            font.pixelSize: 22
-                            font.weight: delegateItem.isActive ? Font.Bold : Font.Normal
-                            horizontalAlignment: Text.AlignHCenter
-                            wrapMode: Text.WordWrap
+                            height: (delegateItem.translation !== "")
+                                    ? lyricsContainer.translationExpand * (translationTextCtrl.implicitHeight + 4) : 0
+                            opacity: lyricsContainer.translationExpand
+                            visible: height > 0
                             clip: true
 
-                            // 缓存自然高度，避免绑定循环
-                            readonly property real naturalHeight: translationTextCtrl.implicitHeight
+                            Text {
+                                id: translationTextCtrl
+                                width: parent.width
+                                // 行距随展开在文本上方形成（0 → 4px）
+                                y: lyricsContainer.translationExpand * 4
+                                text: delegateItem.translation
+                                color: Theme.secondaryTextColor
+                                font.pixelSize: 22
+                                font.weight: delegateItem.isActive ? Font.Bold : Font.Normal
+                                horizontalAlignment: Text.AlignHCenter
+                                wrapMode: Text.WordWrap
+                                // 与外层 factor 相乘后 = 展开完成态 isActive ? 0.8 : 0.3
+                                opacity: delegateItem.isActive ? 1.0 : 0.375
 
-                            height: (lyricsState.showTranslation && delegateItem.translation !== "") ? naturalHeight : 0
-                            opacity: (lyricsState.showTranslation && delegateItem.translation !== "") ? (delegateItem.isActive ? 0.8 : 0.3) : 0.0
-                            visible: height > 0
-
-                            // 高度瞬间变化（禁用动画）；contentHeight 变化由 onContentHeightChanged 重新定位并以滚动动画平滑补偿
-                            Behavior on opacity {
-                                NumberAnimation { duration: 300; easing.type: Easing.InOutQuad }
+                                Behavior on opacity {
+                                    NumberAnimation { duration: 300; easing.type: Easing.InOutQuad }
+                                }
                             }
                         }
                     }
@@ -1040,10 +1122,28 @@ Item {
             from: 0
             to: root.playbackTimelineDuration
             value: root.boundedPlaybackTimelinePosition
-            onMoved: {
-                if (root.playbackTimelineDuration > 0) {
-                    root.playbackController.seek(value);
+
+            // 与播放界面波形进度条一致的实时流程：按下即定位 seek，拖动中随
+            // 鼠标移动实时 seek（每个鼠标动作一次）。Qt 的 Slider 在一次手势中
+            // 会多次发 moved()（按下定位、拖动中每段移动、释放再提交一次），
+            // 其中释放那次与上一次同值 —— 同值 seek 只会无谓重启音频设备
+            // （后端日志成对出现 "seek to …ms"）。这里按手势去重：按下重置标记，
+            // 同一手势内与上一次已 seek 的值相同则跳过；跨手势（再次点击同一处）
+            // 不受影响。键盘/滚轮步进无 pressed 参与，值不同每次均 seek。
+            property real gestureSeekedValue: NaN
+
+            onPressedChanged: {
+                if (pressed) {
+                    gestureSeekedValue = NaN;
                 }
+            }
+            onMoved: {
+                if (root.playbackTimelineDuration <= 0)
+                    return;
+                if (value === gestureSeekedValue)
+                    return;
+                gestureSeekedValue = value;
+                root.playbackController.seek(value);
             }
 
             background: Rectangle {
@@ -1368,7 +1468,21 @@ Item {
         anchors.bottom: linearProgressContainer.top
         anchors.bottomMargin: Theme.paddingMedium
 
-        onClicked: lyricsState.toggleTranslation()
+        onClicked: {
+            // 用户手动浏览中（浏览焦点不在高亮歌词）时，点击翻译视为明确的跟随意图：
+            // 先恢复自动跟随并【瞬时】跳回高亮歌词，再切换翻译。
+            // 不用平滑回拉动画：行高变化（翻译展开/收缩）会逐帧触发 compensateLayoutChange
+            // 重定向与 Flickable 收缩钳制（关闭翻译时内容变矮尤甚），与回拉动画竞争写
+            // contentY 会导致无法收敛到正确焦点；瞬时归位后行高变化统一走同帧瞬时补偿
+            if (!lyricsContainer.lyricsSyncToPlayback) {
+                lyricsContainer.lyricsSyncToPlayback = true;
+                lyricsRestoreTimer.stop();
+                const targetY = lyricsContainer.snapToCurrentLyricTarget();
+                if (targetY >= 0)
+                    lyricsContainer.contentY = targetY;
+            }
+            lyricsState.toggleTranslation();
+        }
     }
 
     // 状态定义
@@ -1501,7 +1615,8 @@ Item {
             }
             PropertyChanges {
                 target: coverIcon
-                font.pixelSize: 20
+                // 字号恒 72，以 scale(20/72) 模拟 20px 视觉：消除逐帧 setFont 的字体查找/shaping 成本（不改变视觉终态）
+                scale: 20 / 72
             }
             PropertyChanges {
                 target: coverGlow
@@ -1619,8 +1734,15 @@ Item {
             }
 
             NumberAnimation {
-                targets: [coverRect, coverIcon, coverGlow, titleText, artistText, albumText, dashText, metaCombinedText, prevButton, nextButton]
+                targets: [coverRect, coverGlow, titleText, artistText, albumText, dashText, metaCombinedText, prevButton, nextButton] // coverIcon 独立动画（scale 模拟字号，见契约测试锚点）
                 properties: "radius,font.pixelSize,opacity,spacing,anchors.topMargin,anchors.leftMargin,anchors.rightMargin,anchors.bottomMargin"
+                duration: 400
+                easing.type: Easing.InOutCubic
+            }
+
+            NumberAnimation {
+                target: coverIcon // coverIcon 独立动画（scale 模拟字号，见契约测试锚点）
+                properties: "opacity,scale"
                 duration: 400
                 easing.type: Easing.InOutCubic
             }
@@ -1684,8 +1806,15 @@ Item {
             }
 
             NumberAnimation {
-                targets: [coverRect, coverIcon, coverGlow, titleText, artistText, albumText, dashText, metaCombinedText, prevButton, nextButton]
+                targets: [coverRect, coverGlow, titleText, artistText, albumText, dashText, metaCombinedText, prevButton, nextButton] // coverIcon 独立动画（scale 模拟字号，见契约测试锚点）
                 properties: "radius,font.pixelSize,opacity,spacing,anchors.topMargin,anchors.leftMargin,anchors.rightMargin,anchors.bottomMargin"
+                duration: 400
+                easing.type: Easing.InOutCubic
+            }
+
+            NumberAnimation {
+                target: coverIcon // coverIcon 独立动画（scale 模拟字号，见契约测试锚点）
+                properties: "opacity,scale"
                 duration: 400
                 easing.type: Easing.InOutCubic
             }

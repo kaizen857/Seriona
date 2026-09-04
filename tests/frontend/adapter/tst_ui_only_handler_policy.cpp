@@ -253,7 +253,7 @@ void UiOnlyHandlerPolicyTest::qmlLayoutSourceContractsStayStable()
         "target: coverRect",
         "radius: 12",
         "target: coverIcon",
-        "font.pixelSize: 20"
+        "scale: 20 / 72"
     });
     expectInOrder(mainContentQml, {
         "id: positionHelper",
@@ -271,19 +271,29 @@ void UiOnlyHandlerPolicyTest::qmlLayoutSourceContractsStayStable()
     expectContainsAll(sidebarQml, {
         "width: Theme.sidebarWidth",
         "id: playlistView",
-        "ScrollBar.vertical: ScrollBar {",
-        "policy: ScrollBar.AsNeeded",
-        "id: playlistScrollBar",
-        "visible: playlistScrollBar.size < 1.0",
+        "ScrollBar.vertical: StyledScrollBar {}",
         "readonly property ScrollBar verticalScrollBar: playlistView.ScrollBar.vertical",
         "id: sidebarFolderDialog",
         "id: fab"
     });
     expectInOrder(sidebarQml, {
         "id: playlistView",
-        "ScrollBar.vertical: ScrollBar {",
+        "ScrollBar.vertical: StyledScrollBar {}",
         "id: sidebarFolderDialog",
         "id: fab"
+    });
+
+    // 三态滚动条规格已收敛到共享组件 StyledScrollBar（唯一真源）；
+    // 结构断言跟随规格转移，防止组件内规格回退/删除
+    const QString styledScrollBarQml = sourceFile(QStringLiteral("qml/components/StyledScrollBar.qml"));
+    expectContainsAll(styledScrollBarQml, {
+        "ScrollBar {",
+        "policy: ScrollBar.AsNeeded",
+        "width: isHoveredOrPressed ? 10 : Theme.scrollbarWidth",
+        "readonly property bool isHoveredOrPressed: control.hovered || control.pressed",
+        "visible: control.size < 1.0",
+        "radius: width / 2",
+        "color: control.pressed ? Theme.pressedColor"
     });
 
     expectContainsAll(playlistDelegateQml, {

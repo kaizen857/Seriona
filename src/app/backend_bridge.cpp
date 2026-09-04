@@ -21,6 +21,7 @@
 #include "seriona/app/application_logging.h"
 
 #include <spdlog/common.h>
+#include <spdlog/spdlog.h>
 
 #include <exception>
 #include <optional>
@@ -374,6 +375,68 @@ seriona::control::MediaControllerCommandResult BackendBridge::submitConfigureOut
     seriona::control::MediaControlCommand command;
     command.kind = seriona::control::MediaControlCommandKind::ConfigureOutput;
     command.outputConfig = std::move(config);
+    return submitCommand(command);
+}
+
+seriona::control::MediaControllerCommandResult BackendBridge::submitTransitionConfig(
+    int autoAdvanceFadeMode,
+    bool fadeOnTransport,
+    bool fadeOnSeek,
+    int gaplessPreloadMs,
+    int crossfadeMs,
+    int transportFadeMs,
+    int seekFadeMs,
+    int manualAdvanceFadeMode,
+    int manualShortCrossfadeMs)
+{
+    // 数值域与后端 reducer handleSetTransitionConfig 逐条一致（读到即镜像）：
+    // 两枚枚举 int ∈ [0,2]；crossfadeMs [0,10000]；transportFadeMs/seekFadeMs/
+    // manualShortCrossfadeMs [0,3000]；gaplessPreloadMs [0,5000]；负值一并拒绝。
+    auto reject = [this](const char *message) {
+        seriona::control::MediaControllerCommandResult result = invalidCommandResult(message);
+        spdlog::warn("SetTransitionConfig rejected locally: {}", message);
+        enqueueCommandFailureNotification(result);
+        return result;
+    };
+    if (autoAdvanceFadeMode < 0 || autoAdvanceFadeMode > 2) {
+        return reject("SetTransitionConfig auto advance fade mode is out of range (0-2)");
+    }
+    if (manualAdvanceFadeMode < 0 || manualAdvanceFadeMode > 2) {
+        return reject("SetTransitionConfig manual advance fade mode is out of range (0-2)");
+    }
+    if (crossfadeMs < 0 || crossfadeMs > 10000) {
+        return reject("SetTransitionConfig crossfade length is out of range (0-10000 ms)");
+    }
+    if (transportFadeMs < 0 || transportFadeMs > 3000) {
+        return reject("SetTransitionConfig transport fade length is out of range (0-3000 ms)");
+    }
+    if (seekFadeMs < 0 || seekFadeMs > 3000) {
+        return reject("SetTransitionConfig seek fade length is out of range (0-3000 ms)");
+    }
+    if (manualShortCrossfadeMs < 0 || manualShortCrossfadeMs > 3000) {
+        return reject("SetTransitionConfig manual short crossfade length is out of range (0-3000 ms)");
+    }
+    if (gaplessPreloadMs < 0 || gaplessPreloadMs > 5000) {
+        return reject("SetTransitionConfig gapless preload lead is out of range (0-5000 ms)");
+    }
+
+    // 组包顺序 = TransitionConfig 字段声明顺序 = 后端 reducer 解析顺序（跨端契约）。
+    seriona::audio::TransitionConfig config;
+    config.autoAdvanceFadeMode = static_cast<seriona::audio::AutoAdvanceFadeMode>(autoAdvanceFadeMode);
+    config.fadeOnTransport = fadeOnTransport;
+    config.fadeOnSeek = fadeOnSeek;
+    config.gaplessPreloadMs = std::chrono::milliseconds(gaplessPreloadMs);
+    config.crossfadeMs = std::chrono::milliseconds(crossfadeMs);
+    config.transportFadeMs = std::chrono::milliseconds(transportFadeMs);
+    config.seekFadeMs = std::chrono::milliseconds(seekFadeMs);
+    config.manualAdvanceFadeMode = static_cast<seriona::audio::ManualAdvanceFadeMode>(manualAdvanceFadeMode);
+    config.manualShortCrossfadeMs = std::chrono::milliseconds(manualShortCrossfadeMs);
+
+    // 与 ConfigureOutput 同通道：submitCommand 单意图外发；后端据此仅转发配置，
+    // 不产生任何重载/切歌尾意图（无 LoadTrack/设备重开副作用）。
+    seriona::control::MediaControlCommand command;
+    command.kind = seriona::control::MediaControlCommandKind::SetTransitionConfig;
+    command.transitionConfig = std::move(config);
     return submitCommand(command);
 }
 

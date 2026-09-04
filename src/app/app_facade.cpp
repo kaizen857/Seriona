@@ -131,6 +131,15 @@ AppFacade::AppFacade(QObject *parent)
     m_settings.setApplyOutputConfigExecutor([this](int outputMode, int sampleRate, int sampleFormat, int bufferDurationMs, const QString &preferredDeviceId) {
         return m_backendBridge->submitConfigureOutput(outputMode, sampleRate, sampleFormat, bufferDurationMs, preferredDeviceId);
     });
+    // 播放过渡组推送（T12）：SettingsController 内部完成 400ms 去抖（滑块）与立即推送
+    // （档位/开关），此处仅透传到 BackendBridge 的 SetTransitionConfig 组包/校验。
+    m_settings.setApplyTransitionConfigExecutor([this](int autoAdvanceFadeMode, bool fadeOnTransport, bool fadeOnSeek,
+                                                       int gaplessPreloadMs, int crossfadeMs, int transportFadeMs,
+                                                       int seekFadeMs, int manualAdvanceFadeMode, int manualShortCrossfadeMs) {
+        return m_backendBridge->submitTransitionConfig(autoAdvanceFadeMode, fadeOnTransport, fadeOnSeek, gaplessPreloadMs,
+                                                       crossfadeMs, transportFadeMs, seekFadeMs, manualAdvanceFadeMode,
+                                                       manualShortCrossfadeMs);
+    });
     m_settings.setEnumerateDevicesExecutor([this] {
         return m_backendBridge->enumeratePlaybackDeviceCapabilities();
     });
@@ -162,6 +171,8 @@ AppFacade::AppFacade(QObject *parent)
         m_settings.reloadFromSettings();
         m_lyrics.setLyricDelimiters(m_settings.lyricDelimiters());
         m_settings.apply();
+        // 播放过渡组随输出组在启动/重连后 apply 一次（含持久化的 9 键，仿 m_settings.apply()）
+        m_settings.applyTransitionConfig();
         // 持久化的日志等级在启动时同步到后端（initializeApplicationLogging 默认之后覆盖）
         m_settings.applyLogLevel();
     });

@@ -49,7 +49,18 @@ public:
         m_lastOutputConfig = config;
     }
 
-    void loadTrack(const seriona::audio::TrackPlaybackRequest &) override { }
+    void configureTransition(const seriona::audio::TransitionConfig &config) override
+    {
+        std::scoped_lock lock(m_mutex);
+        ++m_configureTransitionCalls;
+        m_lastTransitionConfig = config;
+    }
+
+    void loadTrack(const seriona::audio::TrackPlaybackRequest &) override
+    {
+        std::scoped_lock lock(m_mutex);
+        ++m_loadTrackCalls;
+    }
     void prepareNext(const seriona::audio::TrackPlaybackRequest &) override { }
     void play() override { }
     void pause() override { }
@@ -77,10 +88,28 @@ public:
         return m_lastOutputConfig;
     }
 
+    seriona::audio::TransitionConfig lastTransitionConfig() const
+    {
+        std::scoped_lock lock(m_mutex);
+        return m_lastTransitionConfig;
+    }
+
     int configureOutputCalls() const
     {
         std::scoped_lock lock(m_mutex);
         return m_configureOutputCalls;
+    }
+
+    int configureTransitionCalls() const
+    {
+        std::scoped_lock lock(m_mutex);
+        return m_configureTransitionCalls;
+    }
+
+    int loadTrackCalls() const
+    {
+        std::scoped_lock lock(m_mutex);
+        return m_loadTrackCalls;
     }
 
     std::vector<seriona::audio::AudioDeviceFormat> enumeratePlaybackDevices() const override
@@ -125,9 +154,12 @@ private:
     mutable std::mutex m_mutex;
     seriona::audio::BackendEventSink m_eventSink;
     seriona::audio::AudioOutputConfig m_lastOutputConfig;
+    seriona::audio::TransitionConfig m_lastTransitionConfig;
     int m_stopCalls = 0;
     int m_eventSinkClearCalls = 0;
     int m_configureOutputCalls = 0;
+    int m_configureTransitionCalls = 0;
+    int m_loadTrackCalls = 0;
 };
 
 class FakeFileScannerService final : public seriona::scanner::FileScannerService
@@ -465,6 +497,9 @@ private slots:
     void removeFromQueueBuildsIndexedCommand();
     void enumeratePlaybackDevicesMapsDeviceIds();
     void settingsPushOnStart();
+    void submitTransitionConfigBuildsTypedBackendCommand();
+    void submitTransitionConfigRejectsInvalidPayloadWithoutDispatch();
+    void transitionConfigWhilePlayingDoesNotReloadOrInterrupt();
 };
 
 void BackendBridgeTest::threading()
@@ -983,23 +1018,183 @@ void BackendBridgeTest::settingsPushOnStart()
         [&pushCount](int, int, int, int, const QString &) {
             ++pushCount;
         });
+    int transitionPushCount = 0;
+    settings.setApplyTransitionConfigExecutor(
+        [&transitionPushCount](int, bool, bool, int, int, int, int, int, int) {
+            ++transitionPushCount;
+        });
 
     // AppFacade 启动挂钩契约：startedChanged 且 started() 为真时推送一次持久化配置
+    // （输出组 apply + 过渡组 applyTransitionConfig，顺序与 app_facade.cpp 一致）
     connect(&bridge, &Seriona::App::BackendBridge::startedChanged, &bridge, [&] {
         if (!bridge.started()) {
             return;
         }
         settings.reloadFromSettings();
         settings.apply();
+        settings.applyTransitionConfig();
     });
 
     bridge.start();
     QCOMPARE(bridge.started(), true);
     QCOMPARE(pushCount, 1);
+    QCOMPARE(transitionPushCount, 1);
 
     // shutdown 的 startedChanged（started()==false）不得再次推送
     bridge.shutdown();
     QCOMPARE(pushCount, 1);
+    QCOMPARE(transitionPushCount, 1);
+}
+
+void BackendBridgeTest::submitTransitionConfigBuildsTypedBackendCommand()
+{
+    ControllerHarness harness;
+    Seriona::App::BackendBridge bridge(harness.factory(true));
+    waitForInitialPlayerSnapshot(bridge);
+
+    // 9 参按 TransitionConfig 契约顺序组包 → SetTransitionConfig 命令到达音频服务
+    const seriona::control::MediaControllerCommandResult result = bridge.submitTransitionConfig(
+        2, true, true, 1200, 2500, 600, 700, 1, 800);
+    QVERIFY(result.accepted);
+    QCOMPARE(result.code, seriona::control::MediaControllerErrorCode::None);
+    QCOMPARE(harness.audio->configureTransitionCalls(), 1);
+    const seriona::audio::TransitionConfig received = harness.audio->lastTransitionConfig();
+    QCOMPARE(received.autoAdvanceFadeMode, seriona::audio::AutoAdvanceFadeMode::All);
+    QCOMPARE(received.fadeOnTransport, true);
+    QCOMPARE(received.fadeOnSeek, true);
+    QCOMPARE(received.gaplessPreloadMs, std::chrono::milliseconds(1200));
+    QCOMPARE(received.crossfadeMs, std::chrono::milliseconds(2500));
+    QCOMPARE(received.transportFadeMs, std::chrono::milliseconds(600));
+    QCOMPARE(received.seekFadeMs, std::chrono::milliseconds(700));
+    QCOMPARE(received.manualAdvanceFadeMode, seriona::audio::ManualAdvanceFadeMode::ShortDip);
+    QCOMPARE(received.manualShortCrossfadeMs, std::chrono::milliseconds(800));
+
+    // 全默认参数（0 时长语义合法：即时完成，不做下界钳制）
+    const seriona::control::MediaControllerCommandResult allOff = bridge.submitTransitionConfig(
+        0, false, false, 0, 0, 0, 0, 0, 0);
+    QVERIFY(allOff.accepted);
+    QCOMPARE(harness.audio->configureTransitionCalls(), 2);
+    const seriona::audio::TransitionConfig defaultOff = harness.audio->lastTransitionConfig();
+    QCOMPARE(defaultOff.autoAdvanceFadeMode, seriona::audio::AutoAdvanceFadeMode::Off);
+    QCOMPARE(defaultOff.crossfadeMs, std::chrono::milliseconds(0));
+    QCOMPARE(defaultOff.manualAdvanceFadeMode, seriona::audio::ManualAdvanceFadeMode::Off);
+
+    // 边界最大值合法（crossfade 10000 / 短淡变与预加载各自上限）
+    const seriona::control::MediaControllerCommandResult maxed = bridge.submitTransitionConfig(
+        1, false, false, 5000, 10000, 3000, 3000, 2, 3000);
+    QVERIFY(maxed.accepted);
+    const seriona::audio::TransitionConfig maxConfig = harness.audio->lastTransitionConfig();
+    QCOMPARE(maxConfig.gaplessPreloadMs, std::chrono::milliseconds(5000));
+    QCOMPARE(maxConfig.crossfadeMs, std::chrono::milliseconds(10000));
+    QCOMPARE(maxConfig.transportFadeMs, std::chrono::milliseconds(3000));
+    QCOMPARE(maxConfig.seekFadeMs, std::chrono::milliseconds(3000));
+    QCOMPARE(maxConfig.manualShortCrossfadeMs, std::chrono::milliseconds(3000));
+
+    // 过渡命令不触发 ConfigureOutput/LoadTrack/stop（与 ConfigureOutput 语义隔离）
+    QCOMPARE(harness.audio->configureOutputCalls(), 0);
+    QCOMPARE(harness.audio->loadTrackCalls(), 0);
+    QCOMPARE(harness.audio->stopCalls(), 0);
+
+    bridge.shutdown();
+}
+
+void BackendBridgeTest::submitTransitionConfigRejectsInvalidPayloadWithoutDispatch()
+{
+    ControllerHarness harness;
+    Seriona::App::BackendBridge bridge(harness.factory(true));
+    waitForInitialPlayerSnapshot(bridge);
+
+    // 枚举越界（前端本地拒绝，与后端 reducer 域一致；命令不外发）
+    const seriona::control::MediaControllerCommandResult badAuto = bridge.submitTransitionConfig(
+        3, false, false, 0, 3000, 300, 300, 0, 500);
+    QCOMPARE(badAuto.accepted, false);
+    QCOMPARE(badAuto.code, seriona::control::MediaControllerErrorCode::InvalidCommand);
+    const seriona::control::MediaControllerCommandResult badManual = bridge.submitTransitionConfig(
+        0, false, false, 0, 3000, 300, 300, -1, 500);
+    QCOMPARE(badManual.accepted, false);
+    QCOMPARE(badManual.code, seriona::control::MediaControllerErrorCode::InvalidCommand);
+
+    // crossfadeMs 越界（0-10000）
+    const seriona::control::MediaControllerCommandResult badCrossfade = bridge.submitTransitionConfig(
+        0, false, false, 0, 10001, 300, 300, 0, 500);
+    QCOMPARE(badCrossfade.accepted, false);
+    QCOMPARE(badCrossfade.code, seriona::control::MediaControllerErrorCode::InvalidCommand);
+    const seriona::control::MediaControllerCommandResult negativeCrossfade = bridge.submitTransitionConfig(
+        0, false, false, 0, -1, 300, 300, 0, 500);
+    QCOMPARE(negativeCrossfade.accepted, false);
+    QCOMPARE(negativeCrossfade.code, seriona::control::MediaControllerErrorCode::InvalidCommand);
+
+    // transport/seek/manualShort 越界（0-3000）
+    const seriona::control::MediaControllerCommandResult badTransport = bridge.submitTransitionConfig(
+        0, false, false, 0, 3000, 3001, 300, 0, 500);
+    QCOMPARE(badTransport.accepted, false);
+    const seriona::control::MediaControllerCommandResult badSeek = bridge.submitTransitionConfig(
+        0, false, false, 0, 3000, 300, -5, 0, 500);
+    QCOMPARE(badSeek.accepted, false);
+    const seriona::control::MediaControllerCommandResult badManualShort = bridge.submitTransitionConfig(
+        0, false, false, 0, 3000, 300, 300, 0, 3001);
+    QCOMPARE(badManualShort.accepted, false);
+
+    // 预加载越界（0-5000）
+    const seriona::control::MediaControllerCommandResult badPreload = bridge.submitTransitionConfig(
+        0, false, false, 5001, 3000, 300, 300, 0, 500);
+    QCOMPARE(badPreload.accepted, false);
+    QCOMPARE(badPreload.code, seriona::control::MediaControllerErrorCode::InvalidCommand);
+
+    // 全部非法值零外发
+    QCOMPARE(harness.audio->configureTransitionCalls(), 0);
+    QCOMPARE(harness.audio->loadTrackCalls(), 0);
+
+    bridge.shutdown();
+}
+
+void BackendBridgeTest::transitionConfigWhilePlayingDoesNotReloadOrInterrupt()
+{
+    // 联调冒烟（真实内嵌后端 reducer + fake 音频服务）：
+    // 播放中修改过渡设置 → 后端收到 SetTransitionConfig 且无 LoadTrack/设备重开副作用，
+    // 播放状态不被打断
+    ControllerHarness harness;
+    Seriona::App::BackendBridge bridge(harness.factory(true));
+    waitForInitialPlayerSnapshot(bridge);
+
+    harness.audio->emitEvent(makePlaybackStateEvent(1, seriona::audio::PlaybackState::Playing));
+    bridge.drainForTests();
+    QTRY_COMPARE(bridge.playerSnapshot().playback.state, seriona::control::PlaybackStatus::Playing);
+    QCOMPARE(harness.audio->loadTrackCalls(), 0);
+    QCOMPARE(harness.audio->stopCalls(), 0);
+
+    // 经 SettingsController 全链路：滑块 crossfadeMs（400ms 去抖）+ 档位立即推送
+    Seriona::App::SettingsController settings;
+    settings.setApplyTransitionConfigExecutor(
+        [&bridge](int autoAdvanceFadeMode, bool fadeOnTransport, bool fadeOnSeek, int gaplessPreloadMs,
+                  int crossfadeMs, int transportFadeMs, int seekFadeMs, int manualAdvanceFadeMode,
+                  int manualShortCrossfadeMs) {
+            bridge.submitTransitionConfig(autoAdvanceFadeMode, fadeOnTransport, fadeOnSeek, gaplessPreloadMs,
+                                          crossfadeMs, transportFadeMs, seekFadeMs, manualAdvanceFadeMode,
+                                          manualShortCrossfadeMs);
+        });
+
+    // 播放中改档位（立即）→ 后端立即收到新配置
+    settings.setAutoAdvanceFadeMode(1);
+    QCOMPARE(harness.audio->configureTransitionCalls(), 1);
+    QCOMPARE(harness.audio->lastTransitionConfig().autoAdvanceFadeMode, seriona::audio::AutoAdvanceFadeMode::ExceptGaplessGroup);
+
+    // 播放中改 crossfadeMs（去抖）→ 400ms 后单次到达、末值正确
+    settings.setCrossfadeMs(1500);
+    settings.setCrossfadeMs(2500);
+    QCOMPARE(harness.audio->configureTransitionCalls(), 1);
+    QTRY_COMPARE_WITH_TIMEOUT(harness.audio->configureTransitionCalls(), 2, 2000);
+    QCOMPARE(harness.audio->lastTransitionConfig().crossfadeMs, std::chrono::milliseconds(2500));
+
+    // 无整轨重载副作用：无 LoadTrack / 无设备重开（stop）/ 无 ConfigureOutput
+    QCOMPARE(harness.audio->loadTrackCalls(), 0);
+    QCOMPARE(harness.audio->stopCalls(), 0);
+    QCOMPARE(harness.audio->configureOutputCalls(), 0);
+
+    // 播放状态不被打断（仍 Playing，无 Loading/Stopped 事件泄漏到快照）
+    QTRY_COMPARE(bridge.playerSnapshot().playback.state, seriona::control::PlaybackStatus::Playing);
+
+    bridge.shutdown();
 }
 
 QTEST_GUILESS_MAIN(BackendBridgeTest)

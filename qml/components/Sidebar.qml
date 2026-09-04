@@ -849,35 +849,7 @@ Item {
                                 contextMenuHost: root.contextMenuHost
                             }
 
-                            ScrollBar.vertical: ScrollBar {
-                                id: playlistScrollBar
-                                policy: ScrollBar.AsNeeded
-                                width: isHoveredOrPressed ? 10 : Theme.scrollbarWidth
-
-                                readonly property bool isHoveredOrPressed: playlistScrollBar.hovered || playlistScrollBar.pressed
-
-                                Behavior on width {
-                                    NumberAnimation { duration: Theme.animationFast; easing.type: Easing.OutQuad }
-                                }
-
-                                background: Rectangle {
-                                    color: "transparent"
-                                }
-
-                                contentItem: Rectangle {
-                                    implicitWidth: playlistScrollBar.width
-                                    radius: width / 2
-                                    // 长列表（内容溢出）显示句柄，短列表/空列表隐藏
-                                    visible: playlistScrollBar.size < 1.0
-                                    color: playlistScrollBar.pressed ? Theme.pressedColor
-                                         : playlistScrollBar.hovered ? Theme.scrollbarHoverColor
-                                         : Theme.scrollbarColor
-
-                                    Behavior on color {
-                                        ColorAnimation { duration: Theme.animationFast }
-                                    }
-                                }
-                            }
+                            ScrollBar.vertical: StyledScrollBar {}
                         }
 
                         // 第 1 层及更深层文件夹列表（StackView 页面栈承载）
@@ -978,32 +950,7 @@ Item {
                                 contextMenuHost: root.contextMenuHost
                             }
 
-                            ScrollBar.vertical: ScrollBar {
-                                id: searchScrollBar
-                                policy: ScrollBar.AsNeeded
-                                width: (searchScrollBar.hovered || searchScrollBar.pressed) ? 10 : Theme.scrollbarWidth
-
-                                Behavior on width {
-                                    NumberAnimation { duration: Theme.animationFast; easing.type: Easing.OutQuad }
-                                }
-
-                                background: Rectangle {
-                                    color: "transparent"
-                                }
-
-                                contentItem: Rectangle {
-                                    implicitWidth: searchScrollBar.width
-                                    radius: width / 2
-                                    visible: searchScrollBar.size < 1.0
-                                    color: searchScrollBar.pressed ? Theme.pressedColor
-                                         : searchScrollBar.hovered ? Theme.scrollbarHoverColor
-                                         : Theme.scrollbarColor
-
-                                    Behavior on color {
-                                        ColorAnimation { duration: Theme.animationFast }
-                                    }
-                                }
-                            }
+                            ScrollBar.vertical: StyledScrollBar {}
                         }
                     }
 

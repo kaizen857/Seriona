@@ -211,6 +211,7 @@ set(SERIONA_QML_MODULE_FILES
     qml/components/FolderPage.qml
     qml/components/QueueView.qml
     qml/components/AboutOverlay.qml
+    qml/components/StyledScrollBar.qml
     qml/views/MainContent.qml
     qml/views/StartupView.qml
     qml/windows/SettingsWindow.qml
@@ -405,6 +406,15 @@ if(BUILD_TESTING)
     add_test(NAME seriona_frontend_settings_log_level_mapping COMMAND seriona_frontend_settings_controller_tests logLevelMapping)
     add_test(NAME seriona_frontend_settings_log_level_push_defense COMMAND seriona_frontend_settings_controller_tests logLevelPushAndDefense)
     add_test(NAME seriona_frontend_settings_follow_restore_persist COMMAND seriona_frontend_settings_controller_tests followRestoreDelayPersistRoundTrip)
+    add_test(NAME seriona_frontend_settings_transition_defaults COMMAND seriona_frontend_settings_controller_tests transitionDefaults)
+    add_test(NAME seriona_frontend_settings_transition_persist_notify COMMAND seriona_frontend_settings_controller_tests transitionPropertySettersPersistAndNotify)
+    add_test(NAME seriona_frontend_settings_transition_invalid_values COMMAND seriona_frontend_settings_controller_tests transitionInvalidValuesRejected)
+    add_test(NAME seriona_frontend_settings_transition_debounce COMMAND seriona_frontend_settings_controller_tests transitionSliderSettersDebounceMerged)
+add_test(NAME seriona_frontend_settings_transition_roundtrip COMMAND seriona_frontend_settings_controller_tests transitionPersistRoundTrip)
+add_test(NAME seriona_frontend_settings_transition_greyed COMMAND seriona_frontend_settings_controller_tests advanceTransitionsGreyedFollowsOutputMode)
+add_test(NAME seriona_frontend_settings_transition_apply_pack COMMAND seriona_frontend_settings_controller_tests transitionApplyPacksCurrentNineFields)
+add_test(NAME seriona_frontend_settings_transition_executor_unset COMMAND seriona_frontend_settings_controller_tests transitionExecutorUnsetNoopPersistence)
+add_test(NAME seriona_frontend_settings_transition_startup_apply COMMAND seriona_frontend_settings_controller_tests transitionStartupApplySequence)
 
     # 播放次数/星级持久化（T16）：纯 QML 面（无后端依赖），mock-only 构建同样注册
     add_executable(seriona_frontend_track_stats_tests
@@ -1223,6 +1233,9 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
         add_test(NAME seriona_frontend_backend_bridge_configure_output_invalid COMMAND seriona_frontend_backend_bridge_tests submitConfigureOutputRejectsInvalidPayloadWithoutDispatch)
         add_test(NAME seriona_frontend_backend_bridge_enumerate_devices COMMAND seriona_frontend_backend_bridge_tests enumeratePlaybackDevicesMapsDeviceIds)
         add_test(NAME seriona_frontend_backend_bridge_settings_push_on_start COMMAND seriona_frontend_backend_bridge_tests settingsPushOnStart)
+        add_test(NAME seriona_frontend_backend_bridge_set_transition_config COMMAND seriona_frontend_backend_bridge_tests submitTransitionConfigBuildsTypedBackendCommand)
+        add_test(NAME seriona_frontend_backend_bridge_set_transition_config_invalid COMMAND seriona_frontend_backend_bridge_tests submitTransitionConfigRejectsInvalidPayloadWithoutDispatch)
+        add_test(NAME seriona_frontend_backend_bridge_transition_no_reload_while_playing COMMAND seriona_frontend_backend_bridge_tests transitionConfigWhilePlayingDoesNotReloadOrInterrupt)
         add_test(NAME seriona_frontend_backend_bridge_play_next_track COMMAND seriona_frontend_backend_bridge_tests playNextTrackBuildsQueueCommand)
         add_test(NAME seriona_frontend_backend_bridge_play_next_empty COMMAND seriona_frontend_backend_bridge_tests playNextTrackRejectsEmptyIdWithoutDispatch)
         add_test(NAME seriona_frontend_backend_bridge_remove_from_queue COMMAND seriona_frontend_backend_bridge_tests removeFromQueueBuildsIndexedCommand)
