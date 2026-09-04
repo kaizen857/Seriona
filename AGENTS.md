@@ -34,7 +34,7 @@
 ## 中间层行为契约
 - 前端不得直接实现文件系统/网络/数据库访问（`QDir::*`、`QFileSystem*`、`QNetwork*`、`QSql*` 等）；一切经 `BackendBridge` 的命令/快照边界，`verify-middle-layer.sh` 会对 `src/` 和 `qml/` 强制检查。
 - 与后端边界交换的路径文本一律 UTF-8：路径文本必须经 `src/app/path_text.h` 的 `pathTextUtf8` 处理，禁止直接 `std::filesystem::path::string()/generic_string()`（Windows 下按 ANSI 代码页转换，非 ASCII 路径会抛异常或乱码）。
-- 不支持的设置项（Crossfade 等）必须走 `NotificationController::showUnsupportedAction()` 本地反馈，禁止伪造后端命令或静默吞掉；`Exit` 是例外，必须走真实关闭链路。均衡器（Equalizer）仍未实现：`qml/windows/EqualizerWindow.qml` 只是"开发中"占位窗口（已注册进 QML 模块，Main.qml 实例化并经 `onOpenEqualizerRequested` 打开，MainContent 的 `equalizerMenuItem` 触发，含 smoke 覆盖），内容区仅显示"均衡器（开发中）"文本、无任何均衡器操作，不要把它当已实现功能或伪造均衡器命令。
+- 未实现的设置项（均衡器等）必须走 `NotificationController::showUnsupportedAction()` 本地反馈，禁止伪造后端命令或静默吞掉；`Exit` 是例外，必须走真实关闭链路。播放过渡组（键组 `transition`，9 键：交叉淡入淡出/预加载/传送与进度淡变/手动短交叉）已接真实 `SetTransitionConfig` 命令链路（SettingsController → BackendBridge，含 400ms 滑块去抖与启动一次 apply），不属本地反馈项。均衡器（Equalizer）仍未实现：`qml/windows/EqualizerWindow.qml` 只是"开发中"占位窗口（已注册进 QML 模块，Main.qml 实例化并经 `onOpenEqualizerRequested` 打开，MainContent 的 `equalizerMenuItem` 触发，含 smoke 覆盖），内容区仅显示"均衡器（开发中）"文本、无任何均衡器操作，不要把它当已实现功能或伪造均衡器命令。
 - 播放游标与浏览游标分离：`playingTrackId` 与 `selectedBrowserNodeId` 各自独立，浏览/定位不得反向污染播放身份。
 - 详细契约见 `docs/architecture/backend-integration-contract.md`（verify 脚本强制要求存在）与 `docs/backend-integration-strategy.md`。
 

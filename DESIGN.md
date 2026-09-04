@@ -268,7 +268,7 @@ WindowControls.closeRequested / 设置菜单"退出" ──► requestApplicatio
 
 ## 11. 扩展方式
 
-1. **新设置项**：① 前端本地项（如歌词分隔符）：加真实绑定/写回即可；② 不支持项（Crossfade、均衡器类）：必须 `showUnsupportedAction()` 本地反馈，禁止伪造命令；③ 需后端支持：先在后端加命令与快照字段，前端经 `BackendBridge` 接线，并同步更新 `docs/architecture/backend-integration-contract.md`。
+1. **新设置项**：① 前端本地项（如歌词分隔符）：加真实绑定/写回即可；② 未实现项（均衡器类）：必须 `showUnsupportedAction()` 本地反馈，禁止伪造命令；③ 需后端支持（范例：播放过渡 9 键组 → 后端 `SetTransitionConfig`，前端经 `SettingsController` executor + `BackendBridge::submitTransitionConfig` 接线，滑块 400ms 去抖、启动 apply 一次）：先在后端加命令与快照字段，前端经 `BackendBridge` 接线，并同步更新 `docs/architecture/backend-integration-contract.md`。
 2. **新页面**：`NavigationController.currentView` 增加视图名 + MainContent 增加对应 State/Transition；或独立 QML 组件挂到 Main.qml 组件树。
 3. **新图标**：SVG 放 `qml/assets/` 并追加到 CMake `SERIONA_QML_MODULE_RESOURCES`；引用用绝对 QRC 路径 `qrc:/qt/qml/Seriona/qml/assets/<name>.svg`。
 4. **新 C++ 控制器/模型/工具**：放入 `src/app/`，追加到 CMake `SERIONA_APP_LAYER_SOURCES`（及测试目标清单）；QML 侧经 `AppFacade` 暴露，不要另建可创建的控制器实例。

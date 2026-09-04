@@ -51,6 +51,15 @@ private slots:
     void logLevelMapping();
     void logLevelPushAndDefense();
     void followRestoreDelayPersistRoundTrip();
+    void transitionDefaults();
+    void transitionPropertySettersPersistAndNotify();
+    void transitionInvalidValuesRejected();
+    void transitionSliderSettersDebounceMerged();
+    void transitionPersistRoundTrip();
+    void advanceTransitionsGreyedFollowsOutputMode();
+    void transitionApplyPacksCurrentNineFields();
+    void transitionExecutorUnsetNoopPersistence();
+    void transitionStartupApplySequence();
 
 private:
     Seriona::App::AppSettingsBackend testBackend();
@@ -826,6 +835,468 @@ void SettingsControllerTest::startupPushSequence()
 
     QCOMPARE(payloads.size(), 1);
     QCOMPARE(payloads.at(0), QStringLiteral("0|48000|300|"));
+}
+
+void SettingsControllerTest::transitionDefaults()
+{
+    Seriona::App::SettingsController settings;
+
+    // 裁定表默认值：自动档无(0)/开关关/false/预加载 0/交叉 3000/传送 300/seek 300/
+    // 手动档无(0)/手动短交叉 500；滑块步进 100ms
+    QCOMPARE(settings.autoAdvanceFadeMode(), 0);
+    QCOMPARE(settings.fadeOnTransport(), false);
+    QCOMPARE(settings.fadeOnSeek(), false);
+    QCOMPARE(settings.gaplessPreloadMs(), 0);
+    QCOMPARE(settings.crossfadeMs(), 3000);
+    QCOMPARE(settings.transportFadeMs(), 300);
+    QCOMPARE(settings.seekFadeMs(), 300);
+    QCOMPARE(settings.manualAdvanceFadeMode(), 0);
+    QCOMPARE(settings.manualShortCrossfadeMs(), 500);
+    QCOMPARE(settings.transitionSliderStepMs(), 100);
+    // 默认 Direct（outputMode 0）→ 过渡类行灰化
+    QCOMPARE(settings.outputMode(), 0);
+    QVERIFY(settings.advanceTransitionsGreyed());
+}
+
+void SettingsControllerTest::transitionPropertySettersPersistAndNotify()
+{
+    Seriona::App::SettingsController settings;
+    settings.setSettingsStorageBackend(testBackend());
+    QSignalSpy autoSpy(&settings, &Seriona::App::SettingsController::autoAdvanceFadeModeChanged);
+    QSignalSpy transportSpy(&settings, &Seriona::App::SettingsController::fadeOnTransportChanged);
+    QSignalSpy seekSpy(&settings, &Seriona::App::SettingsController::fadeOnSeekChanged);
+    QSignalSpy preloadSpy(&settings, &Seriona::App::SettingsController::gaplessPreloadMsChanged);
+    QSignalSpy crossfadeSpy(&settings, &Seriona::App::SettingsController::crossfadeMsChanged);
+    QSignalSpy transportFadeSpy(&settings, &Seriona::App::SettingsController::transportFadeMsChanged);
+    QSignalSpy seekFadeSpy(&settings, &Seriona::App::SettingsController::seekFadeMsChanged);
+    QSignalSpy manualSpy(&settings, &Seriona::App::SettingsController::manualAdvanceFadeModeChanged);
+    QSignalSpy manualShortSpy(&settings, &Seriona::App::SettingsController::manualShortCrossfadeMsChanged);
+
+    settings.setAutoAdvanceFadeMode(1);
+    settings.setFadeOnTransport(true);
+    settings.setFadeOnSeek(true);
+    settings.setGaplessPreloadMs(1200);
+    settings.setCrossfadeMs(4500);
+    settings.setTransportFadeMs(600);
+    settings.setSeekFadeMs(700);
+    settings.setManualAdvanceFadeMode(2);
+    settings.setManualShortCrossfadeMs(800);
+
+    QCOMPARE(settings.autoAdvanceFadeMode(), 1);
+    QCOMPARE(settings.fadeOnTransport(), true);
+    QCOMPARE(settings.fadeOnSeek(), true);
+    QCOMPARE(settings.gaplessPreloadMs(), 1200);
+    QCOMPARE(settings.crossfadeMs(), 4500);
+    QCOMPARE(settings.transportFadeMs(), 600);
+    QCOMPARE(settings.seekFadeMs(), 700);
+    QCOMPARE(settings.manualAdvanceFadeMode(), 2);
+    QCOMPARE(settings.manualShortCrossfadeMs(), 800);
+    QCOMPARE(autoSpy.count(), 1);
+    QCOMPARE(transportSpy.count(), 1);
+    QCOMPARE(seekSpy.count(), 1);
+    QCOMPARE(preloadSpy.count(), 1);
+    QCOMPARE(crossfadeSpy.count(), 1);
+    QCOMPARE(transportFadeSpy.count(), 1);
+    QCOMPARE(seekFadeSpy.count(), 1);
+    QCOMPARE(manualSpy.count(), 1);
+    QCOMPARE(manualShortSpy.count(), 1);
+
+    // 相同值不重复 NOTIFY
+    settings.setAutoAdvanceFadeMode(1);
+    settings.setFadeOnTransport(true);
+    settings.setCrossfadeMs(4500);
+    QCOMPARE(autoSpy.count(), 1);
+    QCOMPARE(transportSpy.count(), 1);
+    QCOMPARE(crossfadeSpy.count(), 1);
+
+    // 键名恰为 transition 组 9 键（无 stray 键写入其它组）
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("autoAdvanceFadeMode")).toInt(), 1);
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("fadeOnTransport")).toBool(), true);
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("fadeOnSeek")).toBool(), true);
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("gaplessPreloadMs")).toInt(), 1200);
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("crossfadeMs")).toInt(), 4500);
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("transportFadeMs")).toInt(), 600);
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("seekFadeMs")).toInt(), 700);
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("manualAdvanceFadeMode")).toInt(), 2);
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("manualShortCrossfadeMs")).toInt(), 800);
+    QVERIFY(!storedContains(QStringLiteral("output"), QStringLiteral("autoAdvanceFadeMode")));
+    QVERIFY(!storedContains(QStringLiteral("output"), QStringLiteral("crossfadeMs")));
+    QVERIFY(!storedContains(QStringLiteral("lyrics"), QStringLiteral("crossfadeMs")));
+    QVERIFY(!storedContains(QStringLiteral("logging"), QStringLiteral("crossfadeMs")));
+}
+
+void SettingsControllerTest::transitionInvalidValuesRejected()
+{
+    Seriona::App::SettingsController settings;
+    settings.setSettingsStorageBackend(testBackend());
+
+    // 枚举仅 0-2
+    settings.setAutoAdvanceFadeMode(3);
+    QCOMPARE(settings.autoAdvanceFadeMode(), 0);
+    settings.setAutoAdvanceFadeMode(-1);
+    QCOMPARE(settings.autoAdvanceFadeMode(), 0);
+    settings.setManualAdvanceFadeMode(3);
+    QCOMPARE(settings.manualAdvanceFadeMode(), 0);
+    settings.setManualAdvanceFadeMode(7);
+    QCOMPARE(settings.manualAdvanceFadeMode(), 0);
+
+    // crossfadeMs 0-10000
+    settings.setCrossfadeMs(-1);
+    QCOMPARE(settings.crossfadeMs(), 3000);
+    settings.setCrossfadeMs(10001);
+    QCOMPARE(settings.crossfadeMs(), 3000);
+    // 非法值保留旧值（先置合法再试越界）
+    settings.setCrossfadeMs(4000);
+    settings.setCrossfadeMs(10001);
+    QCOMPARE(settings.crossfadeMs(), 4000);
+
+    // transportFadeMs/seekFadeMs/manualShortCrossfadeMs 0-3000
+    settings.setTransportFadeMs(3001);
+    QCOMPARE(settings.transportFadeMs(), 300);
+    settings.setSeekFadeMs(-1);
+    QCOMPARE(settings.seekFadeMs(), 300);
+    settings.setSeekFadeMs(3001);
+    QCOMPARE(settings.seekFadeMs(), 300);
+    settings.setManualShortCrossfadeMs(-5);
+    QCOMPARE(settings.manualShortCrossfadeMs(), 500);
+    settings.setManualShortCrossfadeMs(3001);
+    QCOMPARE(settings.manualShortCrossfadeMs(), 500);
+
+    // gaplessPreloadMs 0-5000
+    settings.setGaplessPreloadMs(-1);
+    QCOMPARE(settings.gaplessPreloadMs(), 0);
+    settings.setGaplessPreloadMs(5001);
+    QCOMPARE(settings.gaplessPreloadMs(), 0);
+
+    // 边界值合法（0 合法：无交叉/无预加载即时语义；最大值合法）
+    settings.setAutoAdvanceFadeMode(2);
+    settings.setCrossfadeMs(0);
+    QCOMPARE(settings.crossfadeMs(), 0);
+    settings.setCrossfadeMs(10000);
+    settings.setGaplessPreloadMs(5000);
+    settings.setTransportFadeMs(0);
+    settings.setTransportFadeMs(3000);
+    settings.setSeekFadeMs(0);
+    settings.setSeekFadeMs(3000);
+    settings.setManualShortCrossfadeMs(0);
+    settings.setManualShortCrossfadeMs(3000);
+    QCOMPARE(settings.autoAdvanceFadeMode(), 2);
+    QCOMPARE(settings.crossfadeMs(), 10000);
+    QCOMPARE(settings.gaplessPreloadMs(), 5000);
+    QCOMPARE(settings.transportFadeMs(), 3000);
+    QCOMPARE(settings.seekFadeMs(), 3000);
+    QCOMPARE(settings.manualShortCrossfadeMs(), 3000);
+
+    // 非法值不写入存储
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("crossfadeMs")).toInt(), 10000);
+    settings.setCrossfadeMs(20000);
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("crossfadeMs")).toInt(), 10000);
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("gaplessPreloadMs")).toInt(), 5000);
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("manualAdvanceFadeMode")).toInt(), 0);
+}
+
+void SettingsControllerTest::transitionSliderSettersDebounceMerged()
+{
+    Seriona::App::SettingsController settings;
+    QStringList payloads;
+    settings.setApplyTransitionConfigExecutor(
+        [&payloads](int autoAdvanceFadeMode, bool fadeOnTransport, bool fadeOnSeek, int gaplessPreloadMs,
+                    int crossfadeMs, int transportFadeMs, int seekFadeMs, int manualAdvanceFadeMode,
+                    int manualShortCrossfadeMs) {
+            payloads.append(QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8|%9")
+                                .arg(autoAdvanceFadeMode)
+                                .arg(fadeOnTransport)
+                                .arg(fadeOnSeek)
+                                .arg(gaplessPreloadMs)
+                                .arg(crossfadeMs)
+                                .arg(transportFadeMs)
+                                .arg(seekFadeMs)
+                                .arg(manualAdvanceFadeMode)
+                                .arg(manualShortCrossfadeMs));
+        });
+    // 过渡滑块去抖不得触发 output executor
+    int outputPushes = 0;
+    settings.setApplyOutputConfigExecutor(
+        [&outputPushes](int, int, int, int, const QString &) {
+            ++outputPushes;
+        });
+
+    // 档位/开关立即推送
+    settings.setAutoAdvanceFadeMode(1);
+    settings.setFadeOnTransport(true);
+    QCOMPARE(payloads.size(), 2);
+    QCOMPARE(payloads.at(0), QStringLiteral("1|0|0|0|3000|300|300|0|500"));
+    QCOMPARE(payloads.at(1), QStringLiteral("1|1|0|0|3000|300|300|0|500"));
+    QCOMPARE(outputPushes, 0);
+
+    // 滑块多次变更（跨 5 把滑块交错）合并为一次下发，末值正确
+    settings.setCrossfadeMs(100);
+    settings.setCrossfadeMs(200);
+    settings.setManualShortCrossfadeMs(600);
+    settings.setGaplessPreloadMs(200);
+    settings.setTransportFadeMs(400);
+    settings.setSeekFadeMs(800);
+    settings.setCrossfadeMs(900);
+    QCOMPARE(payloads.size(), 2);
+    QCOMPARE(settings.crossfadeMs(), 900);
+    QCOMPARE(settings.manualShortCrossfadeMs(), 600);
+    QCOMPARE(settings.gaplessPreloadMs(), 200);
+    QCOMPARE(settings.transportFadeMs(), 400);
+    QCOMPARE(settings.seekFadeMs(), 800);
+    // 去抖窗口内 output executor 不受影响
+    QCOMPARE(outputPushes, 0);
+
+    QTRY_COMPARE_WITH_TIMEOUT(payloads.size(), 3, 2000);
+    QCOMPARE(payloads.at(2), QStringLiteral("1|1|0|200|900|400|800|0|600"));
+
+    // 不再有额外推送
+    QTest::qWait(800);
+    QCOMPARE(payloads.size(), 3);
+    QCOMPARE(outputPushes, 0);
+}
+
+void SettingsControllerTest::transitionPersistRoundTrip()
+{
+    {
+        Seriona::App::SettingsController writer;
+        writer.setSettingsStorageBackend(testBackend());
+        writer.setAutoAdvanceFadeMode(2);
+        writer.setFadeOnTransport(true);
+        writer.setFadeOnSeek(true);
+        writer.setGaplessPreloadMs(1500);
+        writer.setCrossfadeMs(6000);
+        writer.setTransportFadeMs(900);
+        writer.setSeekFadeMs(100);
+        writer.setManualAdvanceFadeMode(1);
+        writer.setManualShortCrossfadeMs(250);
+        QCOMPARE(writer.autoAdvanceFadeMode(), 2);
+        QCOMPARE(writer.manualAdvanceFadeMode(), 1);
+    }
+
+    Seriona::App::SettingsController reader;
+    reader.setSettingsStorageBackend(testBackend());
+    int pushes = 0;
+    reader.setApplyTransitionConfigExecutor(
+        [&pushes](int, bool, bool, int, int, int, int, int, int) {
+            ++pushes;
+        });
+    reader.reloadFromSettings();
+
+    QCOMPARE(reader.autoAdvanceFadeMode(), 2);
+    QCOMPARE(reader.fadeOnTransport(), true);
+    QCOMPARE(reader.fadeOnSeek(), true);
+    QCOMPARE(reader.gaplessPreloadMs(), 1500);
+    QCOMPARE(reader.crossfadeMs(), 6000);
+    QCOMPARE(reader.transportFadeMs(), 900);
+    QCOMPARE(reader.seekFadeMs(), 100);
+    QCOMPARE(reader.manualAdvanceFadeMode(), 1);
+    QCOMPARE(reader.manualShortCrossfadeMs(), 250);
+    // reload 只还原属性，不推送
+    QCOMPARE(pushes, 0);
+
+    // 未写入时全部回默认（含默认值情形 roundtrip）
+    m_store.clear();
+    Seriona::App::SettingsController defaultReader;
+    defaultReader.setSettingsStorageBackend(testBackend());
+    defaultReader.reloadFromSettings();
+    QCOMPARE(defaultReader.autoAdvanceFadeMode(), 0);
+    QCOMPARE(defaultReader.fadeOnTransport(), false);
+    QCOMPARE(defaultReader.fadeOnSeek(), false);
+    QCOMPARE(defaultReader.gaplessPreloadMs(), 0);
+    QCOMPARE(defaultReader.crossfadeMs(), 3000);
+    QCOMPARE(defaultReader.transportFadeMs(), 300);
+    QCOMPARE(defaultReader.seekFadeMs(), 300);
+    QCOMPARE(defaultReader.manualAdvanceFadeMode(), 0);
+    QCOMPARE(defaultReader.manualShortCrossfadeMs(), 500);
+
+    // reload 防御：存储中的非法值回退默认
+    m_store.clear();
+    m_store.insert(storageKey(QStringLiteral("transition"), QStringLiteral("crossfadeMs")), 99999);
+    m_store.insert(storageKey(QStringLiteral("transition"), QStringLiteral("autoAdvanceFadeMode")), 7);
+    m_store.insert(storageKey(QStringLiteral("transition"), QStringLiteral("fadeOnSeek")), true);
+    Seriona::App::SettingsController corruptReader;
+    corruptReader.setSettingsStorageBackend(testBackend());
+    corruptReader.reloadFromSettings();
+    QCOMPARE(corruptReader.crossfadeMs(), 3000);
+    QCOMPARE(corruptReader.autoAdvanceFadeMode(), 0);
+    QCOMPARE(corruptReader.fadeOnSeek(), true);
+}
+
+void SettingsControllerTest::advanceTransitionsGreyedFollowsOutputMode()
+{
+    Seriona::App::SettingsController settings;
+    QSignalSpy modeSpy(&settings, &Seriona::App::SettingsController::outputModeChanged);
+
+    // 默认 Direct（0）→ 过渡类行灰化
+    QVERIFY(settings.advanceTransitionsGreyed());
+
+    // Mixed（1）→ 全部可用
+    settings.setOutputMode(1);
+    QVERIFY(!settings.advanceTransitionsGreyed());
+
+    // 切回 Direct → 灰化
+    settings.setOutputMode(0);
+    QVERIFY(settings.advanceTransitionsGreyed());
+    QCOMPARE(modeSpy.count(), 2);
+
+    // 灰化不影响取值与校验（Direct 下仍可设过渡值，UI 层负责禁用）
+    settings.setCrossfadeMs(2500);
+    settings.setAutoAdvanceFadeMode(1);
+    QCOMPARE(settings.crossfadeMs(), 2500);
+    QCOMPARE(settings.autoAdvanceFadeMode(), 1);
+    // 过渡值变化不触发 outputMode 信号
+    QCOMPARE(modeSpy.count(), 2);
+}
+
+void SettingsControllerTest::transitionApplyPacksCurrentNineFields()
+{
+    Seriona::App::SettingsController settings;
+    QStringList payloads;
+    settings.setApplyTransitionConfigExecutor(
+        [&payloads](int autoAdvanceFadeMode, bool fadeOnTransport, bool fadeOnSeek, int gaplessPreloadMs,
+                    int crossfadeMs, int transportFadeMs, int seekFadeMs, int manualAdvanceFadeMode,
+                    int manualShortCrossfadeMs) {
+            payloads.append(QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8|%9")
+                                .arg(autoAdvanceFadeMode)
+                                .arg(fadeOnTransport)
+                                .arg(fadeOnSeek)
+                                .arg(gaplessPreloadMs)
+                                .arg(crossfadeMs)
+                                .arg(transportFadeMs)
+                                .arg(seekFadeMs)
+                                .arg(manualAdvanceFadeMode)
+                                .arg(manualShortCrossfadeMs));
+        });
+
+    // 直接调用（AppFacade 启动路径形态）：默认值按契约顺序组包（毫秒 int / bool 0-1）
+    settings.applyTransitionConfig();
+    QCOMPARE(payloads.size(), 1);
+    QCOMPARE(payloads.at(0), QStringLiteral("0|0|0|0|3000|300|300|0|500"));
+
+    // 变更后再次组包：档位/开关 setter 各自立即推送；滑块走去抖（无事件循环不触发）；
+    // 显式调用推送全量末值 → 共 6 次记录，末条 = 全部 9 字段末值
+    settings.setAutoAdvanceFadeMode(2);
+    settings.setFadeOnTransport(true);
+    settings.setFadeOnSeek(true);
+    settings.setGaplessPreloadMs(1200);
+    settings.setCrossfadeMs(2500);
+    settings.setTransportFadeMs(600);
+    settings.setSeekFadeMs(700);
+    settings.setManualAdvanceFadeMode(1);
+    settings.setManualShortCrossfadeMs(800);
+    settings.applyTransitionConfig();
+    QCOMPARE(payloads.size(), 6);
+    QCOMPARE(payloads.at(1), QStringLiteral("2|0|0|0|3000|300|300|0|500"));
+    QCOMPARE(payloads.at(2), QStringLiteral("2|1|0|0|3000|300|300|0|500"));
+    QCOMPARE(payloads.at(3), QStringLiteral("2|1|1|0|3000|300|300|0|500"));
+    // 手动档 setter 立即推送时滑块属性已更新（去抖未触发）→ 推送全量现值
+    QCOMPARE(payloads.at(4), QStringLiteral("2|1|1|1200|2500|600|700|1|500"));
+    QCOMPARE(payloads.at(5), QStringLiteral("2|1|1|1200|2500|600|700|1|800"));
+}
+
+void SettingsControllerTest::transitionExecutorUnsetNoopPersistence()
+{
+    // mock-only：executor 未设（AppFacade 无后端时不注入）→ setter/applyTransitionConfig
+    // 均为 no-op（不崩、不推送），本地持久化仍工作
+    Seriona::App::SettingsController settings;
+    settings.setSettingsStorageBackend(testBackend());
+
+    settings.setAutoAdvanceFadeMode(2);
+    settings.setFadeOnTransport(true);
+    settings.setFadeOnSeek(true);
+    settings.setGaplessPreloadMs(1500);
+    settings.setCrossfadeMs(6000);
+    settings.setTransportFadeMs(900);
+    settings.setSeekFadeMs(100);
+    settings.setManualAdvanceFadeMode(1);
+    settings.setManualShortCrossfadeMs(250);
+    settings.applyTransitionConfig();
+
+    QCOMPARE(settings.autoAdvanceFadeMode(), 2);
+    QCOMPARE(settings.crossfadeMs(), 6000);
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("autoAdvanceFadeMode")).toInt(), 2);
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("fadeOnTransport")).toBool(), true);
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("fadeOnSeek")).toBool(), true);
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("gaplessPreloadMs")).toInt(), 1500);
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("crossfadeMs")).toInt(), 6000);
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("transportFadeMs")).toInt(), 900);
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("seekFadeMs")).toInt(), 100);
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("manualAdvanceFadeMode")).toInt(), 1);
+    QCOMPARE(storedValue(QStringLiteral("transition"), QStringLiteral("manualShortCrossfadeMs")).toInt(), 250);
+
+    // reload（无 executor）值完整还原、零推送
+    Seriona::App::SettingsController reader;
+    reader.setSettingsStorageBackend(testBackend());
+    int pushes = 0;
+    reader.setApplyTransitionConfigExecutor(
+        [&pushes](int, bool, bool, int, int, int, int, int, int) {
+            ++pushes;
+        });
+    reader.reloadFromSettings();
+    QCOMPARE(reader.autoAdvanceFadeMode(), 2);
+    QCOMPARE(reader.fadeOnTransport(), true);
+    QCOMPARE(reader.gaplessPreloadMs(), 1500);
+    QCOMPARE(reader.crossfadeMs(), 6000);
+    QCOMPARE(reader.transportFadeMs(), 900);
+    QCOMPARE(reader.seekFadeMs(), 100);
+    QCOMPARE(reader.manualAdvanceFadeMode(), 1);
+    QCOMPARE(reader.manualShortCrossfadeMs(), 250);
+    QCOMPARE(pushes, 0);
+}
+
+void SettingsControllerTest::transitionStartupApplySequence()
+{
+    // mock roundtrip：持久化 → reload → apply 调用记录（AppFacade 启动挂钩契约）
+    {
+        Seriona::App::SettingsController writer;
+        writer.setSettingsStorageBackend(testBackend());
+        writer.setAutoAdvanceFadeMode(1);
+        writer.setFadeOnTransport(true);
+        writer.setCrossfadeMs(2500);
+        writer.setSeekFadeMs(700);
+    }
+
+    Seriona::App::SettingsController settings;
+    settings.setSettingsStorageBackend(testBackend());
+    QStringList transitionPayloads;
+    settings.setApplyTransitionConfigExecutor(
+        [&transitionPayloads](int autoAdvanceFadeMode, bool fadeOnTransport, bool fadeOnSeek, int gaplessPreloadMs,
+                              int crossfadeMs, int transportFadeMs, int seekFadeMs, int manualAdvanceFadeMode,
+                              int manualShortCrossfadeMs) {
+            transitionPayloads.append(QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8|%9")
+                                          .arg(autoAdvanceFadeMode)
+                                          .arg(fadeOnTransport)
+                                          .arg(fadeOnSeek)
+                                          .arg(gaplessPreloadMs)
+                                          .arg(crossfadeMs)
+                                          .arg(transportFadeMs)
+                                          .arg(seekFadeMs)
+                                          .arg(manualAdvanceFadeMode)
+                                          .arg(manualShortCrossfadeMs));
+        });
+    int outputPushes = 0;
+    settings.setApplyOutputConfigExecutor(
+        [&outputPushes](int, int, int, int, const QString &) {
+            ++outputPushes;
+        });
+
+    // 启动路径：reloadFromSettings（不推送）→ apply + applyTransitionConfig 各恰好一次；
+    // 过渡组载荷 = reload 还原的持久化值（缺省键回默认）
+    settings.reloadFromSettings();
+    QCOMPARE(transitionPayloads.size(), 0);
+    QCOMPARE(outputPushes, 0);
+
+    settings.apply();
+    settings.applyTransitionConfig();
+    QCOMPARE(transitionPayloads.size(), 1);
+    QCOMPARE(outputPushes, 1);
+    QCOMPARE(transitionPayloads.at(0), QStringLiteral("1|1|0|0|2500|300|700|0|500"));
+
+    // 通道分离：apply（输出组）不触发过渡 executor，反之亦然
+    settings.applyTransitionConfig();
+    settings.apply();
+    QCOMPARE(transitionPayloads.size(), 2);
+    QCOMPARE(outputPushes, 2);
 }
 
 QTEST_GUILESS_MAIN(SettingsControllerTest)

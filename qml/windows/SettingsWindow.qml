@@ -541,6 +541,910 @@ Window {
                 }
 
                 // ==========================================
+                // Card 1.5: 播放过渡 (Playback Transition Card)
+                // 灰化行集 {1 自动档, 4 预加载, 5 交叉长度, 8 手动档, 9 手动短交叉}
+                // 绑定 settings.advanceTransitionsGreyed（Direct 输出=灰化）；{2,3,6,7} 恒可用。
+                // ==========================================
+                Rectangle {
+                    objectName: "transitionCard"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: transitionCardLayout.implicitHeight + Theme.spacing16 * 2
+                    color: Theme.raisedSurfaceColor
+                    radius: Theme.radiusMedium
+                    border.color: Theme.borderSubtle
+                    border.width: 1
+
+                    ColumnLayout {
+                        id: transitionCardLayout
+                        anchors.fill: parent
+                        anchors.margins: Theme.spacing16
+                        spacing: Theme.spacing12
+
+                        Text {
+                            text: qsTr("播放过渡")
+                            color: Theme.textPrimary
+                            font.pixelSize: Theme.fontTitle
+                            font.weight: Font.DemiBold
+                            Layout.fillWidth: true
+                        }
+
+                        // 设置 1：自动前进淡入淡出（3 档；仅 Mixed 生效 → Direct 灰化）
+                        ColumnLayout {
+                            id: autoModeGroup
+                            Layout.fillWidth: true
+                            spacing: Theme.spacing2
+
+                            RowLayout {
+                                id: autoModeRow
+                                Layout.fillWidth: true
+                                enabled: !settings.advanceTransitionsGreyed
+                                opacity: settings.advanceTransitionsGreyed ? 0.45 : 1.0
+
+                                Behavior on opacity {
+                                    NumberAnimation { duration: Theme.animationFast }
+                                }
+
+                                Text {
+                                    text: qsTr("自动前进淡变")
+                                    color: settings.advanceTransitionsGreyed ? Theme.textDisabled : Theme.textPrimary
+                                    font.pixelSize: Theme.fontBody
+                                    Layout.preferredWidth: 100
+                                }
+
+                                ButtonGroup {
+                                    id: autoFadeGroup
+                                }
+
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 180
+                                    Layout.preferredHeight: 32
+                                    color: Theme.surfaceColor
+                                    radius: Theme.radiusSmall
+                                    border.color: Theme.borderSubtle
+                                    border.width: 1
+
+                                    Row {
+                                        anchors.fill: parent
+                                        spacing: 0
+
+                                        Button {
+                                            id: autoFadeNoneBtn
+                                            width: parent.width / 3
+                                            height: parent.height
+                                            checkable: true
+                                            checked: settings.autoAdvanceFadeMode === 0
+                                            ButtonGroup.group: autoFadeGroup
+
+                                            background: Rectangle {
+                                                radius: Theme.radiusSmall
+                                                color: autoFadeNoneBtn.checked ? Theme.accentColor : "transparent"
+
+                                                Behavior on color {
+                                                    ColorAnimation { duration: Theme.animationFast }
+                                                }
+                                            }
+
+                                            contentItem: Text {
+                                                text: qsTr("无")
+                                                color: autoFadeNoneBtn.checked ? Theme.textOnAccent : Theme.textSecondary
+                                                font.pixelSize: Theme.fontBody
+                                                font.weight: autoFadeNoneBtn.checked ? Font.DemiBold : Font.Normal
+                                                horizontalAlignment: Text.AlignHCenter
+                                                verticalAlignment: Text.AlignVCenter
+                                            }
+
+                                            onClicked: {
+                                                settings.autoAdvanceFadeMode = 0;
+                                            }
+                                        }
+
+                                        Button {
+                                            id: autoFadeExceptCueBtn
+                                            width: parent.width / 3
+                                            height: parent.height
+                                            checkable: true
+                                            checked: settings.autoAdvanceFadeMode === 1
+                                            ButtonGroup.group: autoFadeGroup
+
+                                            background: Rectangle {
+                                                radius: Theme.radiusSmall
+                                                color: autoFadeExceptCueBtn.checked ? Theme.accentColor : "transparent"
+
+                                                Behavior on color {
+                                                    ColorAnimation { duration: Theme.animationFast }
+                                                }
+                                            }
+
+                                            contentItem: Text {
+                                                text: qsTr("常规交叉")
+                                                color: autoFadeExceptCueBtn.checked ? Theme.textOnAccent : Theme.textSecondary
+                                                font.pixelSize: Theme.fontBody
+                                                font.weight: autoFadeExceptCueBtn.checked ? Font.DemiBold : Font.Normal
+                                                horizontalAlignment: Text.AlignHCenter
+                                                verticalAlignment: Text.AlignVCenter
+                                            }
+
+                                            onClicked: {
+                                                settings.autoAdvanceFadeMode = 1;
+                                            }
+                                        }
+
+                                        Button {
+                                            id: autoFadeAllBtn
+                                            width: parent.width / 3
+                                            height: parent.height
+                                            checkable: true
+                                            checked: settings.autoAdvanceFadeMode === 2
+                                            ButtonGroup.group: autoFadeGroup
+
+                                            background: Rectangle {
+                                                radius: Theme.radiusSmall
+                                                color: autoFadeAllBtn.checked ? Theme.accentColor : "transparent"
+
+                                                Behavior on color {
+                                                    ColorAnimation { duration: Theme.animationFast }
+                                                }
+                                            }
+
+                                            contentItem: Text {
+                                                text: qsTr("全交叉")
+                                                color: autoFadeAllBtn.checked ? Theme.textOnAccent : Theme.textSecondary
+                                                font.pixelSize: Theme.fontBody
+                                                font.weight: autoFadeAllBtn.checked ? Font.DemiBold : Font.Normal
+                                                horizontalAlignment: Text.AlignHCenter
+                                                verticalAlignment: Text.AlignVCenter
+                                            }
+
+                                            onClicked: {
+                                                settings.autoAdvanceFadeMode = 2;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Text {
+                                id: autoModeHint
+                                Layout.fillWidth: true
+                                text: settings.advanceTransitionsGreyed
+                                      ? qsTr("仅混合输出可用")
+                                      : qsTr("当前曲自然播完自动前进时生效；「常规交叉」对同一 CUE 相邻轨保持无缝（不交叉），「全交叉」对全部邻曲交叉。")
+                                color: Theme.textSecondary
+                                font.pixelSize: Theme.fontCaption
+                                wrapMode: Text.Wrap
+                            }
+                        }
+
+                        // 设置 8：手动改变音轨淡入淡出（3 档；仅 Mixed 生效 → Direct 灰化）
+                        ColumnLayout {
+                            id: manualModeGroup
+                            Layout.fillWidth: true
+                            spacing: Theme.spacing2
+
+                            RowLayout {
+                                id: manualModeRow
+                                Layout.fillWidth: true
+                                enabled: !settings.advanceTransitionsGreyed
+                                opacity: settings.advanceTransitionsGreyed ? 0.45 : 1.0
+
+                                Behavior on opacity {
+                                    NumberAnimation { duration: Theme.animationFast }
+                                }
+
+                                Text {
+                                    text: qsTr("手动切歌淡变")
+                                    color: settings.advanceTransitionsGreyed ? Theme.textDisabled : Theme.textPrimary
+                                    font.pixelSize: Theme.fontBody
+                                    Layout.preferredWidth: 100
+                                }
+
+                                ButtonGroup {
+                                    id: manualFadeGroup
+                                }
+
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 180
+                                    Layout.preferredHeight: 32
+                                    color: Theme.surfaceColor
+                                    radius: Theme.radiusSmall
+                                    border.color: Theme.borderSubtle
+                                    border.width: 1
+
+                                    Row {
+                                        anchors.fill: parent
+                                        spacing: 0
+
+                                        Button {
+                                            id: manualFadeNoneBtn
+                                            width: parent.width / 3
+                                            height: parent.height
+                                            checkable: true
+                                            checked: settings.manualAdvanceFadeMode === 0
+                                            ButtonGroup.group: manualFadeGroup
+
+                                            background: Rectangle {
+                                                radius: Theme.radiusSmall
+                                                color: manualFadeNoneBtn.checked ? Theme.accentColor : "transparent"
+
+                                                Behavior on color {
+                                                    ColorAnimation { duration: Theme.animationFast }
+                                                }
+                                            }
+
+                                            contentItem: Text {
+                                                text: qsTr("无")
+                                                color: manualFadeNoneBtn.checked ? Theme.textOnAccent : Theme.textSecondary
+                                                font.pixelSize: Theme.fontBody
+                                                font.weight: manualFadeNoneBtn.checked ? Font.DemiBold : Font.Normal
+                                                horizontalAlignment: Text.AlignHCenter
+                                                verticalAlignment: Text.AlignVCenter
+                                            }
+
+                                            onClicked: {
+                                                settings.manualAdvanceFadeMode = 0;
+                                            }
+                                        }
+
+                                        Button {
+                                            id: manualFadeDipBtn
+                                            width: parent.width / 3
+                                            height: parent.height
+                                            checkable: true
+                                            checked: settings.manualAdvanceFadeMode === 1
+                                            ButtonGroup.group: manualFadeGroup
+
+                                            background: Rectangle {
+                                                radius: Theme.radiusSmall
+                                                color: manualFadeDipBtn.checked ? Theme.accentColor : "transparent"
+
+                                                Behavior on color {
+                                                    ColorAnimation { duration: Theme.animationFast }
+                                                }
+                                            }
+
+                                            contentItem: Text {
+                                                text: qsTr("短时渐隐")
+                                                color: manualFadeDipBtn.checked ? Theme.textOnAccent : Theme.textSecondary
+                                                font.pixelSize: Theme.fontBody
+                                                font.weight: manualFadeDipBtn.checked ? Font.DemiBold : Font.Normal
+                                                horizontalAlignment: Text.AlignHCenter
+                                                verticalAlignment: Text.AlignVCenter
+                                            }
+
+                                            onClicked: {
+                                                settings.manualAdvanceFadeMode = 1;
+                                            }
+                                        }
+
+                                        Button {
+                                            id: manualFadeCrossBtn
+                                            width: parent.width / 3
+                                            height: parent.height
+                                            checkable: true
+                                            checked: settings.manualAdvanceFadeMode === 2
+                                            ButtonGroup.group: manualFadeGroup
+
+                                            background: Rectangle {
+                                                radius: Theme.radiusSmall
+                                                color: manualFadeCrossBtn.checked ? Theme.accentColor : "transparent"
+
+                                                Behavior on color {
+                                                    ColorAnimation { duration: Theme.animationFast }
+                                                }
+                                            }
+
+                                            contentItem: Text {
+                                                text: qsTr("交叉淡入淡出")
+                                                color: manualFadeCrossBtn.checked ? Theme.textOnAccent : Theme.textSecondary
+                                                font.pixelSize: Theme.fontBody
+                                                font.weight: manualFadeCrossBtn.checked ? Font.DemiBold : Font.Normal
+                                                horizontalAlignment: Text.AlignHCenter
+                                                verticalAlignment: Text.AlignVCenter
+                                            }
+
+                                            onClicked: {
+                                                settings.manualAdvanceFadeMode = 2;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Text {
+                                id: manualModeHint
+                                Layout.fillWidth: true
+                                text: settings.advanceTransitionsGreyed
+                                      ? qsTr("仅混合输出可用")
+                                      : qsTr("手动切歌（上一首/下一首）时生效；「短时渐隐」为短暂压音（dip），「交叉淡入淡出」与下方交叉长度联动。")
+                                color: Theme.textSecondary
+                                font.pixelSize: Theme.fontCaption
+                                wrapMode: Text.Wrap
+                            }
+                        }
+
+                        // 设置 2：播放/暂停/停止淡入淡出（全局，恒可用）
+                        ColumnLayout {
+                            id: transportSwitchGroup
+                            Layout.fillWidth: true
+                            spacing: Theme.spacing2
+
+                            RowLayout {
+                                id: transportSwitchRow
+                                Layout.fillWidth: true
+
+                                Text {
+                                    text: qsTr("传送淡入淡出")
+                                    color: Theme.textPrimary
+                                    font.pixelSize: Theme.fontBody
+                                    Layout.preferredWidth: 100
+                                }
+
+                                Switch {
+                                    id: transportSwitch
+                                    Layout.preferredWidth: 48
+                                    Layout.preferredHeight: 32
+                                    padding: 0
+                                    checked: settings.fadeOnTransport
+                                    onToggled: {
+                                        settings.fadeOnTransport = checked;
+                                    }
+
+                                    indicator: Rectangle {
+                                        id: transportSwitchTrack
+                                        implicitWidth: 36
+                                        implicitHeight: 20
+                                        radius: 10
+                                        x: (transportSwitch.width - width) / 2
+                                        y: (transportSwitch.height - height) / 2
+                                        color: transportSwitch.checked ? Theme.accentColor
+                                                                      : (transportSwitch.hovered ? Theme.hoverColor : Theme.baseColor)
+                                        border.color: transportSwitch.checked ? "transparent" : Theme.borderColor
+                                        border.width: 1
+
+                                        Behavior on color {
+                                            ColorAnimation { duration: Theme.animationFast }
+                                        }
+
+                                        Rectangle {
+                                            id: transportSwitchKnob
+                                            width: 16
+                                            height: 16
+                                            radius: 8
+                                            y: (transportSwitchTrack.height - height) / 2
+                                            x: transportSwitch.checked ? transportSwitchTrack.width - width - 2 : 2
+                                            color: transportSwitch.checked ? Theme.textOnAccent : Theme.textSecondary
+
+                                            Behavior on x {
+                                                NumberAnimation { duration: Theme.animationFast }
+                                            }
+
+                                            Behavior on color {
+                                                ColorAnimation { duration: Theme.animationFast }
+                                            }
+                                        }
+                                    }
+
+                                    contentItem: Item {
+                                    }
+                                }
+                            }
+
+                            Text {
+                                id: transportSwitchHint
+                                Layout.fillWidth: true
+                                text: qsTr("作用于播放、暂停、停止操作（全局生效，Direct 输出同样可用）")
+                                color: Theme.textSecondary
+                                font.pixelSize: Theme.fontCaption
+                                wrapMode: Text.Wrap
+                            }
+                        }
+
+                        // 设置 3：调整播放进度（seek）淡入淡出（全局，恒可用）
+                        ColumnLayout {
+                            id: seekSwitchGroup
+                            Layout.fillWidth: true
+                            spacing: Theme.spacing2
+
+                            RowLayout {
+                                id: seekSwitchRow
+                                Layout.fillWidth: true
+
+                                Text {
+                                    text: qsTr("进度淡入淡出")
+                                    color: Theme.textPrimary
+                                    font.pixelSize: Theme.fontBody
+                                    Layout.preferredWidth: 100
+                                }
+
+                                Switch {
+                                    id: seekSwitch
+                                    Layout.preferredWidth: 48
+                                    Layout.preferredHeight: 32
+                                    padding: 0
+                                    checked: settings.fadeOnSeek
+                                    onToggled: {
+                                        settings.fadeOnSeek = checked;
+                                    }
+
+                                    indicator: Rectangle {
+                                        id: seekSwitchTrack
+                                        implicitWidth: 36
+                                        implicitHeight: 20
+                                        radius: 10
+                                        x: (seekSwitch.width - width) / 2
+                                        y: (seekSwitch.height - height) / 2
+                                        color: seekSwitch.checked ? Theme.accentColor
+                                                                  : (seekSwitch.hovered ? Theme.hoverColor : Theme.baseColor)
+                                        border.color: seekSwitch.checked ? "transparent" : Theme.borderColor
+                                        border.width: 1
+
+                                        Behavior on color {
+                                            ColorAnimation { duration: Theme.animationFast }
+                                        }
+
+                                        Rectangle {
+                                            id: seekSwitchKnob
+                                            width: 16
+                                            height: 16
+                                            radius: 8
+                                            y: (seekSwitchTrack.height - height) / 2
+                                            x: seekSwitch.checked ? seekSwitchTrack.width - width - 2 : 2
+                                            color: seekSwitch.checked ? Theme.textOnAccent : Theme.textSecondary
+
+                                            Behavior on x {
+                                                NumberAnimation { duration: Theme.animationFast }
+                                            }
+
+                                            Behavior on color {
+                                                ColorAnimation { duration: Theme.animationFast }
+                                            }
+                                        }
+                                    }
+
+                                    contentItem: Item {
+                                    }
+                                }
+                            }
+
+                            Text {
+                                id: seekSwitchHint
+                                Layout.fillWidth: true
+                                text: qsTr("作用于拖动进度 / seek（全局生效，Direct 输出同样可用）")
+                                color: Theme.textSecondary
+                                font.pixelSize: Theme.fontCaption
+                                wrapMode: Text.Wrap
+                            }
+                        }
+
+                        // 设置 5：交叉淡入淡出长度（仅 Mixed 生效 → Direct 灰化）
+                        ColumnLayout {
+                            id: crossfadeGroup
+                            Layout.fillWidth: true
+                            spacing: Theme.spacing2
+
+                            RowLayout {
+                                id: crossfadeRow
+                                Layout.fillWidth: true
+                                enabled: !settings.advanceTransitionsGreyed
+                                opacity: settings.advanceTransitionsGreyed ? 0.45 : 1.0
+
+                                Behavior on opacity {
+                                    NumberAnimation { duration: Theme.animationFast }
+                                }
+
+                                Text {
+                                    text: qsTr("交叉长度")
+                                    color: settings.advanceTransitionsGreyed ? Theme.textDisabled : Theme.textPrimary
+                                    font.pixelSize: Theme.fontBody
+                                    Layout.preferredWidth: 100
+                                }
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Theme.spacing12
+
+                                    Slider {
+                                        id: crossfadeSlider
+                                        Layout.fillWidth: true
+                                        from: 0
+                                        to: 10000
+                                        stepSize: settings.transitionSliderStepMs
+                                        value: settings.crossfadeMs
+                                        onMoved: {
+                                            settings.crossfadeMs = value;
+                                        }
+
+                                        background: Rectangle {
+                                            x: crossfadeSlider.leftPadding
+                                            y: crossfadeSlider.topPadding + crossfadeSlider.availableHeight / 2 - height / 2
+                                            implicitWidth: 200
+                                            implicitHeight: 4
+                                            width: crossfadeSlider.availableWidth
+                                            height: implicitHeight
+                                            radius: 2
+                                            color: Theme.progressBarTrackColor
+
+                                            Rectangle {
+                                                width: crossfadeSlider.visualPosition * parent.width
+                                                height: parent.height
+                                                color: Theme.progressBarColor
+                                                radius: 2
+                                            }
+                                        }
+
+                                        handle: Rectangle {
+                                            x: crossfadeSlider.leftPadding + crossfadeSlider.visualPosition * (crossfadeSlider.availableWidth - width)
+                                            y: crossfadeSlider.topPadding + crossfadeSlider.availableHeight / 2 - height / 2
+                                            implicitWidth: 16
+                                            implicitHeight: 16
+                                            radius: 8
+                                            color: crossfadeSlider.pressed ? Qt.darker(Theme.accentColor, 1.2) : (crossfadeSlider.hovered ? Qt.lighter(Theme.accentColor, 1.2) : Theme.accentColor)
+                                        }
+                                    }
+
+                                    Text {
+                                        text: `${settings.crossfadeMs} ms`
+                                        color: Theme.textPrimary
+                                        font.pixelSize: Theme.fontBody
+                                        Layout.preferredWidth: 60
+                                        horizontalAlignment: Text.AlignRight
+                                    }
+                                }
+                            }
+
+                            Text {
+                                id: crossfadeHint
+                                Layout.fillWidth: true
+                                text: settings.advanceTransitionsGreyed
+                                      ? qsTr("仅混合输出可用")
+                                      : qsTr("自动前进「全交叉」档与手动切歌「交叉淡入淡出」档共用的长度")
+                                color: Theme.textSecondary
+                                font.pixelSize: Theme.fontCaption
+                                wrapMode: Text.Wrap
+                            }
+                        }
+
+                        // 设置 6：播放/暂停/停止淡变长度（全局，恒可用）
+                        ColumnLayout {
+                            id: transportFadeGroup
+                            Layout.fillWidth: true
+                            spacing: Theme.spacing2
+
+                            RowLayout {
+                                id: transportFadeRow
+                                Layout.fillWidth: true
+
+                                Text {
+                                    text: qsTr("传送淡变长度")
+                                    color: Theme.textPrimary
+                                    font.pixelSize: Theme.fontBody
+                                    Layout.preferredWidth: 100
+                                }
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Theme.spacing12
+
+                                    Slider {
+                                        id: transportFadeSlider
+                                        Layout.fillWidth: true
+                                        from: 0
+                                        to: 3000
+                                        stepSize: settings.transitionSliderStepMs
+                                        value: settings.transportFadeMs
+                                        onMoved: {
+                                            settings.transportFadeMs = value;
+                                        }
+
+                                        background: Rectangle {
+                                            x: transportFadeSlider.leftPadding
+                                            y: transportFadeSlider.topPadding + transportFadeSlider.availableHeight / 2 - height / 2
+                                            implicitWidth: 200
+                                            implicitHeight: 4
+                                            width: transportFadeSlider.availableWidth
+                                            height: implicitHeight
+                                            radius: 2
+                                            color: Theme.progressBarTrackColor
+
+                                            Rectangle {
+                                                width: transportFadeSlider.visualPosition * parent.width
+                                                height: parent.height
+                                                color: Theme.progressBarColor
+                                                radius: 2
+                                            }
+                                        }
+
+                                        handle: Rectangle {
+                                            x: transportFadeSlider.leftPadding + transportFadeSlider.visualPosition * (transportFadeSlider.availableWidth - width)
+                                            y: transportFadeSlider.topPadding + transportFadeSlider.availableHeight / 2 - height / 2
+                                            implicitWidth: 16
+                                            implicitHeight: 16
+                                            radius: 8
+                                            color: transportFadeSlider.pressed ? Qt.darker(Theme.accentColor, 1.2) : (transportFadeSlider.hovered ? Qt.lighter(Theme.accentColor, 1.2) : Theme.accentColor)
+                                        }
+                                    }
+
+                                    Text {
+                                        text: `${settings.transportFadeMs} ms`
+                                        color: Theme.textPrimary
+                                        font.pixelSize: Theme.fontBody
+                                        Layout.preferredWidth: 60
+                                        horizontalAlignment: Text.AlignRight
+                                    }
+                                }
+                            }
+
+                            Text {
+                                id: transportFadeHint
+                                Layout.fillWidth: true
+                                text: qsTr("播放 / 暂停 / 停止操作淡变时长（全局，含 Direct 输出）")
+                                color: Theme.textSecondary
+                                font.pixelSize: Theme.fontCaption
+                                wrapMode: Text.Wrap
+                            }
+                        }
+
+                        // 设置 7：seek 淡变长度（全局，恒可用）
+                        ColumnLayout {
+                            id: seekFadeGroup
+                            Layout.fillWidth: true
+                            spacing: Theme.spacing2
+
+                            RowLayout {
+                                id: seekFadeRow
+                                Layout.fillWidth: true
+
+                                Text {
+                                    text: qsTr("进度淡变长度")
+                                    color: Theme.textPrimary
+                                    font.pixelSize: Theme.fontBody
+                                    Layout.preferredWidth: 100
+                                }
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Theme.spacing12
+
+                                    Slider {
+                                        id: seekFadeSlider
+                                        Layout.fillWidth: true
+                                        from: 0
+                                        to: 3000
+                                        stepSize: settings.transitionSliderStepMs
+                                        value: settings.seekFadeMs
+                                        onMoved: {
+                                            settings.seekFadeMs = value;
+                                        }
+
+                                        background: Rectangle {
+                                            x: seekFadeSlider.leftPadding
+                                            y: seekFadeSlider.topPadding + seekFadeSlider.availableHeight / 2 - height / 2
+                                            implicitWidth: 200
+                                            implicitHeight: 4
+                                            width: seekFadeSlider.availableWidth
+                                            height: implicitHeight
+                                            radius: 2
+                                            color: Theme.progressBarTrackColor
+
+                                            Rectangle {
+                                                width: seekFadeSlider.visualPosition * parent.width
+                                                height: parent.height
+                                                color: Theme.progressBarColor
+                                                radius: 2
+                                            }
+                                        }
+
+                                        handle: Rectangle {
+                                            x: seekFadeSlider.leftPadding + seekFadeSlider.visualPosition * (seekFadeSlider.availableWidth - width)
+                                            y: seekFadeSlider.topPadding + seekFadeSlider.availableHeight / 2 - height / 2
+                                            implicitWidth: 16
+                                            implicitHeight: 16
+                                            radius: 8
+                                            color: seekFadeSlider.pressed ? Qt.darker(Theme.accentColor, 1.2) : (seekFadeSlider.hovered ? Qt.lighter(Theme.accentColor, 1.2) : Theme.accentColor)
+                                        }
+                                    }
+
+                                    Text {
+                                        text: `${settings.seekFadeMs} ms`
+                                        color: Theme.textPrimary
+                                        font.pixelSize: Theme.fontBody
+                                        Layout.preferredWidth: 60
+                                        horizontalAlignment: Text.AlignRight
+                                    }
+                                }
+                            }
+
+                            Text {
+                                id: seekFadeHint
+                                Layout.fillWidth: true
+                                text: qsTr("拖动进度（seek）操作淡变时长（全局，含 Direct 输出）")
+                                color: Theme.textSecondary
+                                font.pixelSize: Theme.fontCaption
+                                wrapMode: Text.Wrap
+                            }
+                        }
+
+                        // 设置 4：预先加载无间隙音轨（预解码提前量；仅 Mixed 生效 → Direct 灰化）
+                        ColumnLayout {
+                            id: preloadGroup
+                            Layout.fillWidth: true
+                            spacing: Theme.spacing2
+
+                            RowLayout {
+                                id: preloadRow
+                                Layout.fillWidth: true
+                                enabled: !settings.advanceTransitionsGreyed
+                                opacity: settings.advanceTransitionsGreyed ? 0.45 : 1.0
+
+                                Behavior on opacity {
+                                    NumberAnimation { duration: Theme.animationFast }
+                                }
+
+                                Text {
+                                    text: qsTr("预加载")
+                                    color: settings.advanceTransitionsGreyed ? Theme.textDisabled : Theme.textPrimary
+                                    font.pixelSize: Theme.fontBody
+                                    Layout.preferredWidth: 100
+                                }
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Theme.spacing12
+
+                                    Slider {
+                                        id: preloadSlider
+                                        Layout.fillWidth: true
+                                        from: 0
+                                        to: 5000
+                                        stepSize: settings.transitionSliderStepMs
+                                        value: settings.gaplessPreloadMs
+                                        onMoved: {
+                                            settings.gaplessPreloadMs = value;
+                                        }
+
+                                        background: Rectangle {
+                                            x: preloadSlider.leftPadding
+                                            y: preloadSlider.topPadding + preloadSlider.availableHeight / 2 - height / 2
+                                            implicitWidth: 200
+                                            implicitHeight: 4
+                                            width: preloadSlider.availableWidth
+                                            height: implicitHeight
+                                            radius: 2
+                                            color: Theme.progressBarTrackColor
+
+                                            Rectangle {
+                                                width: preloadSlider.visualPosition * parent.width
+                                                height: parent.height
+                                                color: Theme.progressBarColor
+                                                radius: 2
+                                            }
+                                        }
+
+                                        handle: Rectangle {
+                                            x: preloadSlider.leftPadding + preloadSlider.visualPosition * (preloadSlider.availableWidth - width)
+                                            y: preloadSlider.topPadding + preloadSlider.availableHeight / 2 - height / 2
+                                            implicitWidth: 16
+                                            implicitHeight: 16
+                                            radius: 8
+                                            color: preloadSlider.pressed ? Qt.darker(Theme.accentColor, 1.2) : (preloadSlider.hovered ? Qt.lighter(Theme.accentColor, 1.2) : Theme.accentColor)
+                                        }
+                                    }
+
+                                    Text {
+                                        text: `${settings.gaplessPreloadMs} ms`
+                                        color: Theme.textPrimary
+                                        font.pixelSize: Theme.fontBody
+                                        Layout.preferredWidth: 60
+                                        horizontalAlignment: Text.AlignRight
+                                    }
+                                }
+                            }
+
+                            Text {
+                                id: preloadHint
+                                Layout.fillWidth: true
+                                text: settings.advanceTransitionsGreyed
+                                      ? qsTr("仅混合输出可用")
+                                      : qsTr("无间隙音轨预先解码的触发提前量")
+                                color: Theme.textSecondary
+                                font.pixelSize: Theme.fontCaption
+                                wrapMode: Text.Wrap
+                            }
+                        }
+
+                        // 设置 9：手动短交叉长度（仅 Mixed 生效 → Direct 灰化）
+                        ColumnLayout {
+                            id: manualShortGroup
+                            Layout.fillWidth: true
+                            spacing: Theme.spacing2
+
+                            RowLayout {
+                                id: manualShortRow
+                                Layout.fillWidth: true
+                                enabled: !settings.advanceTransitionsGreyed
+                                opacity: settings.advanceTransitionsGreyed ? 0.45 : 1.0
+
+                                Behavior on opacity {
+                                    NumberAnimation { duration: Theme.animationFast }
+                                }
+
+                                Text {
+                                    text: qsTr("手动短交叉长度")
+                                    color: settings.advanceTransitionsGreyed ? Theme.textDisabled : Theme.textPrimary
+                                    font.pixelSize: Theme.fontBody
+                                    Layout.preferredWidth: 100
+                                }
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Theme.spacing12
+
+                                    Slider {
+                                        id: manualShortSlider
+                                        Layout.fillWidth: true
+                                        from: 0
+                                        to: 3000
+                                        stepSize: settings.transitionSliderStepMs
+                                        value: settings.manualShortCrossfadeMs
+                                        onMoved: {
+                                            settings.manualShortCrossfadeMs = value;
+                                        }
+
+                                        background: Rectangle {
+                                            x: manualShortSlider.leftPadding
+                                            y: manualShortSlider.topPadding + manualShortSlider.availableHeight / 2 - height / 2
+                                            implicitWidth: 200
+                                            implicitHeight: 4
+                                            width: manualShortSlider.availableWidth
+                                            height: implicitHeight
+                                            radius: 2
+                                            color: Theme.progressBarTrackColor
+
+                                            Rectangle {
+                                                width: manualShortSlider.visualPosition * parent.width
+                                                height: parent.height
+                                                color: Theme.progressBarColor
+                                                radius: 2
+                                            }
+                                        }
+
+                                        handle: Rectangle {
+                                            x: manualShortSlider.leftPadding + manualShortSlider.visualPosition * (manualShortSlider.availableWidth - width)
+                                            y: manualShortSlider.topPadding + manualShortSlider.availableHeight / 2 - height / 2
+                                            implicitWidth: 16
+                                            implicitHeight: 16
+                                            radius: 8
+                                            color: manualShortSlider.pressed ? Qt.darker(Theme.accentColor, 1.2) : (manualShortSlider.hovered ? Qt.lighter(Theme.accentColor, 1.2) : Theme.accentColor)
+                                        }
+                                    }
+
+                                    Text {
+                                        text: `${settings.manualShortCrossfadeMs} ms`
+                                        color: Theme.textPrimary
+                                        font.pixelSize: Theme.fontBody
+                                        Layout.preferredWidth: 60
+                                        horizontalAlignment: Text.AlignRight
+                                    }
+                                }
+                            }
+
+                            Text {
+                                id: manualShortHint
+                                Layout.fillWidth: true
+                                text: settings.advanceTransitionsGreyed
+                                      ? qsTr("仅混合输出可用")
+                                      : qsTr("手动切歌「短时渐隐」档的淡变长度")
+                                color: Theme.textSecondary
+                                font.pixelSize: Theme.fontCaption
+                                wrapMode: Text.Wrap
+                            }
+                        }
+                    }
+                }
+
+                // ==========================================
                 // Card 2: 设备与调试配置 (Device & Logging Card)
                 // ==========================================
                 Rectangle {

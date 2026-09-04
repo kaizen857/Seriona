@@ -10,6 +10,7 @@ namespace {
 constexpr auto kOutputGroup = "output";
 constexpr auto kLyricsGroup = "lyrics";
 constexpr auto kLoggingGroup = "logging";
+constexpr auto kTransitionGroup = "transition";
 constexpr auto kOutputModeKey = "outputMode";
 constexpr auto kSampleRateKey = "sampleRate";
 constexpr auto kSampleFormatKey = "sampleFormat";
@@ -18,6 +19,15 @@ constexpr auto kPreferredDeviceIdKey = "preferredDeviceId";
 constexpr auto kLyricsDelimitersKey = "delimiters";
 constexpr auto kFollowRestoreDelayMsKey = "followRestoreDelayMs";
 constexpr auto kLogLevelKey = "logLevel";
+constexpr auto kAutoAdvanceFadeModeKey = "autoAdvanceFadeMode";
+constexpr auto kFadeOnTransportKey = "fadeOnTransport";
+constexpr auto kFadeOnSeekKey = "fadeOnSeek";
+constexpr auto kGaplessPreloadMsKey = "gaplessPreloadMs";
+constexpr auto kCrossfadeMsKey = "crossfadeMs";
+constexpr auto kTransportFadeMsKey = "transportFadeMs";
+constexpr auto kSeekFadeMsKey = "seekFadeMs";
+constexpr auto kManualAdvanceFadeModeKey = "manualAdvanceFadeMode";
+constexpr auto kManualShortCrossfadeMsKey = "manualShortCrossfadeMs";
 
 constexpr int kDefaultOutputMode = 0; // Direct
 constexpr int kDefaultSampleRate = 48000;
@@ -36,6 +46,26 @@ constexpr int kMaxBufferDurationMs = 1000;
 constexpr int kDefaultFollowRestoreDelayMs = 5000;
 constexpr int kMinFollowRestoreDelayMs = 1000;
 constexpr int kMaxFollowRestoreDelayMs = 15000;
+// 播放过渡组默认值/量程（与用户裁定表一致；滑块步进 kTransitionSliderStepMs=100ms，
+// QML from/to/stepSize 与本常量对齐）：
+constexpr int kDefaultAutoAdvanceFadeMode = 0; // 无
+constexpr int kDefaultFadeOnTransport = 0;     // 关
+constexpr int kDefaultFadeOnSeek = 0;          // 关
+constexpr int kDefaultGaplessPreloadMs = 0;
+constexpr int kDefaultCrossfadeMs = 3000;
+constexpr int kDefaultTransportFadeMs = 300;
+constexpr int kDefaultSeekFadeMs = 300;
+constexpr int kDefaultManualAdvanceFadeMode = 0; // 无
+constexpr int kDefaultManualShortCrossfadeMs = 500;
+constexpr int kMinFadeMode = 0;
+constexpr int kMaxFadeMode = 2;
+constexpr int kMinCrossfadeMs = 0;
+constexpr int kMaxCrossfadeMs = 10000;
+constexpr int kMinGaplessPreloadMs = 0;
+constexpr int kMaxGaplessPreloadMs = 5000;
+constexpr int kMinShortFadeMs = 0; // transport/seek/manualShort 共用下限
+constexpr int kMaxShortFadeMs = 3000;
+constexpr int kTransitionSliderStepMs = 100;
 // 连续控件去抖窗口（300-500ms 要求区间内）
 constexpr int kDebounceIntervalMs = 400;
 
@@ -96,6 +126,28 @@ bool isValidLogLevel(int level)
     return level >= kMinLogLevel && level <= kMaxLogLevel;
 }
 
+bool isValidFadeMode(int mode)
+{
+    // 0=无 / 1=短时交叉（手动）/ 除 CUE 邻曲与无间隙组外交叉（自动）/ 2=全交叉；
+    // 与后端 reducer 枚举域 0-2 一致
+    return mode >= kMinFadeMode && mode <= kMaxFadeMode;
+}
+
+bool isValidCrossfadeMs(int ms)
+{
+    return ms >= kMinCrossfadeMs && ms <= kMaxCrossfadeMs;
+}
+
+bool isValidGaplessPreloadMs(int ms)
+{
+    return ms >= kMinGaplessPreloadMs && ms <= kMaxGaplessPreloadMs;
+}
+
+bool isValidShortFadeMs(int ms)
+{
+    return ms >= kMinShortFadeMs && ms <= kMaxShortFadeMs;
+}
+
 struct LogLevelName {
     const char *name;
     int value;
@@ -118,6 +170,9 @@ SettingsController::SettingsController(QObject *parent)
     m_debounceTimer.setSingleShot(true);
     m_debounceTimer.setInterval(kDebounceIntervalMs);
     connect(&m_debounceTimer, &QTimer::timeout, this, &SettingsController::apply);
+    m_transitionDebounceTimer.setSingleShot(true);
+    m_transitionDebounceTimer.setInterval(kDebounceIntervalMs);
+    connect(&m_transitionDebounceTimer, &QTimer::timeout, this, &SettingsController::applyTransitionConfig);
 }
 
 int SettingsController::outputMode() const
@@ -266,6 +321,141 @@ void SettingsController::setBufferDurationMs(int bufferDurationMs)
     scheduleDebouncedApply();
 }
 
+int SettingsController::autoAdvanceFadeMode() const
+{
+    return m_autoAdvanceFadeMode;
+}
+
+bool SettingsController::fadeOnTransport() const
+{
+    return m_fadeOnTransport;
+}
+
+bool SettingsController::fadeOnSeek() const
+{
+    return m_fadeOnSeek;
+}
+
+int SettingsController::gaplessPreloadMs() const
+{
+    return m_gaplessPreloadMs;
+}
+
+int SettingsController::crossfadeMs() const
+{
+    return m_crossfadeMs;
+}
+
+int SettingsController::transportFadeMs() const
+{
+    return m_transportFadeMs;
+}
+
+int SettingsController::seekFadeMs() const
+{
+    return m_seekFadeMs;
+}
+
+int SettingsController::manualAdvanceFadeMode() const
+{
+    return m_manualAdvanceFadeMode;
+}
+
+int SettingsController::manualShortCrossfadeMs() const
+{
+    return m_manualShortCrossfadeMs;
+}
+
+void SettingsController::setAutoAdvanceFadeMode(int mode)
+{
+    if (!isValidFadeMode(mode) || m_autoAdvanceFadeMode == mode) {
+        return;
+    }
+    setAutoAdvanceFadeModeInternal(mode);
+    persistTransitionValue(kAutoAdvanceFadeModeKey, mode);
+    applyTransitionConfig();
+}
+
+void SettingsController::setFadeOnTransport(bool enabled)
+{
+    if (m_fadeOnTransport == enabled) {
+        return;
+    }
+    setFadeOnTransportInternal(enabled);
+    persistTransitionValue(kFadeOnTransportKey, enabled);
+    applyTransitionConfig();
+}
+
+void SettingsController::setFadeOnSeek(bool enabled)
+{
+    if (m_fadeOnSeek == enabled) {
+        return;
+    }
+    setFadeOnSeekInternal(enabled);
+    persistTransitionValue(kFadeOnSeekKey, enabled);
+    applyTransitionConfig();
+}
+
+void SettingsController::setGaplessPreloadMs(int ms)
+{
+    if (!isValidGaplessPreloadMs(ms) || m_gaplessPreloadMs == ms) {
+        return;
+    }
+    setGaplessPreloadMsInternal(ms);
+    persistTransitionValue(kGaplessPreloadMsKey, ms);
+    scheduleDebouncedTransitionApply();
+}
+
+void SettingsController::setCrossfadeMs(int ms)
+{
+    if (!isValidCrossfadeMs(ms) || m_crossfadeMs == ms) {
+        return;
+    }
+    setCrossfadeMsInternal(ms);
+    persistTransitionValue(kCrossfadeMsKey, ms);
+    scheduleDebouncedTransitionApply();
+}
+
+void SettingsController::setTransportFadeMs(int ms)
+{
+    if (!isValidShortFadeMs(ms) || m_transportFadeMs == ms) {
+        return;
+    }
+    setTransportFadeMsInternal(ms);
+    persistTransitionValue(kTransportFadeMsKey, ms);
+    scheduleDebouncedTransitionApply();
+}
+
+void SettingsController::setSeekFadeMs(int ms)
+{
+    if (!isValidShortFadeMs(ms) || m_seekFadeMs == ms) {
+        return;
+    }
+    setSeekFadeMsInternal(ms);
+    persistTransitionValue(kSeekFadeMsKey, ms);
+    scheduleDebouncedTransitionApply();
+}
+
+void SettingsController::setManualAdvanceFadeMode(int mode)
+{
+    if (!isValidFadeMode(mode) || m_manualAdvanceFadeMode == mode) {
+        return;
+    }
+    setManualAdvanceFadeModeInternal(mode);
+    persistTransitionValue(kManualAdvanceFadeModeKey, mode);
+    applyTransitionConfig();
+}
+
+void SettingsController::setManualShortCrossfadeMs(int ms)
+{
+    if (!isValidShortFadeMs(ms) || m_manualShortCrossfadeMs == ms) {
+        return;
+    }
+    setManualShortCrossfadeMsInternal(ms);
+    persistTransitionValue(kManualShortCrossfadeMsKey, ms);
+    scheduleDebouncedTransitionApply();
+}
+
 void SettingsController::setPreferredDeviceId(const QString &deviceId)
 {
     if (m_preferredDeviceId == deviceId) {
@@ -326,6 +516,27 @@ void SettingsController::reloadFromSettings()
                                                 kDefaultLogLevel)
                              .toInt();
 
+    const auto readTransition = [this](const char *key, int fallback) {
+        return m_settingsStorage.read(QString::fromUtf8(kTransitionGroup), QString::fromUtf8(key), fallback).toInt();
+    };
+    const int autoAdvanceFadeMode = readTransition(kAutoAdvanceFadeModeKey, kDefaultAutoAdvanceFadeMode);
+    const bool fadeOnTransport = m_settingsStorage
+                                     .read(QString::fromUtf8(kTransitionGroup),
+                                           QString::fromUtf8(kFadeOnTransportKey),
+                                           kDefaultFadeOnTransport)
+                                     .toBool();
+    const bool fadeOnSeek = m_settingsStorage
+                                .read(QString::fromUtf8(kTransitionGroup),
+                                      QString::fromUtf8(kFadeOnSeekKey),
+                                      kDefaultFadeOnSeek)
+                                .toBool();
+    const int gaplessPreloadMs = readTransition(kGaplessPreloadMsKey, kDefaultGaplessPreloadMs);
+    const int crossfadeMs = readTransition(kCrossfadeMsKey, kDefaultCrossfadeMs);
+    const int transportFadeMs = readTransition(kTransportFadeMsKey, kDefaultTransportFadeMs);
+    const int seekFadeMs = readTransition(kSeekFadeMsKey, kDefaultSeekFadeMs);
+    const int manualAdvanceFadeMode = readTransition(kManualAdvanceFadeModeKey, kDefaultManualAdvanceFadeMode);
+    const int manualShortCrossfadeMs = readTransition(kManualShortCrossfadeMsKey, kDefaultManualShortCrossfadeMs);
+
     setOutputModeInternal(mode);
     setSampleRateInternal(sampleRate);
     setSampleFormatInternal(sampleFormat);
@@ -334,6 +545,15 @@ void SettingsController::reloadFromSettings()
     setLyricDelimitersInternal(delimiters);
     setFollowRestoreDelayMsInternal(followRestoreDelayMs);
     setLogLevelInternal(logLevel);
+    setAutoAdvanceFadeModeInternal(autoAdvanceFadeMode);
+    setFadeOnTransportInternal(fadeOnTransport);
+    setFadeOnSeekInternal(fadeOnSeek);
+    setGaplessPreloadMsInternal(gaplessPreloadMs);
+    setCrossfadeMsInternal(crossfadeMs);
+    setTransportFadeMsInternal(transportFadeMs);
+    setSeekFadeMsInternal(seekFadeMs);
+    setManualAdvanceFadeModeInternal(manualAdvanceFadeMode);
+    setManualShortCrossfadeMsInternal(manualShortCrossfadeMs);
 }
 
 void SettingsController::apply()
@@ -343,6 +563,22 @@ void SettingsController::apply()
     }
     recordLastValidSnapshot();
     m_applyOutputConfigExecutor(m_outputMode, m_sampleRate, m_sampleFormat, m_bufferDurationMs, m_preferredDeviceId);
+}
+
+void SettingsController::applyTransitionConfig()
+{
+    if (!m_applyTransitionConfigExecutor) {
+        return;
+    }
+    m_applyTransitionConfigExecutor(m_autoAdvanceFadeMode,
+                                    m_fadeOnTransport,
+                                    m_fadeOnSeek,
+                                    m_gaplessPreloadMs,
+                                    m_crossfadeMs,
+                                    m_transportFadeMs,
+                                    m_seekFadeMs,
+                                    m_manualAdvanceFadeMode,
+                                    m_manualShortCrossfadeMs);
 }
 
 void SettingsController::rollbackRejectedOutputConfig()
@@ -400,6 +636,18 @@ bool SettingsController::sampleParamsGreyed() const
     return m_outputMode == 0;
 }
 
+bool SettingsController::advanceTransitionsGreyed() const
+{
+    // Direct（0）下交叉/预加载/手动档全无效：{1 自动档, 4 预加载, 5 交叉长度,
+    // 8 手动档, 9 手动短交叉} 灰化；{2,3,6,7}（传送类）全局可用。
+    return m_outputMode == 0;
+}
+
+int SettingsController::transitionSliderStepMs() const
+{
+    return kTransitionSliderStepMs;
+}
+
 QVariantList SettingsController::sampleRateOptions() const
 {
     const PlaybackDeviceCapabilities *caps = selectedDeviceCaps();
@@ -442,6 +690,11 @@ QVariantList SettingsController::playbackDeviceCapabilities() const
 void SettingsController::setApplyOutputConfigExecutor(ApplyOutputConfigExecutor executor)
 {
     m_applyOutputConfigExecutor = std::move(executor);
+}
+
+void SettingsController::setApplyTransitionConfigExecutor(ApplyTransitionConfigExecutor executor)
+{
+    m_applyTransitionConfigExecutor = std::move(executor);
 }
 
 void SettingsController::setEnumerateDevicesExecutor(EnumerateDevicesExecutor executor)
@@ -517,6 +770,87 @@ void SettingsController::setBufferDurationMsInternal(int bufferDurationMs)
     emit bufferDurationMsChanged();
 }
 
+void SettingsController::setAutoAdvanceFadeModeInternal(int mode)
+{
+    if (!isValidFadeMode(mode) || m_autoAdvanceFadeMode == mode) {
+        return;
+    }
+    m_autoAdvanceFadeMode = mode;
+    emit autoAdvanceFadeModeChanged();
+}
+
+void SettingsController::setFadeOnTransportInternal(bool enabled)
+{
+    if (m_fadeOnTransport == enabled) {
+        return;
+    }
+    m_fadeOnTransport = enabled;
+    emit fadeOnTransportChanged();
+}
+
+void SettingsController::setFadeOnSeekInternal(bool enabled)
+{
+    if (m_fadeOnSeek == enabled) {
+        return;
+    }
+    m_fadeOnSeek = enabled;
+    emit fadeOnSeekChanged();
+}
+
+void SettingsController::setGaplessPreloadMsInternal(int ms)
+{
+    if (!isValidGaplessPreloadMs(ms) || m_gaplessPreloadMs == ms) {
+        return;
+    }
+    m_gaplessPreloadMs = ms;
+    emit gaplessPreloadMsChanged();
+}
+
+void SettingsController::setCrossfadeMsInternal(int ms)
+{
+    if (!isValidCrossfadeMs(ms) || m_crossfadeMs == ms) {
+        return;
+    }
+    m_crossfadeMs = ms;
+    emit crossfadeMsChanged();
+}
+
+void SettingsController::setTransportFadeMsInternal(int ms)
+{
+    if (!isValidShortFadeMs(ms) || m_transportFadeMs == ms) {
+        return;
+    }
+    m_transportFadeMs = ms;
+    emit transportFadeMsChanged();
+}
+
+void SettingsController::setSeekFadeMsInternal(int ms)
+{
+    if (!isValidShortFadeMs(ms) || m_seekFadeMs == ms) {
+        return;
+    }
+    m_seekFadeMs = ms;
+    emit seekFadeMsChanged();
+}
+
+void SettingsController::setManualAdvanceFadeModeInternal(int mode)
+{
+    if (!isValidFadeMode(mode) || m_manualAdvanceFadeMode == mode) {
+        return;
+    }
+    m_manualAdvanceFadeMode = mode;
+    emit manualAdvanceFadeModeChanged();
+}
+
+void SettingsController::setManualShortCrossfadeMsInternal(int ms)
+{
+    if (!isValidShortFadeMs(ms) || m_manualShortCrossfadeMs == ms) {
+        return;
+    }
+    m_manualShortCrossfadeMs = ms;
+    emit manualShortCrossfadeMsChanged();
+}
+
 void SettingsController::setPreferredDeviceIdInternal(const QString &deviceId)
 {
     if (m_preferredDeviceId == deviceId) {
@@ -532,6 +866,11 @@ void SettingsController::setPreferredDeviceIdInternal(const QString &deviceId)
 void SettingsController::scheduleDebouncedApply()
 {
     m_debounceTimer.start();
+}
+
+void SettingsController::scheduleDebouncedTransitionApply()
+{
+    m_transitionDebounceTimer.start();
 }
 
 void SettingsController::recordLastValidSnapshot()
@@ -557,6 +896,11 @@ void SettingsController::persistValue(const char *group, const char *key, const 
 void SettingsController::persistOutputValue(const char *key, const QVariant &value)
 {
     persistValue(kOutputGroup, key, value);
+}
+
+void SettingsController::persistTransitionValue(const char *key, const QVariant &value)
+{
+    persistValue(kTransitionGroup, key, value);
 }
 
 const PlaybackDeviceCapabilities *SettingsController::selectedDeviceCaps() const

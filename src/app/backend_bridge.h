@@ -58,6 +58,20 @@ public:
         int sampleFormat,
         int bufferDurationMs,
         const QString &preferredDeviceId);
+    // 提交播放过渡参数（T12）：9 参按 TransitionConfig 契约顺序组包 → SetTransitionConfig
+    // 命令；数值域与后端 reducer 校验一致（枚举 0-2、crossfade 0-10000、传送/seek/手动短
+    // 交叉 0-3000、预加载 0-5000），越界本地拒绝并告警日志，绝不外发非法命令。
+    // 参数顺序即跨端契约（audio_contracts.h TransitionConfig 字段声明顺序），勿调。
+    seriona::control::MediaControllerCommandResult submitTransitionConfig(
+        int autoAdvanceFadeMode,
+        bool fadeOnTransport,
+        bool fadeOnSeek,
+        int gaplessPreloadMs,
+        int crossfadeMs,
+        int transportFadeMs,
+        int seekFadeMs,
+        int manualAdvanceFadeMode,
+        int manualShortCrossfadeMs);
     // 删除目标（T16）：path 为绝对路径（单曲=音频文件，folder=true=递归删除文件夹）。
     // 字段契约与 T8 定死一致：MediaControlCommand.kind ∈ {DeleteTrack, DeleteFolder}，
     // targetPath 为后端绝对路径。失败经现有 CommandRejected 通知链路反馈原因。
