@@ -211,6 +211,7 @@ set(SERIONA_QML_MODULE_FILES
     qml/components/FolderPage.qml
     qml/components/QueueView.qml
     qml/components/AboutOverlay.qml
+    qml/components/StyledScrollBar.qml
     qml/views/MainContent.qml
     qml/views/StartupView.qml
     qml/windows/SettingsWindow.qml

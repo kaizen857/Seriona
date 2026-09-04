@@ -87,36 +87,7 @@ Window {
             contentWidth: width
             contentHeight: contentLayout.implicitHeight + Theme.spacing24 * 2
             
-            // 与播放列表（Sidebar）滚动条一致的三态反馈规格：
-            // hover/pressed 加宽 6→10、胶囊圆角、三态色 + 动画、内容溢出才显示句柄
-            ScrollBar.vertical: ScrollBar {
-                id: settingsScrollBar
-                policy: ScrollBar.AsNeeded
-                width: isHoveredOrPressed ? 10 : Theme.scrollbarWidth
-
-                readonly property bool isHoveredOrPressed: settingsScrollBar.hovered || settingsScrollBar.pressed
-
-                Behavior on width {
-                    NumberAnimation { duration: Theme.animationFast; easing.type: Easing.OutQuad }
-                }
-
-                background: Rectangle {
-                    color: "transparent"
-                }
-
-                contentItem: Rectangle {
-                    implicitWidth: settingsScrollBar.width
-                    radius: width / 2
-                    visible: settingsScrollBar.size < 1.0
-                    color: settingsScrollBar.pressed ? Theme.pressedColor
-                         : settingsScrollBar.hovered ? Theme.scrollbarHoverColor
-                         : Theme.scrollbarColor
-
-                    Behavior on color {
-                        ColorAnimation { duration: Theme.animationFast }
-                    }
-                }
-            }
+            ScrollBar.vertical: StyledScrollBar {}
             
             ColumnLayout {
                 id: contentLayout

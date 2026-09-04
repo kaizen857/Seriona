@@ -69,36 +69,6 @@ Item {
             contextMenuHost: root.contextMenuHost
         }
 
-        ScrollBar.vertical: ScrollBar {
-            id: folderScrollBar
-            policy: ScrollBar.AsNeeded
-            width: (folderScrollBar.hovered || folderScrollBar.pressed) ? 10 : Theme.scrollbarWidth
-
-            Behavior on width {
-                NumberAnimation {
-                    duration: Theme.animationFast
-                    easing.type: Easing.OutQuad
-                }
-            }
-
-            background: Rectangle {
-                color: "transparent"
-            }
-
-            contentItem: Rectangle {
-                implicitWidth: folderScrollBar.width
-                radius: width / 2
-                visible: folderScrollBar.size < 1.0
-                color: folderScrollBar.pressed ? Theme.pressedColor
-                     : folderScrollBar.hovered ? Theme.scrollbarHoverColor
-                     : Theme.scrollbarColor
-
-                Behavior on color {
-                    ColorAnimation {
-                        duration: Theme.animationFast
-                    }
-                }
-            }
-        }
+        ScrollBar.vertical: StyledScrollBar {}
     }
 }
