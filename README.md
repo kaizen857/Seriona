@@ -108,6 +108,25 @@ sudo ./scripts/install-linux.sh /usr/local
 ./scripts/uninstall-linux.sh --clean    # 卸载并删除构建目录
 ```
 
+**发行包安装（deb / rpm / AppImage）：**
+
+已打包的发行版产物从 Release 页面获取，按发行版选择：
+
+```bash
+# Debian 13 / Ubuntu 26.04（.deb，自动解析 Qt 运行时依赖）
+sudo apt install ./seriona-*.deb
+
+# Fedora 43 / Rocky 10（.rpm）
+sudo dnf install ./seriona-*.rpm
+
+# AppImage（任意发行版，无需安装；需 FUSE 或 --appimage-extract 解包运行）
+./Seriona-*.AppImage
+```
+
+- **Rocky / EL 10 用户请先启用 EPEL**：`sudo dnf install epel-release`。运行时依赖（spdlog/fmt/sdbus-cpp-libs/xxhash-libs）在 EPEL 仓库；未启用会报 `nothing provides libspdlog.so...`。Fedora 无此要求。Rocky 的 Qt6 Wayland 客户端插件（`qt6-qtwayland`）仅打包 compositor，原生 Wayland 会话需 XWayland 兜底（RHEL 系上游现状，GNOME/KDE 桌面默认已具备）。
+- **数据遵循 XDG 规范**：所有安装形态（deb/rpm/AppImage/源码安装版）共享同一 `org.kaizen857.Seriona` 数据目录（`~/.local/share` 曲库、`~/.cache` 封面缓存、`~/.local/state` 日志），与系统安装版交替使用属预期行为（Linux 应用标准做法）；勿同时运行新旧差异过大的版本以防曲库 schema 漂移。
+- deb 纯 Wayland 会话需系统 `qt6-wayland`（KDE/GNOME 桌面默认已装）。
+
 ---
 
 ### Windows 打包

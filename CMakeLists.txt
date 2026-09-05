@@ -1321,8 +1321,8 @@ endif()
 
 # ---- CPack：Linux deb/rpm 打包（仅 installed 模式有意义）----
 # CI 容器矩阵（debian:trixie / ubuntu:resolute / fedora / rockylinux）逐发行版原生构建：
-#   deb 依赖由 dpkg-shlibdeps 自动生成（SHLIBDEPS ON，含完整 Qt Quick 栈）；
-#   rpm 依赖声明 qt6-qtbase >= 6.8（RPM 符号依赖不带版本下限，需显式声明）。
+#   deb 库级依赖由 dpkg-shlibdeps 自动生成（SHLIBDEPS ON）；QML 运行时模块与
+#   rpm 的 qt6-qtdeclarative 需显式声明（见下方 CPACK_*_DEPENDS 注释）。
 # 老 LTS 发行版（Qt < 6.8）不产出 deb/rpm，由 AppImage/Flatpak 覆盖（见 docs/ 调研）。
 if(UNIX AND NOT APPLE AND SERIONA_INSTALLED_MODE)
     set(CPACK_PACKAGE_NAME "seriona")
@@ -1336,10 +1336,19 @@ if(UNIX AND NOT APPLE AND SERIONA_INSTALLED_MODE)
     set(CPACK_DEBIAN_PACKAGE_SECTION "sound")
     set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
     set(CPACK_DEBIAN_PACKAGE_MAINTAINER "kaizen857 <noreply@github.com>")
-    # QML 模块（Qt5Compat.GraphicalEffects）是资源非库，SHLIBDEPS 不自动声明
-    set(CPACK_DEBIAN_PACKAGE_DEPENDS "qml6-module-qt5compat-graphicaleffects")
+    # 前端 QML 全部编译进二进制（qrc），SHLIBDEPS 只能看到库级依赖；QML 运行时模块
+    # 必须显式声明（2026-09-05 实测 debian:trixie / ubuntu:resolute 缺任一即
+    # “module ... is not installed” 拒绝加载）。包名两发行版一致，均已验证存在。
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS
+        "qml6-module-qtcore, qml6-module-qtqml, qml6-module-qtqml-models, \
+qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-layouts, \
+qml6-module-qtquick-effects, qml6-module-qt5compat-graphicaleffects, \
+qml6-module-qt-labs-platform")
 
-    set(CPACK_RPM_PACKAGE_REQUIRES "qt6-qtbase >= 6.8, qt6-qt5compat")
+    # Fedora 43 / RHEL 10 系不拆分 QML 模块包：QtQuick/Controls/Layouts/Effects、
+    # Qt.labs.platform 与 QtQml 运行时全部在 qt6-qtdeclarative 大包内（Rocky 10 实测
+    # rpm -qf 确认），Qt5Compat 在 qt6-qt5compat。不声明则裸机安装后 QML 加载失败。
+    set(CPACK_RPM_PACKAGE_REQUIRES "qt6-qtbase >= 6.8, qt6-qtdeclarative >= 6.8, qt6-qt5compat")
     set(CPACK_RPM_PACKAGE_GROUP "Applications/Multimedia")
 
     include(CPack)
