@@ -244,7 +244,15 @@ jobs:
           done
           export EXTRA_PLATFORM_PLUGINS
           ./linuxdeploy.AppImage --appdir AppDir --plugin qt \
-            --custom-apprun=$GITHUB_WORKSPACE/scripts/appimage-AppRun.sh --output appimage
+            --custom-apprun=$GITHUB_WORKSPACE/scripts/appimage-AppRun.sh
+          # plugin-qt 不部署 wayland-graphics-integration-client（client buffer 集成）：
+          # 缺它则 Wayland 平台报 "Failed to load client buffer integration: wayland-egl"
+          # → QRhiGles2 初始化失败 abort（2026-09-05 用户实测崩溃）。整个目录补拷。
+          cp -r "$QT_ROOT_DIR/plugins/wayland-graphics-integration-client" AppDir/usr/plugins/
+          ls AppDir/usr/plugins/wayland-graphics-integration-client/
+          # 分两次跑 linuxdeploy：第二次仅打包（不重跑 plugin qt，避免覆盖补拷目录）；
+          # 仍带 --custom-apprun 保持幂等（AppRun 已存在则不被覆盖）。
+          ./linuxdeploy.AppImage --appdir AppDir --custom-apprun=$GITHUB_WORKSPACE/scripts/appimage-AppRun.sh --output appimage
           tar czf Seriona-${{ env.SERIONA_VERSION }}-linux-x86_64.tar.gz AppDir
         env:
           APPIMAGE_EXTRACT_AND_RUN: '1'
