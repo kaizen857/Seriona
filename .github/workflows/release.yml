@@ -8,7 +8,7 @@
 # 产物矩阵（Qt 6.8 下限的取舍，详见 docs/github-actions-release-pipeline.md §6）：
 #   - AppImage + tar.gz：ubuntu:22.04 容器（glibc 2.35 基线），覆盖老 LTS 发行版
 #   - deb：Debian 13 trixie / Ubuntu 26.04 resolute（原生 Qt ≥ 6.8，dpkg-shlibdeps 自动依赖）
-#   - rpm：Fedora 42 / Rocky 10（qt6-qtbase >= 6.8 显式声明）
+#   - rpm：Fedora 43 / Rocky 10（qt6-qtbase >= 6.8 显式声明）
 #   - Windows：portable zip（MSVC 2022 + Qt 6.8 官方二进制）
 #   - macOS：.app bundle zip（Apple Silicon，macdeployqt 自包含 Qt）
 # 老 LTS（Ubuntu 22.04/24.04、Debian 12、RHEL 9，Qt < 6.8）不产出 deb/rpm。
@@ -140,10 +140,15 @@ jobs:
       - name: ② Seriona_Backend 构建+测试+install
         working-directory: Seriona_Backend
         run: |
+          # SERIONA_INSTALLED_MODE 必须在后端 ② 段开启：该宏在 Seriona_Backend
+          # 编译期求值（resolveRuntimePaths 在后端库里），只传给前端无效（2026-09-05 修复：
+          # 此前五个 Linux 系 job 均漏传，AppImage FUSE 挂载点与 deb/rpm 的 /usr/bin 只读，
+          # 便携模式 logging init 失败 → 控制器不启动，表现为 “Media controller is stopped”）。
           cmake --preset release -G Ninja \
             -DCMAKE_PREFIX_PATH=/opt/seriona-deps \
             -DSERIONA_BUILD_APP=OFF \
-            -DSERIONA_INSTALL_EXPORT=ON
+            -DSERIONA_INSTALL_EXPORT=ON \
+            -DSERIONA_INSTALLED_MODE=ON
           cmake --build --preset release --parallel 2
           timeout --foreground --kill-after=30s 30m dbus-run-session -- ctest --preset release --output-on-failure --timeout 300
           cmake --install build/release --prefix /opt/seriona-deps
@@ -221,17 +226,65 @@ jobs:
           cmake --install build/release --prefix AppDir/usr
           # AppImage 内桌面文件 Exec 需相对可执行名（安装版是绝对路径）
           sed -i 's|^Exec=.*|Exec=seriona|' AppDir/usr/share/applications/org.kaizen857.Seriona.desktop
-          ./linuxdeploy.AppImage --appdir AppDir --plugin qt --output appimage
+          # 自定义 AppRun（仓库内 scripts/appimage-AppRun.sh，git 跟踪）：
+          # Qt 仅 Flatpak/Snap 会话自动选 xdgdesktopportal 主题；AppImage 在普通宿主会话必须
+          # 显式设置才会走 xdg-desktop-portal，获得 KDE/GNOME 原生文件对话框。脚本只在用户未
+          # 自行设置 QT_QPA_PLATFORMTHEME（如 qt6ct）时注入，避免覆盖用户偏好。
+          # plugin-qt 默认只部署 libqxcb.so（源码实证）；EXTRA_PLATFORM_PLUGINS 补
+          # offscreen 与 Wayland 平台插件。libqoffscreen 供 CI 无头冒烟；libqwayland-*
+          # 让 Wayland 会话走原生路径而非 XWayland（plugin-qt 遇 libqwayland 前缀会自动
+          # 补部署 wayland-shell-integration）。官方 linux_gcc_64 的 wayland 插件文件
+          # 随 Qt 版本可能只有 generic 或 egl/generic 并存，按存在性探测组装，缺文件会
+          # 直接让 linuxdeploy 失败（EXTRA 语义为必须存在）。
+          EXTRA_PLATFORM_PLUGINS="libqoffscreen.so"
+          for p in libqwayland-egl.so libqwayland-generic.so; do
+            if [ -f "$QT_ROOT_DIR/plugins/platforms/$p" ]; then
+              EXTRA_PLATFORM_PLUGINS="$EXTRA_PLATFORM_PLUGINS;$p"
+            fi
+          done
+          export EXTRA_PLATFORM_PLUGINS
+          ./linuxdeploy.AppImage --appdir AppDir --plugin qt \
+            --custom-apprun=$GITHUB_WORKSPACE/scripts/appimage-AppRun.sh --output appimage
           tar czf Seriona-${{ env.SERIONA_VERSION }}-linux-x86_64.tar.gz AppDir
         env:
           APPIMAGE_EXTRACT_AND_RUN: '1'
           QML_SOURCES_PATHS: ${{ github.workspace }}/qml
           VERSION: ${{ env.SERIONA_VERSION }}
-      - name: AppImage 冒烟验证
+      - name: AppImage 冒烟验证（真实后端启动 + 只读数据根回归）
         shell: bash
         run: |
-          export APPIMAGE_EXTRACT_AND_RUN=1 QT_QPA_PLATFORM=offscreen
-          ./Seriona-*.AppImage --smoke-scenario=startup --smoke-exit-ms=1000 --smoke-output-dir=smoke-appimage
+          # 清除 install-qt-action 注入的环境变量：LD_LIBRARY_PATH/QT_PLUGIN_PATH/QML2_IMPORT_PATH
+          # 指向构建机 Qt，此前会让 AppImage 冒烟误用构建机插件而非 AppDir 自带插件，掩盖缺陷。
+          unset LD_LIBRARY_PATH QT_PLUGIN_PATH QML2_IMPORT_PATH QT_ROOT_DIR
+          # 修复后的安装模式把数据落到 XDG 目录：固定到一个临时根，便于断言。
+          export XDG_DATA_HOME=/tmp/seriona-xdg/data
+          export XDG_STATE_HOME=/tmp/seriona-xdg/state
+          export XDG_CACHE_HOME=/tmp/seriona-xdg/cache
+          rm -rf /tmp/seriona-xdg && mkdir -p "$XDG_STATE_HOME/logs"
+          # 解包 AppImage 并整树 chmod 只读：CI 容器无 /dev/fuse，无法 FUSE 挂载，
+          # 用只读解包目录精确复现用户侧 FUSE 挂载的只读语义（回归点：数据根若回退到
+          # AppDir 内便携模式即在此失败）。直接执行解包根的 AppRun（含 XDG 兜底）。
+          ./Seriona-*.AppImage --appimage-extract >/dev/null
+          chmod -R a-w squashfs-root
+          # smoke 场景刻意不接后端（backendBridgeAutostartEnabled=false），测不到控制器；
+          # 这里不带 --smoke-* 参数正常启动接真实后端，用 timeout 主动退出（预期 124）。
+          set +e
+          timeout --foreground --kill-after=5s 15s \
+            env QT_QPA_PLATFORM=offscreen squashfs-root/AppRun > /tmp/appimage-smoke.log 2>&1
+          rc=$?
+          set -e
+          echo "AppImage 退出码=$rc（预期 124 = timeout 主动终止）"
+          # 断言 1：INSTALLED_MODE 生效 —— 数据根必须落在 XDG（kInstalledAppId 为
+          # org.kaizen857.Seriona）而非只读 AppDir/usr/bin/SerionaData
+          grep -q "data root:.*$XDG_DATA_HOME/org.kaizen857.Seriona" /tmp/appimage-smoke.log \
+            || { echo "FAIL: 数据根未落到 XDG（SERIONA_INSTALLED_MODE 未在后端生效？）"; cat /tmp/appimage-smoke.log; exit 1; }
+          # 断言 2：真实后端启动成功 —— media controller 进入运行态
+          grep -q "media controller started" /tmp/appimage-smoke.log \
+            || { echo "FAIL: media controller 未启动"; cat /tmp/appimage-smoke.log; exit 1; }
+          # 断言 3：启动阶段无日志目录创建失败（只读数据根回归会在此暴露）
+          grep -q "logging initialization failed" /tmp/appimage-smoke.log \
+            && { echo "FAIL: logging 初始化失败（只读数据根回归）"; exit 1; }
+          [ "$rc" -eq 124 ] || { echo "FAIL: 退出码 $rc ≠ 124（启动即崩溃？）"; cat /tmp/appimage-smoke.log; exit 1; }
       - uses: actions/upload-artifact@v7
         with:
           name: linux-appimage-targz
@@ -286,10 +339,15 @@ jobs:
       - name: ② Seriona_Backend 构建+测试+install
         working-directory: Seriona_Backend
         run: |
+          # SERIONA_INSTALLED_MODE 必须在后端 ② 段开启：该宏在 Seriona_Backend
+          # 编译期求值（resolveRuntimePaths 在后端库里），只传给前端无效（2026-09-05 修复：
+          # 此前五个 Linux 系 job 均漏传，AppImage FUSE 挂载点与 deb/rpm 的 /usr/bin 只读，
+          # 便携模式 logging init 失败 → 控制器不启动，表现为 “Media controller is stopped”）。
           cmake --preset release -G Ninja \
             -DCMAKE_PREFIX_PATH=/opt/seriona-deps \
             -DSERIONA_BUILD_APP=OFF \
-            -DSERIONA_INSTALL_EXPORT=ON
+            -DSERIONA_INSTALL_EXPORT=ON \
+            -DSERIONA_INSTALLED_MODE=ON
           cmake --build --preset release --parallel 2
           timeout --foreground --kill-after=30s 30m dbus-run-session -- ctest --preset release --output-on-failure --timeout 300
           cmake --install build/release --prefix /opt/seriona-deps
@@ -310,6 +368,29 @@ jobs:
         run: |
           cpack -G DEB --config build/release/CPackConfig.cmake
           mv seriona-*.deb seriona-${{ env.SERIONA_VERSION }}-trixie-x86_64.deb
+      - name: 安装冒烟验证（依赖集 + INSTALLED_MODE 数据根 + 控制器启动）
+        shell: bash
+        run: |
+          # 安装产物并允许补依赖（apt -f）：验证 CPACK_DEBIAN_PACKAGE_DEPENDS 声明的
+          # QML 模块集合能让应用真正跑起来（2026-09-05 修复：此前只声明了 graphicaleffects，
+          # 裸机缺 QtCore/QtQuick.Controls.Basic 等即拒绝加载 QML）。
+          dpkg -i seriona-*.deb 2>/dev/null || apt-get install -y -f >/dev/null 2>&1
+          command -v seriona
+          export XDG_DATA_HOME=/tmp/seriona-xdg/data
+          export XDG_STATE_HOME=/tmp/seriona-xdg/state
+          export XDG_CACHE_HOME=/tmp/seriona-xdg/cache
+          rm -rf /tmp/seriona-xdg && mkdir -p "$XDG_STATE_HOME/logs"
+          # 不带 --smoke-* 参数真实启动（smoke 不接后端）；timeout 主动终止（预期 124）
+          set +e
+          timeout --foreground --kill-after=5s 15s env QT_QPA_PLATFORM=offscreen seriona \
+            > /tmp/deb-smoke.log 2>&1
+          rc=$?
+          set -e
+          grep -q "data root:.*$XDG_DATA_HOME/org.kaizen857.Seriona" /tmp/deb-smoke.log \
+            || { echo "FAIL: deb 数据根未落 XDG（SERIONA_INSTALLED_MODE 未在后端生效？）"; cat /tmp/deb-smoke.log; exit 1; }
+          grep -q "media controller started" /tmp/deb-smoke.log \
+            || { echo "FAIL: media controller 未启动"; cat /tmp/deb-smoke.log; exit 1; }
+          [ "$rc" -eq 124 ] || { echo "FAIL: 退出码 $rc ≠ 124"; cat /tmp/deb-smoke.log; exit 1; }
       - uses: actions/upload-artifact@v7
         with:
           name: linux-deb-trixie
@@ -359,10 +440,15 @@ jobs:
       - name: ② Seriona_Backend 构建+测试+install
         working-directory: Seriona_Backend
         run: |
+          # SERIONA_INSTALLED_MODE 必须在后端 ② 段开启：该宏在 Seriona_Backend
+          # 编译期求值（resolveRuntimePaths 在后端库里），只传给前端无效（2026-09-05 修复：
+          # 此前五个 Linux 系 job 均漏传，AppImage FUSE 挂载点与 deb/rpm 的 /usr/bin 只读，
+          # 便携模式 logging init 失败 → 控制器不启动，表现为 “Media controller is stopped”）。
           cmake --preset release -G Ninja \
             -DCMAKE_PREFIX_PATH=/opt/seriona-deps \
             -DSERIONA_BUILD_APP=OFF \
-            -DSERIONA_INSTALL_EXPORT=ON
+            -DSERIONA_INSTALL_EXPORT=ON \
+            -DSERIONA_INSTALLED_MODE=ON
           cmake --build --preset release --parallel 2
           timeout --foreground --kill-after=30s 30m dbus-run-session -- ctest --preset release --output-on-failure --timeout 300
           cmake --install build/release --prefix /opt/seriona-deps
@@ -383,6 +469,29 @@ jobs:
         run: |
           cpack -G DEB --config build/release/CPackConfig.cmake
           mv seriona-*.deb seriona-${{ env.SERIONA_VERSION }}-resolute-x86_64.deb
+      - name: 安装冒烟验证（依赖集 + INSTALLED_MODE 数据根 + 控制器启动）
+        shell: bash
+        run: |
+          # 安装产物并允许补依赖（apt -f）：验证 CPACK_DEBIAN_PACKAGE_DEPENDS 声明的
+          # QML 模块集合能让应用真正跑起来（2026-09-05 修复：此前只声明了 graphicaleffects，
+          # 裸机缺 QtCore/QtQuick.Controls.Basic 等即拒绝加载 QML）。
+          dpkg -i seriona-*.deb 2>/dev/null || apt-get install -y -f >/dev/null 2>&1
+          command -v seriona
+          export XDG_DATA_HOME=/tmp/seriona-xdg/data
+          export XDG_STATE_HOME=/tmp/seriona-xdg/state
+          export XDG_CACHE_HOME=/tmp/seriona-xdg/cache
+          rm -rf /tmp/seriona-xdg && mkdir -p "$XDG_STATE_HOME/logs"
+          # 不带 --smoke-* 参数真实启动（smoke 不接后端）；timeout 主动终止（预期 124）
+          set +e
+          timeout --foreground --kill-after=5s 15s env QT_QPA_PLATFORM=offscreen seriona \
+            > /tmp/deb-smoke.log 2>&1
+          rc=$?
+          set -e
+          grep -q "data root:.*$XDG_DATA_HOME/org.kaizen857.Seriona" /tmp/deb-smoke.log \
+            || { echo "FAIL: deb 数据根未落 XDG（SERIONA_INSTALLED_MODE 未在后端生效？）"; cat /tmp/deb-smoke.log; exit 1; }
+          grep -q "media controller started" /tmp/deb-smoke.log \
+            || { echo "FAIL: media controller 未启动"; cat /tmp/deb-smoke.log; exit 1; }
+          [ "$rc" -eq 124 ] || { echo "FAIL: 退出码 $rc ≠ 124"; cat /tmp/deb-smoke.log; exit 1; }
       - uses: actions/upload-artifact@v7
         with:
           name: linux-deb-resolute
@@ -390,14 +499,14 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # rpm：Fedora 42（rpmfusion 提供 ffmpeg-devel）/ Rocky 10（EPEL + CRB）
+  # rpm：Fedora 43（rpmfusion 提供 ffmpeg-devel）/ Rocky 10（EPEL + CRB）
   # 项目为 GPL-3.0，链接含 GPL 组件的发行版 FFmpeg 无许可冲突
   # ---------------------------------------------------------------------------
   rpm-fedora:
-    name: rpm (Fedora 42)
+    name: rpm (Fedora 43)
     runs-on: ubuntu-24.04
     container:
-      image: fedora:42
+      image: fedora:43
     env:
       SERIONA_VERSION: ${{ inputs.version || '0.1' }}
       BACKEND_REF: ${{ inputs.backend_ref || 'main' }}
@@ -409,7 +518,7 @@ jobs:
             qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qt5compat-devel \
             spdlog-devel sqlite-devel xxhash-devel sdbus-cpp-devel pipewire-devel \
             dbus-daemon libxkbcommon qt6-qtshadertools-devel \
-            https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-42.noarch.rpm
+            https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-43.noarch.rpm
           # Fedora 自带 ffmpeg-free 拆分包（libavcodec-free 等）与 rpmfusion 冲突，需 --allowerasing 替换
           dnf install -y --nodocs --allowerasing ffmpeg ffmpeg-devel
           command -v dbus-run-session
@@ -424,16 +533,8 @@ jobs:
           repository: kaizen857/TagReader
           ref: ${{ env.TAGREADER_REF }}
           path: TagReader
-      - name: 安装 sdbus-c++ v2（Fedora 42 的 sdbus-cpp 为 v1，v2 从 F43 才进 Fedora；header-only 安装很快）
-        run: |
-          dnf remove -y sdbus-cpp-devel
-          # sdbus-c++ v2 构建需 libsystemd.pc（systemd-devel 被上面的 remove 连带删掉）
-          dnf install -y --nodocs systemd-devel
-          git clone --depth 1 --branch v2.1.0 https://github.com/Kistler-Group/sdbus-cpp.git /tmp/sdbus-cpp
-          cmake -S /tmp/sdbus-cpp -B /tmp/sdbus-cpp/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTS=OFF -DBUILD_DOC=OFF -DBUILD_EXAMPLES=OFF
-          cmake --build /tmp/sdbus-cpp/build --parallel 2
-          cmake --install /tmp/sdbus-cpp/build
+      # Fedora 43 系统包已含 sdbus-c++ v2（sdbus-cpp-devel 2.1.0-3.fc43，实测 F43 repo 存在）；
+      # 后端 MPRIS 的 v2 自由函数 API 直接用系统包，无需源码安装（42 的 v1 才需要）
       # ---- A2 顺序链 ①：TagReader 独立建测 → install 共享前缀 ----
       - name: ① TagReader 构建+测试+install
         working-directory: TagReader
@@ -446,10 +547,15 @@ jobs:
       - name: ② Seriona_Backend 构建+测试+install
         working-directory: Seriona_Backend
         run: |
+          # SERIONA_INSTALLED_MODE 必须在后端 ② 段开启：该宏在 Seriona_Backend
+          # 编译期求值（resolveRuntimePaths 在后端库里），只传给前端无效（2026-09-05 修复：
+          # 此前五个 Linux 系 job 均漏传，AppImage FUSE 挂载点与 deb/rpm 的 /usr/bin 只读，
+          # 便携模式 logging init 失败 → 控制器不启动，表现为 “Media controller is stopped”）。
           cmake --preset release -G Ninja \
             -DCMAKE_PREFIX_PATH=/opt/seriona-deps \
             -DSERIONA_BUILD_APP=OFF \
-            -DSERIONA_INSTALL_EXPORT=ON
+            -DSERIONA_INSTALL_EXPORT=ON \
+            -DSERIONA_INSTALLED_MODE=ON
           cmake --build --preset release --parallel 2
           timeout --foreground --kill-after=30s 30m dbus-run-session -- ctest --preset release --output-on-failure --timeout 300
           cmake --install build/release --prefix /opt/seriona-deps
@@ -469,7 +575,29 @@ jobs:
       - name: 打包 rpm
         run: |
           cpack -G RPM --config build/release/CPackConfig.cmake
-          mv seriona-*.rpm seriona-${{ env.SERIONA_VERSION }}-fc42.x86_64.rpm
+          mv seriona-*.rpm seriona-${{ env.SERIONA_VERSION }}-fc43.x86_64.rpm
+      - name: 安装冒烟验证（依赖集 + INSTALLED_MODE 数据根 + 控制器启动）
+        shell: bash
+        run: |
+          # dnf 安装产物：验证 CPACK_RPM_PACKAGE_REQUIRES（含 2026-09-05 修复补的
+          # qt6-qtdeclarative——QtQuick/Controls/Layouts/labs 运行时所在大包）。
+          dnf install -y --nodocs ./seriona-*.rpm >/dev/null 2>&1 || dnf install -y --nodocs ./seriona-*.rpm
+          command -v seriona
+          export XDG_DATA_HOME=/tmp/seriona-xdg/data
+          export XDG_STATE_HOME=/tmp/seriona-xdg/state
+          export XDG_CACHE_HOME=/tmp/seriona-xdg/cache
+          rm -rf /tmp/seriona-xdg && mkdir -p "$XDG_STATE_HOME/logs"
+          # 不带 --smoke-* 参数真实启动（smoke 不接后端）；timeout 主动终止（预期 124）
+          set +e
+          timeout --foreground --kill-after=5s 15s env QT_QPA_PLATFORM=offscreen seriona \
+            > /tmp/rpm-smoke.log 2>&1
+          rc=$?
+          set -e
+          grep -q "data root:.*$XDG_DATA_HOME/org.kaizen857.Seriona" /tmp/rpm-smoke.log \
+            || { echo "FAIL: rpm 数据根未落 XDG（SERIONA_INSTALLED_MODE 未在后端生效？）"; cat /tmp/rpm-smoke.log; exit 1; }
+          grep -q "media controller started" /tmp/rpm-smoke.log \
+            || { echo "FAIL: media controller 未启动"; cat /tmp/rpm-smoke.log; exit 1; }
+          [ "$rc" -eq 124 ] || { echo "FAIL: 退出码 $rc ≠ 124"; cat /tmp/rpm-smoke.log; exit 1; }
       - uses: actions/upload-artifact@v7
         with:
           name: linux-rpm-fedora
@@ -520,10 +648,15 @@ jobs:
       - name: ② Seriona_Backend 构建+测试+install
         working-directory: Seriona_Backend
         run: |
+          # SERIONA_INSTALLED_MODE 必须在后端 ② 段开启：该宏在 Seriona_Backend
+          # 编译期求值（resolveRuntimePaths 在后端库里），只传给前端无效（2026-09-05 修复：
+          # 此前五个 Linux 系 job 均漏传，AppImage FUSE 挂载点与 deb/rpm 的 /usr/bin 只读，
+          # 便携模式 logging init 失败 → 控制器不启动，表现为 “Media controller is stopped”）。
           cmake --preset release -G Ninja \
             -DCMAKE_PREFIX_PATH=/opt/seriona-deps \
             -DSERIONA_BUILD_APP=OFF \
-            -DSERIONA_INSTALL_EXPORT=ON
+            -DSERIONA_INSTALL_EXPORT=ON \
+            -DSERIONA_INSTALLED_MODE=ON
           cmake --build --preset release --parallel 2
           timeout --foreground --kill-after=30s 30m dbus-run-session -- ctest --preset release --output-on-failure --timeout 300
           cmake --install build/release --prefix /opt/seriona-deps
@@ -544,6 +677,28 @@ jobs:
         run: |
           cpack -G RPM --config build/release/CPackConfig.cmake
           mv seriona-*.rpm seriona-${{ env.SERIONA_VERSION }}-el10.x86_64.rpm
+      - name: 安装冒烟验证（依赖集 + INSTALLED_MODE 数据根 + 控制器启动）
+        shell: bash
+        run: |
+          # dnf 安装产物：验证 CPACK_RPM_PACKAGE_REQUIRES（含 2026-09-05 修复补的
+          # qt6-qtdeclarative——QtQuick/Controls/Layouts/labs 运行时所在大包）。
+          dnf install -y --nodocs ./seriona-*.rpm >/dev/null 2>&1 || dnf install -y --nodocs ./seriona-*.rpm
+          command -v seriona
+          export XDG_DATA_HOME=/tmp/seriona-xdg/data
+          export XDG_STATE_HOME=/tmp/seriona-xdg/state
+          export XDG_CACHE_HOME=/tmp/seriona-xdg/cache
+          rm -rf /tmp/seriona-xdg && mkdir -p "$XDG_STATE_HOME/logs"
+          # 不带 --smoke-* 参数真实启动（smoke 不接后端）；timeout 主动终止（预期 124）
+          set +e
+          timeout --foreground --kill-after=5s 15s env QT_QPA_PLATFORM=offscreen seriona \
+            > /tmp/rpm-smoke.log 2>&1
+          rc=$?
+          set -e
+          grep -q "data root:.*$XDG_DATA_HOME/org.kaizen857.Seriona" /tmp/rpm-smoke.log \
+            || { echo "FAIL: rpm 数据根未落 XDG（SERIONA_INSTALLED_MODE 未在后端生效？）"; cat /tmp/rpm-smoke.log; exit 1; }
+          grep -q "media controller started" /tmp/rpm-smoke.log \
+            || { echo "FAIL: media controller 未启动"; cat /tmp/rpm-smoke.log; exit 1; }
+          [ "$rc" -eq 124 ] || { echo "FAIL: 退出码 $rc ≠ 124"; cat /tmp/rpm-smoke.log; exit 1; }
       - uses: actions/upload-artifact@v7
         with:
           name: linux-rpm-rocky
@@ -763,12 +918,13 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # 发布：仅发版按钮（workflow_dispatch）触发；push main 只构建不发布
+  # 发布：仅 main 上的发版按钮（workflow_dispatch）触发；push main 与 develop 上的
+  # dispatch 只构建产 artifact（develop dispatch = CI 修复验证通道，不创建 release/tag）
   # ---------------------------------------------------------------------------
   publish:
     name: 发布 GitHub Release
     needs: [linux, deb-trixie, deb-resolute, rpm-fedora, rpm-rocky, windows, macos]
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -792,7 +948,7 @@ jobs:
             - **AppImage**（Ubuntu 22.04 基线，覆盖老 LTS 发行版）
             - **tar.gz** 便携版
             - **deb**：Debian 13 trixie / Ubuntu 26.04 resolute（Qt ≥ 6.8）
-            - **rpm**：Fedora 42 / Rocky 10（Qt ≥ 6.8）
+            - **rpm**：Fedora 43 / Rocky 10（Qt ≥ 6.8）
 
             ### Windows
             - **portable zip**（Qt 6.8 + MSVC 2022）
