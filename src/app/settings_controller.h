@@ -35,7 +35,7 @@ struct PlaybackDeviceCapabilities {
 // （BackendBridge::submitConfigureOutput / enumeratePlaybackDeviceCapabilities）。
 //
 // 推送策略（输出组）：
-//  - 离散控件（outputMode / sampleRate / sampleFormat / preferredDeviceId）变更立即推送；
+//  - 离散控件（sampleRate / sampleFormat / preferredDeviceId）变更立即推送；
 //  - 连续控件（bufferDurationMs）变更先去抖（单发 QTimer，400ms）后推送。
 //  - 后端拒绝 ConfigureOutput 时经 rollbackRejectedOutputConfig() 恢复上一次已提交的
 //    合法值快照（lastValid*），快照在每次 apply() 提交前记录。
@@ -49,19 +49,14 @@ struct PlaybackDeviceCapabilities {
 //    （独立单发 QTimer，400ms，经 applyTransitionConfig() 推送）。
 //  - 推送走独立的 m_applyTransitionConfigExecutor（9 参），与 ConfigureOutput 无关；
 //    未绑定（mock-only）时 setter/applyTransitionConfig 均为 no-op。
-//  - advanceTransitionsGreyed()：直接输出模式（outputMode==0）下过渡类行
-//    {1 自动档, 4 预加载, 5 交叉长度, 8 手动档, 9 手动短交叉} 灰化；
-//    {2,3,6,7}（传送类）全局可用（需求：交叉/预加载/手动档仅 Mixed 生效）。
 //
 // 设备能力过滤（需求 3 前端）：
 //  - sampleRateOptions()/sampleFormatOptions() 按当前选中设备（preferredDeviceId）的
 //    能力与标准列表求交；空能力 = 全支持 = 显示全部。
 //  - 已保存值不在过滤结果中时保留并标注（「设备不支持」后缀），已保存值本身不变。
-//  - sampleParamsGreyed()：直接输出模式（outputMode==0）下采样率/位深行灰化（需求 1）。
 class SettingsController : public QObject
 {
     Q_OBJECT
-    Q_PROPERTY(int outputMode READ outputMode WRITE setOutputMode NOTIFY outputModeChanged)
     Q_PROPERTY(QStringList playbackDevices READ playbackDevices NOTIFY playbackDevicesChanged)
     Q_PROPERTY(QStringList playbackDeviceNames READ playbackDeviceNames NOTIFY playbackDeviceNamesChanged)
     Q_PROPERTY(QString preferredDeviceId READ preferredDeviceId WRITE setPreferredDeviceId NOTIFY preferredDeviceIdChanged)
@@ -75,7 +70,6 @@ class SettingsController : public QObject
     Q_PROPERTY(QStringList lyricDelimiters READ lyricDelimiters WRITE setLyricDelimiters NOTIFY lyricDelimitersChanged)
     Q_PROPERTY(int followRestoreDelayMs READ followRestoreDelayMs WRITE setFollowRestoreDelayMs NOTIFY followRestoreDelayMsChanged)
     Q_PROPERTY(int logLevel READ logLevel WRITE setLogLevel NOTIFY logLevelChanged)
-    Q_PROPERTY(bool sampleParamsGreyed READ sampleParamsGreyed NOTIFY outputModeChanged)
     Q_PROPERTY(QVariantList sampleRateOptions READ sampleRateOptions NOTIFY sampleRateOptionsChanged)
     Q_PROPERTY(QVariantList sampleFormatOptions READ sampleFormatOptions NOTIFY sampleFormatOptionsChanged)
     Q_PROPERTY(QVariantList playbackDeviceCapabilities READ playbackDeviceCapabilities NOTIFY playbackDeviceCapabilitiesChanged)
@@ -92,7 +86,6 @@ class SettingsController : public QObject
     Q_PROPERTY(int seekFadeMs READ seekFadeMs WRITE setSeekFadeMs NOTIFY seekFadeMsChanged)
     Q_PROPERTY(int manualAdvanceFadeMode READ manualAdvanceFadeMode WRITE setManualAdvanceFadeMode NOTIFY manualAdvanceFadeModeChanged)
     Q_PROPERTY(int manualShortCrossfadeMs READ manualShortCrossfadeMs WRITE setManualShortCrossfadeMs NOTIFY manualShortCrossfadeMsChanged)
-    Q_PROPERTY(bool advanceTransitionsGreyed READ advanceTransitionsGreyed NOTIFY outputModeChanged)
     Q_PROPERTY(int transitionSliderStepMs READ transitionSliderStepMs CONSTANT)
     QML_ELEMENT
     QML_UNCREATABLE("SettingsController is owned by AppFacade")
@@ -122,9 +115,6 @@ public:
     static int logLevelFromString(const QString &name);
     static QString logLevelToString(int level);
     Q_INVOKABLE void applyLogLevel();
-
-    int outputMode() const;
-    void setOutputMode(int mode);
 
     QStringList playbackDevices() const;
     QStringList playbackDeviceNames() const;
@@ -163,9 +153,6 @@ public:
     int manualShortCrossfadeMs() const;
     void setManualShortCrossfadeMs(int ms);
 
-    // 直接输出模式（outputMode==0）下过渡类行（自动档/预加载/交叉长度/手动档/
-    // 手动短交叉）灰化；随 outputModeChanged 翻转（与 sampleParamsGreyed 同范式）。
-    bool advanceTransitionsGreyed() const;
     // 过渡滑块步进（100ms）：QML from/to/stepSize 与此常量对齐。
     int transitionSliderStepMs() const;
 
@@ -176,14 +163,13 @@ public:
     int followRestoreDelayMs() const;
     void setFollowRestoreDelayMs(int delayMs);
 
-    bool sampleParamsGreyed() const;
     QVariantList sampleRateOptions() const;
     QVariantList sampleFormatOptions() const;
     QVariantList playbackDeviceCapabilities() const;
     QVariantList outputDeviceOptions() const;
 
     // 后端协商结果落地：只更新属性（含 NOTIFY），不持久化、不推送。
-    void setDefaults(int outputMode, int sampleRate, int bufferDurationMs, const QString &preferredDeviceId);
+    void setDefaults(int sampleRate, int bufferDurationMs, const QString &preferredDeviceId);
 
     // 设置存储后端注入（AppFacade 接入后端时注入 BackendBridge 实现；
     // 不注入时回退内存存储）。
@@ -207,7 +193,6 @@ public:
     void setLogLevelExecutor(LogLevelExecutor executor);
 
 signals:
-    void outputModeChanged();
     void playbackDevicesChanged();
     void playbackDeviceNamesChanged();
     void preferredDeviceIdChanged();
@@ -233,7 +218,6 @@ signals:
     void outputDeviceOptionsChanged();
 
 private:
-    void setOutputModeInternal(int mode);
     void setSampleRateInternal(int sampleRate);
     void setSampleFormatInternal(int sampleFormat);
     void setBufferDurationMsInternal(int bufferDurationMs);
@@ -264,7 +248,6 @@ private:
     QString sampleRateLabel(int value) const;
     QString sampleFormatLabel(int value) const;
 
-    int m_outputMode = 0;
     QStringList m_playbackDevices;
     QStringList m_playbackDeviceNames;
     QString m_preferredDeviceId;
@@ -283,7 +266,6 @@ private:
     int m_seekFadeMs = 300;
     int m_manualAdvanceFadeMode = 0; // 无
     int m_manualShortCrossfadeMs = 500;
-    int m_lastValidOutputMode = 0;
     int m_lastValidSampleRate = 48000;
     int m_lastValidSampleFormat = 0;
     int m_lastValidBufferDurationMs = 300;

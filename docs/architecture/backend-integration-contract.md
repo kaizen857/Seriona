@@ -6,7 +6,7 @@ Seriona 前端 QML 不直接持有后端状态；中间层 owners 负责把后�
 - `LibraryController`：曲库扫描、曲库树快照、浏览投影、空曲库和后端不可用状态。
 - `LyricsModel`：歌词 read model 与本地歌词显示状态。
 - `NavigationController`：启动/主界面、本地导航和 sidebar 状态。
-- `SettingsController`：音频输出与播放过渡设置；经 `BackendBridge::submitConfigureOutput` / `submitTransitionConfig` 提交，Direct 灰化与设备能力过滤状态见下。
+- `SettingsController`：音频输出与播放过渡设置；经 `BackendBridge::submitConfigureOutput` / `submitTransitionConfig` 提交，设备能力过滤状态见下。UI 自本版起仅 Mixed 输出模式（无 Direct 选择，灰化机制已移除）。
 
 后端 `PlayerStateSnapshot`、`LibraryStateSnapshot`、`PlaylistTreeSnapshot` 和命令结果仍是权威事实来源；前端不得用生产假数据替代缺失的后端曲库内容。
 
@@ -36,8 +36,8 @@ Seriona 前端 QML 不直接持有后端状态；中间层 owners 负责把后�
 ### 校验与拒绝
 
 - 后端归约器（`handleSetTransitionConfig`）与前端 `BackendBridge::submitTransitionConfig` 本地预校验逐条同界：两枚枚举 int ∈ [0,2]；`crossfadeMs` [0,10000]；`transportFadeMs`/`seekFadeMs`/`manualShortCrossfadeMs` [0,3000]；`gaplessPreloadMs` [0,5000]；负值一并拒绝。越界 → `InvalidCommand` 结果 + `CommandRejected` 域通知（过渡组无 UI 回滚路径，前端控件量程已先拦截，实际不可达）。
-- Direct 灰化规则（`SettingsController::advanceTransitionsGreyed`，NOTIFY `outputModeChanged`）：输出模式为 Direct（`outputMode==0`）时，仅 Mixed 生效的行 {1 自动档、4 预加载、5 交叉长度、8 手动档、9 手动短交叉} 在设置窗口灰化（禁用 + 0.45 透明度 + 行内提示「仅混合输出可用」）；{2,3,6,7}（传送/进度淡变，全局语义）恒可用。
-- Direct 播放语义：后端在 Direct 下忽略过渡档位与预解码（恒瞬时硬切 + 重开设备），灰化只是 UI 对"不生效"的表达，命令本身合法、不按输出模式拒绝。
+- 输出模式能力语义：`transition` 组各行的生效范围按后端输出模式划分——仅 Mixed 生效：{1 自动档、4 预加载、5 交叉长度、8 手动档、9 手动短交叉}；全局（含 Direct）：{2,3,6,7} 传送/进度淡变。UI 自本版起仅 Mixed 输出模式，灰化机制已移除。
+- Direct 播放语义：后端在 Direct 下忽略过渡档位与预解码（恒瞬时硬切 + 重开设备）；命令本身合法、不按输出模式拒绝。
 
 ## 过渡域事件契约（后端 audio 契约）
 

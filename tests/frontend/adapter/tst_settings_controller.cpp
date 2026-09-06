@@ -43,7 +43,6 @@ private slots:
     void sampleFormatPersistRoundTrip();
     void applyIncludesSampleFormat();
     void rollbackRejectedOutputConfigRestoresSnapshot();
-    void directOutputGreyState();
     void deviceCapsEmptyShowsAllOptions();
     void deviceCapsFilterSampleRatesAndFormats();
     void deviceCapsFollowSelectedDevice();
@@ -59,7 +58,6 @@ private slots:
     void transitionInvalidValuesRejected();
     void transitionSliderSettersDebounceMerged();
     void transitionPersistRoundTrip();
-    void advanceTransitionsGreyedFollowsOutputMode();
     void transitionApplyPacksCurrentNineFields();
     void transitionExecutorUnsetNoopPersistence();
     void transitionStartupApplySequence();
@@ -117,7 +115,6 @@ void SettingsControllerTest::defaults()
 {
     Seriona::App::SettingsController settings;
 
-    QCOMPARE(settings.outputMode(), 0);
     QVERIFY(settings.playbackDevices().isEmpty());
     QVERIFY(settings.preferredDeviceId().isEmpty());
     QCOMPARE(settings.sampleRate(), 48000);
@@ -135,28 +132,24 @@ void SettingsControllerTest::propertySettersPersistAndNotify()
 {
     Seriona::App::SettingsController settings;
     settings.setSettingsStorageBackend(testBackend());
-    QSignalSpy modeSpy(&settings, &Seriona::App::SettingsController::outputModeChanged);
     QSignalSpy rateSpy(&settings, &Seriona::App::SettingsController::sampleRateChanged);
     QSignalSpy formatSpy(&settings, &Seriona::App::SettingsController::sampleFormatChanged);
     QSignalSpy durationSpy(&settings, &Seriona::App::SettingsController::bufferDurationMsChanged);
     QSignalSpy deviceSpy(&settings, &Seriona::App::SettingsController::preferredDeviceIdChanged);
     QSignalSpy delimiterSpy(&settings, &Seriona::App::SettingsController::lyricDelimitersChanged);
 
-    settings.setOutputMode(1);
     settings.setSampleRate(96000);
     settings.setSampleFormat(2);
     settings.setBufferDurationMs(500);
     settings.setPreferredDeviceId(QStringLiteral("dev-1"));
     settings.setLyricDelimiters(QStringList{QStringLiteral(" / "), QStringLiteral(" | ")});
 
-    QCOMPARE(settings.outputMode(), 1);
     QCOMPARE(settings.sampleRate(), 96000);
     QCOMPARE(settings.sampleFormat(), 2);
     QCOMPARE(settings.bufferDurationMs(), 500);
     QCOMPARE(settings.preferredDeviceId(), QStringLiteral("dev-1"));
     const QStringList expectedDelimiters{QStringLiteral(" / "), QStringLiteral(" | ")};
     QCOMPARE(settings.lyricDelimiters(), expectedDelimiters);
-    QCOMPARE(modeSpy.count(), 1);
     QCOMPARE(rateSpy.count(), 1);
     QCOMPARE(formatSpy.count(), 1);
     QCOMPARE(durationSpy.count(), 1);
@@ -164,16 +157,13 @@ void SettingsControllerTest::propertySettersPersistAndNotify()
     QCOMPARE(delimiterSpy.count(), 1);
 
     // 相同值不重复 NOTIFY
-    settings.setOutputMode(1);
     settings.setSampleRate(96000);
     settings.setSampleFormat(2);
     settings.setLyricDelimiters(expectedDelimiters);
-    QCOMPARE(modeSpy.count(), 1);
     QCOMPARE(rateSpy.count(), 1);
     QCOMPARE(formatSpy.count(), 1);
     QCOMPARE(delimiterSpy.count(), 1);
 
-    QCOMPARE(storedValue(QStringLiteral("output"), QStringLiteral("outputMode")).toInt(), 1);
     QCOMPARE(storedValue(QStringLiteral("output"), QStringLiteral("sampleRate")).toInt(), 96000);
     QCOMPARE(storedValue(QStringLiteral("output"), QStringLiteral("sampleFormat")).toInt(), 2);
     QCOMPARE(storedValue(QStringLiteral("output"), QStringLiteral("bufferDurationMs")).toInt(), 500);
@@ -185,9 +175,6 @@ void SettingsControllerTest::invalidValuesRejected()
 {
     Seriona::App::SettingsController settings;
     settings.setSettingsStorageBackend(testBackend());
-
-    settings.setOutputMode(7);
-    QCOMPARE(settings.outputMode(), 0);
 
     settings.setSampleRate(100);
     QCOMPARE(settings.sampleRate(), 48000);
@@ -218,7 +205,6 @@ void SettingsControllerTest::invalidValuesRejected()
     QCOMPARE(settings.followRestoreDelayMs(), 5000);
 
     // 边界值合法
-    settings.setOutputMode(1);
     settings.setSampleRate(8000);
     settings.setSampleRate(768000);
     settings.setSampleFormat(1);
@@ -229,19 +215,16 @@ void SettingsControllerTest::invalidValuesRejected()
     settings.setBufferDurationMs(1000);
     settings.setFollowRestoreDelayMs(1000);
     settings.setFollowRestoreDelayMs(15000);
-    QCOMPARE(settings.outputMode(), 1);
     QCOMPARE(settings.sampleRate(), 768000);
     QCOMPARE(settings.sampleFormat(), 4);
     QCOMPARE(settings.bufferDurationMs(), 1000);
     QCOMPARE(settings.followRestoreDelayMs(), 15000);
 
     // 非法值不写入存储
-    settings.setOutputMode(7);
     settings.setSampleRate(100);
     settings.setSampleFormat(6);
     settings.setBufferDurationMs(2000);
     settings.setFollowRestoreDelayMs(42);
-    QCOMPARE(storedValue(QStringLiteral("output"), QStringLiteral("outputMode")).toInt(), 1);
     QCOMPARE(storedValue(QStringLiteral("output"), QStringLiteral("sampleRate")).toInt(), 768000);
     QCOMPARE(storedValue(QStringLiteral("output"), QStringLiteral("sampleFormat")).toInt(), 4);
     QCOMPARE(storedValue(QStringLiteral("output"), QStringLiteral("bufferDurationMs")).toInt(), 1000);
@@ -253,25 +236,23 @@ void SettingsControllerTest::applyAssemblesPayload()
     Seriona::App::SettingsController settings;
     QStringList payloads;
     settings.setApplyOutputConfigExecutor(
-        [&payloads](int outputMode, int sampleRate, int sampleFormat, int bufferDurationMs, const QString &preferredDeviceId) {
+        [&payloads](int mode, int sampleRate, int sampleFormat, int bufferDurationMs, const QString &preferredDeviceId) {
             payloads.append(QStringLiteral("%1|%2|%3|%4|%5")
-                                .arg(outputMode)
+                                .arg(mode)
                                 .arg(sampleRate)
                                 .arg(sampleFormat)
                                 .arg(bufferDurationMs)
                                 .arg(preferredDeviceId));
         });
 
-    settings.setOutputMode(1);
     settings.setSampleRate(96000);
     settings.setPreferredDeviceId(QStringLiteral("dev-x"));
     settings.apply();
 
-    QCOMPARE(payloads.size(), 4);
-    QCOMPARE(payloads.at(0), QStringLiteral("1|48000|0|300|"));
-    QCOMPARE(payloads.at(1), QStringLiteral("1|96000|0|300|"));
+    QCOMPARE(payloads.size(), 3);
+    QCOMPARE(payloads.at(0), QStringLiteral("1|96000|0|300|"));
+    QCOMPARE(payloads.at(1), QStringLiteral("1|96000|0|300|dev-x"));
     QCOMPARE(payloads.at(2), QStringLiteral("1|96000|0|300|dev-x"));
-    QCOMPARE(payloads.at(3), QStringLiteral("1|96000|0|300|dev-x"));
 }
 
 void SettingsControllerTest::discreteControlsPushImmediately()
@@ -283,10 +264,9 @@ void SettingsControllerTest::discreteControlsPushImmediately()
             ++pushes;
         });
 
-    settings.setOutputMode(1);
     settings.setSampleRate(44100);
     settings.setPreferredDeviceId(QStringLiteral("dev-2"));
-    QCOMPARE(pushes, 3);
+    QCOMPARE(pushes, 2);
 }
 
 void SettingsControllerTest::bufferDurationDebounces()
@@ -298,21 +278,17 @@ void SettingsControllerTest::bufferDurationDebounces()
             ++pushes;
         });
 
-    // 离散控件立即推送
-    settings.setOutputMode(1);
-    QCOMPARE(pushes, 1);
-
     // 连续控件去抖：5 次变更只产生一次下发
     for (int i = 0; i < 5; ++i) {
         settings.setBufferDurationMs(100 + i * 10);
     }
-    QCOMPARE(pushes, 1);
+    QCOMPARE(pushes, 0);
     QCOMPARE(settings.bufferDurationMs(), 140);
 
-    QTRY_COMPARE_WITH_TIMEOUT(pushes, 2, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(pushes, 1, 2000);
 
     QTest::qWait(800);
-    QCOMPARE(pushes, 2);
+    QCOMPARE(pushes, 1);
 }
 
 void SettingsControllerTest::persistenceRoundTrip()
@@ -320,7 +296,6 @@ void SettingsControllerTest::persistenceRoundTrip()
     {
         Seriona::App::SettingsController writer;
         writer.setSettingsStorageBackend(testBackend());
-        writer.setOutputMode(1);
         writer.setSampleRate(192000);
         writer.setBufferDurationMs(800);
         writer.setPreferredDeviceId(QStringLiteral("dev-3"));
@@ -335,7 +310,6 @@ void SettingsControllerTest::persistenceRoundTrip()
         });
     reader.reloadFromSettings();
 
-    QCOMPARE(reader.outputMode(), 1);
     QCOMPARE(reader.sampleRate(), 192000);
     QCOMPARE(reader.bufferDurationMs(), 800);
     QCOMPARE(reader.preferredDeviceId(), QStringLiteral("dev-3"));
@@ -353,15 +327,13 @@ void SettingsControllerTest::setDefaultsLandsPropertiesWithoutPersistenceOrPush(
             ++pushes;
         });
 
-    settings.setDefaults(1, 96000, 500, QStringLiteral("dev-4"));
+    settings.setDefaults(96000, 500, QStringLiteral("dev-4"));
 
-    QCOMPARE(settings.outputMode(), 1);
     QCOMPARE(settings.sampleRate(), 96000);
     QCOMPARE(settings.bufferDurationMs(), 500);
     QCOMPARE(settings.preferredDeviceId(), QStringLiteral("dev-4"));
     QCOMPARE(pushes, 0);
 
-    QVERIFY(!storedContains(QStringLiteral("output"), QStringLiteral("outputMode")));
     QVERIFY(!storedContains(QStringLiteral("output"), QStringLiteral("sampleRate")));
 }
 
@@ -484,22 +456,6 @@ void SettingsControllerTest::legacyNumericPreferredDeviceIdResetOnEnumerate()
     settings.setPreferredDeviceId(QStringLiteral("hw:0,0"));
     settings.enumerateDevices();
     QCOMPARE(settings.preferredDeviceId(), QStringLiteral("hw:0,0"));
-}
-
-void SettingsControllerTest::directOutputGreyState()
-{
-    Seriona::App::SettingsController settings;
-    QSignalSpy modeSpy(&settings, &Seriona::App::SettingsController::outputModeChanged);
-
-    // 默认直接输出（0）→ 采样率/位深行灰化
-    QVERIFY(settings.sampleParamsGreyed());
-
-    settings.setOutputMode(1);
-    QVERIFY(!settings.sampleParamsGreyed());
-
-    settings.setOutputMode(0);
-    QVERIFY(settings.sampleParamsGreyed());
-    QCOMPARE(modeSpy.count(), 2);
 }
 
 void SettingsControllerTest::deviceCapsEmptyShowsAllOptions()
@@ -897,25 +853,17 @@ void SettingsControllerTest::applyIncludesSampleFormat()
     Seriona::App::SettingsController settings;
     QStringList payloads;
     settings.setApplyOutputConfigExecutor(
-        [&payloads](int outputMode, int sampleRate, int sampleFormat, int bufferDurationMs, const QString &preferredDeviceId) {
-            Q_UNUSED(outputMode);
-            Q_UNUSED(sampleRate);
-            Q_UNUSED(bufferDurationMs);
-            Q_UNUSED(preferredDeviceId);
+        [&payloads](int, int, int sampleFormat, int, const QString &) {
             payloads.append(QString::number(sampleFormat));
         });
 
-    settings.setOutputMode(1);
-    QCOMPARE(payloads.size(), 1);
-    QCOMPARE(payloads.at(0), QStringLiteral("0"));
-
     settings.setSampleFormat(2);
-    QCOMPARE(payloads.size(), 2);
-    QCOMPARE(payloads.at(1), QStringLiteral("2"));
+    QCOMPARE(payloads.size(), 1);
+    QCOMPARE(payloads.at(0), QStringLiteral("2"));
 
     settings.apply();
-    QCOMPARE(payloads.size(), 3);
-    QCOMPARE(payloads.at(2), QStringLiteral("2"));
+    QCOMPARE(payloads.size(), 2);
+    QCOMPARE(payloads.at(1), QStringLiteral("2"));
 }
 
 void SettingsControllerTest::rollbackRejectedOutputConfigRestoresSnapshot()
@@ -930,28 +878,24 @@ void SettingsControllerTest::rollbackRejectedOutputConfigRestoresSnapshot()
 
     // 无快照（从未提交）时回退忽略
     settings.rollbackRejectedOutputConfig();
-    QCOMPARE(settings.outputMode(), 0);
     QCOMPARE(settings.sampleFormat(), 0);
     QCOMPARE(pushes, 0);
 
     // 离散 setter 每次提交并记录快照；bufferDurationMs 去抖未提交
-    settings.setOutputMode(1);
     settings.setSampleFormat(2);
     settings.setBufferDurationMs(500);
-    QCOMPARE(pushes, 2);
+    QCOMPARE(pushes, 1);
 
     // 拒绝回退 → 恢复最近一次已提交的值，未提交的 bufferDurationMs 变更被回滚
     settings.rollbackRejectedOutputConfig();
-    QCOMPARE(settings.outputMode(), 1);
     QCOMPARE(settings.sampleRate(), 48000);
     QCOMPARE(settings.sampleFormat(), 2);
     QCOMPARE(settings.bufferDurationMs(), 300);
     QCOMPARE(settings.preferredDeviceId(), QString());
     // 回退本身不推送
-    QCOMPARE(pushes, 2);
+    QCOMPARE(pushes, 1);
 
     // 回退不持久化：存储保持 setter 写入的值
-    QCOMPARE(storedValue(QStringLiteral("output"), QStringLiteral("outputMode")).toInt(), 1);
     QCOMPARE(storedValue(QStringLiteral("output"), QStringLiteral("sampleFormat")).toInt(), 2);
     QCOMPARE(storedValue(QStringLiteral("output"), QStringLiteral("bufferDurationMs")).toInt(), 500);
 }
@@ -959,22 +903,26 @@ void SettingsControllerTest::rollbackRejectedOutputConfigRestoresSnapshot()
 void SettingsControllerTest::startupPushSequence()
 {
     Seriona::App::SettingsController settings;
+    settings.setSettingsStorageBackend(testBackend());
     QStringList payloads;
     settings.setApplyOutputConfigExecutor(
-        [&payloads](int outputMode, int sampleRate, int sampleFormat, int bufferDurationMs, const QString &preferredDeviceId) {
+        [&payloads](int mode, int sampleRate, int sampleFormat, int bufferDurationMs, const QString &preferredDeviceId) {
             payloads.append(QStringLiteral("%1|%2|%3|%4")
-                                .arg(outputMode)
+                                .arg(mode)
                                 .arg(sampleRate)
                                 .arg(bufferDurationMs)
                                 .arg(preferredDeviceId));
         });
 
-    // 启动路径：reloadFromSettings → apply 恰好推送一次（空设置 → 默认值）
+    // 预置历史版本遗留的旧存储键 → reload 忽略该键（纯字符串数据，非当前键集），
+    // 启动路径 reloadFromSettings → apply 仍恰好推送一次默认值；断言经 push 载荷
+    m_store.insert(storageKey(QStringLiteral("output"), QStringLiteral("outputMode")), 0);
+
     settings.reloadFromSettings();
     settings.apply();
 
     QCOMPARE(payloads.size(), 1);
-    QCOMPARE(payloads.at(0), QStringLiteral("0|48000|300|"));
+    QCOMPARE(payloads.at(0), QStringLiteral("1|48000|300|"));
 }
 
 void SettingsControllerTest::transitionDefaults()
@@ -993,9 +941,6 @@ void SettingsControllerTest::transitionDefaults()
     QCOMPARE(settings.manualAdvanceFadeMode(), 0);
     QCOMPARE(settings.manualShortCrossfadeMs(), 500);
     QCOMPARE(settings.transitionSliderStepMs(), 100);
-    // 默认 Direct（outputMode 0）→ 过渡类行灰化
-    QCOMPARE(settings.outputMode(), 0);
-    QVERIFY(settings.advanceTransitionsGreyed());
 }
 
 void SettingsControllerTest::transitionPropertySettersPersistAndNotify()
@@ -1260,32 +1205,6 @@ void SettingsControllerTest::transitionPersistRoundTrip()
     QCOMPARE(corruptReader.crossfadeMs(), 3000);
     QCOMPARE(corruptReader.autoAdvanceFadeMode(), 0);
     QCOMPARE(corruptReader.fadeOnSeek(), true);
-}
-
-void SettingsControllerTest::advanceTransitionsGreyedFollowsOutputMode()
-{
-    Seriona::App::SettingsController settings;
-    QSignalSpy modeSpy(&settings, &Seriona::App::SettingsController::outputModeChanged);
-
-    // 默认 Direct（0）→ 过渡类行灰化
-    QVERIFY(settings.advanceTransitionsGreyed());
-
-    // Mixed（1）→ 全部可用
-    settings.setOutputMode(1);
-    QVERIFY(!settings.advanceTransitionsGreyed());
-
-    // 切回 Direct → 灰化
-    settings.setOutputMode(0);
-    QVERIFY(settings.advanceTransitionsGreyed());
-    QCOMPARE(modeSpy.count(), 2);
-
-    // 灰化不影响取值与校验（Direct 下仍可设过渡值，UI 层负责禁用）
-    settings.setCrossfadeMs(2500);
-    settings.setAutoAdvanceFadeMode(1);
-    QCOMPARE(settings.crossfadeMs(), 2500);
-    QCOMPARE(settings.autoAdvanceFadeMode(), 1);
-    // 过渡值变化不触发 outputMode 信号
-    QCOMPARE(modeSpy.count(), 2);
 }
 
 void SettingsControllerTest::transitionApplyPacksCurrentNineFields()

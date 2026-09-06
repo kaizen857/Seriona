@@ -11,7 +11,6 @@ constexpr auto kOutputGroup = "output";
 constexpr auto kLyricsGroup = "lyrics";
 constexpr auto kLoggingGroup = "logging";
 constexpr auto kTransitionGroup = "transition";
-constexpr auto kOutputModeKey = "outputMode";
 constexpr auto kSampleRateKey = "sampleRate";
 constexpr auto kSampleFormatKey = "sampleFormat";
 constexpr auto kBufferDurationMsKey = "bufferDurationMs";
@@ -29,7 +28,6 @@ constexpr auto kSeekFadeMsKey = "seekFadeMs";
 constexpr auto kManualAdvanceFadeModeKey = "manualAdvanceFadeMode";
 constexpr auto kManualShortCrossfadeMsKey = "manualShortCrossfadeMs";
 
-constexpr int kDefaultOutputMode = 0; // Direct
 constexpr int kDefaultSampleRate = 48000;
 constexpr int kDefaultSampleFormat = 0; // 跟随设备
 constexpr int kDefaultBufferDurationMs = 300;
@@ -107,11 +105,6 @@ bool isLegacyNumericDeviceId(const QString &deviceId)
         }
     }
     return true;
-}
-
-bool isValidOutputMode(int mode)
-{
-    return mode == 0 || mode == 1;
 }
 
 bool isValidSampleRate(int sampleRate)
@@ -192,11 +185,6 @@ SettingsController::SettingsController(QObject *parent)
     connect(&m_transitionDebounceTimer, &QTimer::timeout, this, &SettingsController::applyTransitionConfig);
 }
 
-int SettingsController::outputMode() const
-{
-    return m_outputMode;
-}
-
 QStringList SettingsController::playbackDevices() const
 {
     return m_playbackDevices;
@@ -240,16 +228,6 @@ int SettingsController::followRestoreDelayMs() const
 int SettingsController::logLevel() const
 {
     return m_logLevel;
-}
-
-void SettingsController::setOutputMode(int mode)
-{
-    if (!isValidOutputMode(mode) || m_outputMode == mode) {
-        return;
-    }
-    setOutputModeInternal(mode);
-    persistOutputValue(kOutputModeKey, mode);
-    apply();
 }
 
 void SettingsController::setSampleRate(int sampleRate)
@@ -483,13 +461,8 @@ void SettingsController::setPreferredDeviceId(const QString &deviceId)
     apply();
 }
 
-void SettingsController::setDefaults(
-    int outputMode,
-    int sampleRate,
-    int bufferDurationMs,
-    const QString &preferredDeviceId)
+void SettingsController::setDefaults(int sampleRate, int bufferDurationMs, const QString &preferredDeviceId)
 {
-    setOutputModeInternal(outputMode);
     setSampleRateInternal(sampleRate);
     setBufferDurationMsInternal(bufferDurationMs);
     setPreferredDeviceIdInternal(preferredDeviceId);
@@ -497,10 +470,6 @@ void SettingsController::setDefaults(
 
 void SettingsController::reloadFromSettings()
 {
-    const int mode = m_settingsStorage.read(QString::fromUtf8(kOutputGroup),
-                                            QString::fromUtf8(kOutputModeKey),
-                                            kDefaultOutputMode)
-                         .toInt();
     const int sampleRate = m_settingsStorage.read(QString::fromUtf8(kOutputGroup),
                                                   QString::fromUtf8(kSampleRateKey),
                                                   kDefaultSampleRate)
@@ -554,7 +523,6 @@ void SettingsController::reloadFromSettings()
     const int manualAdvanceFadeMode = readTransition(kManualAdvanceFadeModeKey, kDefaultManualAdvanceFadeMode);
     const int manualShortCrossfadeMs = readTransition(kManualShortCrossfadeMsKey, kDefaultManualShortCrossfadeMs);
 
-    setOutputModeInternal(mode);
     setSampleRateInternal(sampleRate);
     setSampleFormatInternal(sampleFormat);
     setBufferDurationMsInternal(bufferDurationMs);
@@ -579,7 +547,10 @@ void SettingsController::apply()
         return;
     }
     recordLastValidSnapshot();
-    m_applyOutputConfigExecutor(m_outputMode, m_sampleRate, m_sampleFormat, m_bufferDurationMs, m_preferredDeviceId);
+    // 载荷首字段恒写 1（Mixed）：模式选择已由前端移除（F0），后端 ConfigureOutput
+    // 载荷结构不变；executor typedef 的 mode 形参名在 .h 中保留（桥层契约边界，
+    // 本调用仅按位置传参，不依赖形参名）。
+    m_applyOutputConfigExecutor(1, m_sampleRate, m_sampleFormat, m_bufferDurationMs, m_preferredDeviceId);
 }
 
 void SettingsController::applyTransitionConfig()
@@ -603,7 +574,6 @@ void SettingsController::rollbackRejectedOutputConfig()
     if (!m_hasCommittedSnapshot) {
         return;
     }
-    setOutputModeInternal(m_lastValidOutputMode);
     setSampleRateInternal(m_lastValidSampleRate);
     setSampleFormatInternal(m_lastValidSampleFormat);
     setBufferDurationMsInternal(m_lastValidBufferDurationMs);
@@ -658,18 +628,6 @@ void SettingsController::enumerateDevices()
     }
     // 列表或默认标记变化 → 生效设备（高亮与能力过滤基准）随之变化
     emit effectiveDeviceIdChanged();
-}
-
-bool SettingsController::sampleParamsGreyed() const
-{
-    return m_outputMode == 0;
-}
-
-bool SettingsController::advanceTransitionsGreyed() const
-{
-    // Direct（0）下交叉/预加载/手动档全无效：{1 自动档, 4 预加载, 5 交叉长度,
-    // 8 手动档, 9 手动短交叉} 灰化；{2,3,6,7}（传送类）全局可用。
-    return m_outputMode == 0;
 }
 
 int SettingsController::transitionSliderStepMs() const
@@ -749,15 +707,6 @@ void SettingsController::setEnumerateDevicesExecutor(EnumerateDevicesExecutor ex
 void SettingsController::setLogLevelExecutor(LogLevelExecutor executor)
 {
     m_logLevelExecutor = std::move(executor);
-}
-
-void SettingsController::setOutputModeInternal(int mode)
-{
-    if (!isValidOutputMode(mode) || m_outputMode == mode) {
-        return;
-    }
-    m_outputMode = mode;
-    emit outputModeChanged();
 }
 
 void SettingsController::setSampleRateInternal(int sampleRate)
@@ -920,7 +869,6 @@ void SettingsController::scheduleDebouncedTransitionApply()
 
 void SettingsController::recordLastValidSnapshot()
 {
-    m_lastValidOutputMode = m_outputMode;
     m_lastValidSampleRate = m_sampleRate;
     m_lastValidSampleFormat = m_sampleFormat;
     m_lastValidBufferDurationMs = m_bufferDurationMs;
