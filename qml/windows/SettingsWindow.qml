@@ -17,6 +17,21 @@ Window {
     
     readonly property var settings: appFacade.settings
     
+    // 输出设备下拉的显示标签：系统默认设备附加"（默认）"标记，其余用原始设备名。
+    function outputDeviceLabel(option) {
+        return option.isDefault ? option.deviceName + qsTr("（默认）") : option.deviceName;
+    }
+    
+    // 当前选中项（currentIndex 对应）的显示标签；无可用列表时返回空。
+    function selectedOutputDeviceLabel() {
+        const options = settings.outputDeviceOptions;
+        const index = deviceCombo.currentIndex;
+        if (index < 0 || index >= options.length) {
+            return "";
+        }
+        return outputDeviceLabel(options[index]);
+    }
+    
     Rectangle {
         id: contentRect
         anchors.fill: parent
@@ -1477,25 +1492,57 @@ Window {
                                 Layout.minimumWidth: 120
                                 Layout.preferredHeight: 32
                                 
-                                model: settings.playbackDeviceNames
-                                enabled: settings.playbackDevices.length > 0
+                                model: settings.outputDeviceOptions
+                                textRole: "deviceName"
+                                valueRole: "deviceId"
+                                enabled: settings.outputDeviceOptions.length > 0
                                 
-                                displayText: enabled ? currentText : qsTr("无可用输出设备")
+                                displayText: enabled ? selectedOutputDeviceLabel() : qsTr("无可用输出设备")
                                 
+                                // 高亮"当前生效设备"（C++ 单一解析：显式选择 → 系统默认
+                                // isDefault → 列表首台），与采样率/位深过滤共用同一基准，
+                                // 保证"跟随系统默认"时能力候选与高亮一致。
                                 Binding {
                                     target: deviceCombo
                                     property: "currentIndex"
                                     value: {
                                         if (!deviceCombo.enabled) return -1;
-                                        var idx = settings.playbackDevices.indexOf(settings.preferredDeviceId);
-                                        return idx >= 0 ? idx : 0;
+                                        const options = settings.outputDeviceOptions;
+                                        const effective = settings.effectiveDeviceId;
+                                        for (let i = 0; i < options.length; ++i) {
+                                            if (options[i].deviceId === effective) return i;
+                                        }
+                                        return 0;
                                     }
                                     restoreMode: Binding.RestoreBindingOrValue
                                 }
                                 
                                 onActivated: function(index) {
-                                    if (index >= 0 && index < settings.playbackDevices.length) {
-                                        settings.preferredDeviceId = settings.playbackDevices[index];
+                                    const options = settings.outputDeviceOptions;
+                                    if (index >= 0 && index < options.length) {
+                                        settings.preferredDeviceId = options[index].deviceId;
+                                    }
+                                }
+                                
+                                // 收起态悬停显示当前输出设备全称（内容区 elide 截断后的完整名）。
+                                ToolTip {
+                                    id: deviceComboToolTip
+                                    visible: deviceCombo.hovered && deviceCombo.enabled
+                                             && selectedOutputDeviceLabel().length > 0
+                                    text: selectedOutputDeviceLabel()
+                                    delay: Theme.tooltipDelay
+                                    
+                                    contentItem: Text {
+                                        text: deviceComboToolTip.text
+                                        color: Theme.tooltipTextColor
+                                        font.pixelSize: Theme.tooltipFontSize
+                                    }
+                                    
+                                    background: Rectangle {
+                                        color: Theme.tooltipBackgroundColor
+                                        radius: Theme.tooltipRadius
+                                        border.color: Theme.tooltipBorderColor
+                                        border.width: 1
                                     }
                                 }
                                 
@@ -1533,7 +1580,7 @@ Window {
                                     required property int index
                                     
                                     contentItem: Text {
-                                        text: modelData
+                                        text: root.outputDeviceLabel(modelData)
                                         color: Theme.textPrimary
                                         font.pixelSize: Theme.fontBody
                                         verticalAlignment: Text.AlignVCenter
@@ -1544,6 +1591,11 @@ Window {
                                     
                                     background: Rectangle {
                                         color: parent.hovered ? Theme.hoverColor : Theme.raisedSurfaceColor
+                                    }
+                                    
+                                    // 悬停整行显示该设备全称（行内文本 elide 截断后的完整名）。
+                                    SharedToolTip {
+                                        text: root.outputDeviceLabel(modelData)
                                     }
                                 }
                                 

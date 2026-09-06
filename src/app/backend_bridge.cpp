@@ -512,6 +512,7 @@ QList<PlaybackDeviceCapabilities> BackendBridge::enumeratePlaybackDeviceCapabili
         if (caps.deviceName.isEmpty()) {
             caps.deviceName = caps.deviceId;
         }
+        caps.isDefault = device.isDefaultDevice;
         caps.sampleFormats.reserve(static_cast<qsizetype>(device.supportedSampleFormats.size()));
         for (const seriona::audio::AudioSampleFormat format : device.supportedSampleFormats) {
             caps.sampleFormats.append(static_cast<int>(format));

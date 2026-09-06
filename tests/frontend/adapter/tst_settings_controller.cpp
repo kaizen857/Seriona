@@ -36,6 +36,8 @@ private slots:
     void persistenceRoundTrip();
     void setDefaultsLandsPropertiesWithoutPersistenceOrPush();
     void enumerateDevicesUpdatesList();
+    void outputDeviceOptionsMarkDefaultDevice();
+    void legacyNumericPreferredDeviceIdResetOnEnumerate();
     void startupPushSequence();
     void lyricDelimitersPersistRoundTrip();
     void sampleFormatPersistRoundTrip();
@@ -45,6 +47,7 @@ private slots:
     void deviceCapsEmptyShowsAllOptions();
     void deviceCapsFilterSampleRatesAndFormats();
     void deviceCapsFollowSelectedDevice();
+    void effectiveDeviceTracksDefaultAndFallback();
     void enumerateDevicesExposesCapabilities();
     void unsupportedSavedValueKeptAndMarked();
     void logLevelPersistRoundTrip();
@@ -406,6 +409,81 @@ void SettingsControllerTest::enumerateDevicesUpdatesList()
     QVERIFY(mockController.playbackDevices().isEmpty());
     QVERIFY(mockController.playbackDeviceNames().isEmpty());
     QVERIFY(mockController.playbackDeviceCapabilities().isEmpty());
+    QVERIFY(mockController.outputDeviceOptions().isEmpty());
+}
+
+void SettingsControllerTest::outputDeviceOptionsMarkDefaultDevice()
+{
+    Seriona::App::SettingsController settings;
+    settings.setEnumerateDevicesExecutor(
+        [] {
+            return QList<Seriona::App::PlaybackDeviceCapabilities>{
+                {QStringLiteral("dev-1"), QStringLiteral("Device One"), {}, {}, false},
+                {QStringLiteral("dev-2"), QStringLiteral("Device Two"), {}, {}, true},
+            };
+        });
+    QSignalSpy optionsSpy(&settings, &Seriona::App::SettingsController::outputDeviceOptionsChanged);
+
+    settings.enumerateDevices();
+    const QVariantList options = settings.outputDeviceOptions();
+    QCOMPARE(options.size(), 2);
+    QCOMPARE(options.at(0).toMap().value(QStringLiteral("deviceId")).toString(), QStringLiteral("dev-1"));
+    QVERIFY(!options.at(0).toMap().value(QStringLiteral("isDefault")).toBool());
+    QCOMPARE(options.at(1).toMap().value(QStringLiteral("deviceName")).toString(), QStringLiteral("Device Two"));
+    QVERIFY(options.at(1).toMap().value(QStringLiteral("isDefault")).toBool());
+    // capabilities 映射同步携带 isDefault
+    QVERIFY(settings.playbackDeviceCapabilities().at(1).toMap().value(QStringLiteral("isDefault")).toBool());
+    QCOMPARE(optionsSpy.count(), 1);
+
+    // 相同列表不重复 NOTIFY
+    settings.enumerateDevices();
+    QCOMPARE(optionsSpy.count(), 1);
+
+    // isDefault 翻转 → 能力变化 → 选项模型 NOTIFY
+    settings.setEnumerateDevicesExecutor(
+        [] {
+            return QList<Seriona::App::PlaybackDeviceCapabilities>{
+                {QStringLiteral("dev-1"), QStringLiteral("Device One"), {}, {}, true},
+                {QStringLiteral("dev-2"), QStringLiteral("Device Two"), {}, {}, false},
+            };
+        });
+    settings.enumerateDevices();
+    QCOMPARE(optionsSpy.count(), 2);
+    QVERIFY(settings.outputDeviceOptions().at(0).toMap().value(QStringLiteral("isDefault")).toBool());
+    QVERIFY(!settings.outputDeviceOptions().at(1).toMap().value(QStringLiteral("isDefault")).toBool());
+}
+
+void SettingsControllerTest::legacyNumericPreferredDeviceIdResetOnEnumerate()
+{
+    Seriona::App::SettingsController settings;
+    settings.setSettingsStorageBackend(testBackend());
+    settings.setEnumerateDevicesExecutor(
+        [] {
+            return QList<Seriona::App::PlaybackDeviceCapabilities>{
+                {QStringLiteral("alsa_output.pci-0000_0a_00.4.analog-stereo"), QStringLiteral("Device One"), {}, {}, true},
+                {QStringLiteral("hw:0,0"), QStringLiteral("Device Two"), {}, {}, false},
+            };
+        });
+    QSignalSpy preferredSpy(&settings, &Seriona::App::SettingsController::preferredDeviceIdChanged);
+
+    // 历史版本持久化的纯数字"枚举索引"在稳定 id 列表失配 → 清空回跟随系统默认并持久化
+    settings.setPreferredDeviceId(QStringLiteral("1"));
+    QCOMPARE(settings.preferredDeviceId(), QStringLiteral("1"));
+    QCOMPARE(preferredSpy.count(), 1);
+    settings.enumerateDevices();
+    QVERIFY(settings.preferredDeviceId().isEmpty());
+    QCOMPARE(preferredSpy.count(), 2);
+    QCOMPARE(storedValue(QStringLiteral("output"), QStringLiteral("preferredDeviceId")).toString(), QString());
+
+    // 非纯数字的失配 id（设备被拔出等）保留原值，不回退（拔插恢复后仍可命中）
+    settings.setPreferredDeviceId(QStringLiteral("usb-dac-removed"));
+    settings.enumerateDevices();
+    QCOMPARE(settings.preferredDeviceId(), QStringLiteral("usb-dac-removed"));
+
+    // 命中列表的稳定 id 不受影响
+    settings.setPreferredDeviceId(QStringLiteral("hw:0,0"));
+    settings.enumerateDevices();
+    QCOMPARE(settings.preferredDeviceId(), QStringLiteral("hw:0,0"));
 }
 
 void SettingsControllerTest::directOutputGreyState()
@@ -506,6 +584,68 @@ void SettingsControllerTest::deviceCapsFollowSelectedDevice()
     QCOMPARE(formats.at(2).toMap().value(QStringLiteral("value")).toInt(), 2);
     QCOMPARE(rateOptionsSpy.count(), 1);
     QCOMPARE(formatOptionsSpy.count(), 1);
+}
+
+void SettingsControllerTest::effectiveDeviceTracksDefaultAndFallback()
+{
+    Seriona::App::SettingsController settings;
+    settings.setEnumerateDevicesExecutor(
+        [] {
+            return QList<Seriona::App::PlaybackDeviceCapabilities>{
+                {QStringLiteral("dev-1"), QStringLiteral("Device One"), {}, {44100, 48000}},
+                {QStringLiteral("dev-2"), QStringLiteral("Device Two"), {}, {48000, 96000, 192000}, true},
+            };
+        });
+    settings.enumerateDevices();
+
+    // 未显式选择（跟随系统默认）→ 生效设备 = isDefault 项；采样率候选按它的能力过滤
+    QCOMPARE(settings.effectiveDeviceId(), QStringLiteral("dev-2"));
+    const QVariantList defaultRates = settings.sampleRateOptions();
+    QCOMPARE(defaultRates.size(), 4); // 0 + 48000/96000/192000（44100 不在 dev-2 能力内）
+    QCOMPARE(defaultRates.at(3).toMap().value(QStringLiteral("value")).toInt(), 192000);
+
+    // 已保存值 96000 在默认设备下受支持 → 不标注"设备不支持"
+    settings.setSampleRate(96000);
+    for (const auto &entry : settings.sampleRateOptions()) {
+        if (entry.toMap().value(QStringLiteral("value")).toInt() == 96000) {
+            QVERIFY(!entry.toMap().value(QStringLiteral("label")).toString().contains(QStringLiteral("设备不支持")));
+        }
+    }
+
+    // 显式选择非默认设备 → 生效设备跟随，候选按其能力过滤；已保存 96000 变不支持
+    settings.setPreferredDeviceId(QStringLiteral("dev-1"));
+    QCOMPARE(settings.effectiveDeviceId(), QStringLiteral("dev-1"));
+    const QVariantList dev1Rates = settings.sampleRateOptions();
+    QCOMPARE(dev1Rates.size(), 4); // 0 + 44100/48000 + 96000（已保存值保留并标注）
+    bool savedRateMarked = false;
+    for (const auto &entry : dev1Rates) {
+        if (entry.toMap().value(QStringLiteral("value")).toInt() == 96000) {
+            savedRateMarked = entry.toMap().value(QStringLiteral("label")).toString().contains(QStringLiteral("设备不支持"));
+        }
+    }
+    QVERIFY(savedRateMarked);
+
+    // 列表无 isDefault 标记 → 回退列表首台
+    settings.setEnumerateDevicesExecutor(
+        [] {
+            return QList<Seriona::App::PlaybackDeviceCapabilities>{
+                {QStringLiteral("dev-1"), QStringLiteral("Device One"), {}, {44100, 48000}},
+                {QStringLiteral("dev-2"), QStringLiteral("Device Two"), {}, {48000, 96000, 192000}},
+            };
+        });
+    settings.enumerateDevices();
+    QCOMPARE(settings.effectiveDeviceId(), QStringLiteral("dev-1"));
+
+    // isDefault 标记翻转 → 生效设备与候选自动重算（无需显式选择）
+    settings.setEnumerateDevicesExecutor(
+        [] {
+            return QList<Seriona::App::PlaybackDeviceCapabilities>{
+                {QStringLiteral("dev-1"), QStringLiteral("Device One"), {}, {44100, 48000}, true},
+                {QStringLiteral("dev-2"), QStringLiteral("Device Two"), {}, {48000, 96000, 192000}},
+            };
+        });
+    settings.enumerateDevices();
+    QCOMPARE(settings.effectiveDeviceId(), QStringLiteral("dev-1"));
 }
 
 void SettingsControllerTest::enumerateDevicesExposesCapabilities()

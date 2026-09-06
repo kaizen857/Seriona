@@ -84,8 +84,25 @@ bool capabilitiesEqual(const QList<PlaybackDeviceCapabilities> &lhs, const QList
     for (int i = 0; i < lhs.size(); ++i) {
         const auto &a = lhs.at(i);
         const auto &b = rhs.at(i);
-        // 设备名变化不视为能力变化（不影响过滤选项）
-        if (a.deviceId != b.deviceId || a.sampleFormats != b.sampleFormats || a.sampleRates != b.sampleRates) {
+        // 设备名变化不视为能力变化（不影响过滤选项）；isDefault 参与比较（影响默认高亮）。
+        if (a.deviceId != b.deviceId || a.sampleFormats != b.sampleFormats || a.sampleRates != b.sampleRates
+            || a.isDefault != b.isDefault) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// 历史版本持久化的 preferredDeviceId 是"枚举索引"（纯十进制字符串，见后端
+// miniaudio_device_id_encoding.h 迁移说明）；后端稳定文本 id 永不呈纯数字形态
+// （整数类后端带 "backend:" 前缀），故纯数字且不命中任何 id 的值可安全判定为旧值。
+bool isLegacyNumericDeviceId(const QString &deviceId)
+{
+    if (deviceId.isEmpty()) {
+        return false;
+    }
+    for (const QChar c : deviceId) {
+        if (!c.isDigit()) {
             return false;
         }
     }
@@ -615,20 +632,32 @@ void SettingsController::enumerateDevices()
     }
     m_playbackDevices = ids;
     m_playbackDeviceNames = names;
-    if (capsChanged) {
-        m_deviceCapabilities = devices;
-    }
+    // 无条件下发最新能力：选项/下拉模型一律从 devices 派生（设备改名只有 names 变化时
+    // capabilitiesEqual 返回 false 路径不重建，旧缓存会让下拉显示过期名字）。
+    m_deviceCapabilities = devices;
     if (idsChanged) {
         emit playbackDevicesChanged();
     }
     if (namesChanged) {
         emit playbackDeviceNamesChanged();
     }
+    if (idsChanged || namesChanged || capsChanged) {
+        emit outputDeviceOptionsChanged();
+    }
+    // 旧版持久化值（枚举索引，纯数字）在稳定 id 列表里必然失配：清空回跟随系统默认
+    // 并持久化，让下拉高亮与后端实际设备（系统默认）保持一致。
+    if (!m_preferredDeviceId.isEmpty() && !ids.contains(m_preferredDeviceId)
+        && isLegacyNumericDeviceId(m_preferredDeviceId)) {
+        setPreferredDeviceIdInternal(QString());
+        persistOutputValue(kPreferredDeviceIdKey, QString());
+    }
     if (capsChanged) {
         emit playbackDeviceCapabilitiesChanged();
         emit sampleRateOptionsChanged();
         emit sampleFormatOptionsChanged();
     }
+    // 列表或默认标记变化 → 生效设备（高亮与能力过滤基准）随之变化
+    emit effectiveDeviceIdChanged();
 }
 
 bool SettingsController::sampleParamsGreyed() const
@@ -670,6 +699,7 @@ QVariantList SettingsController::playbackDeviceCapabilities() const
         QVariantMap entry;
         entry.insert(QStringLiteral("deviceId"), caps.deviceId);
         entry.insert(QStringLiteral("deviceName"), caps.deviceName);
+        entry.insert(QStringLiteral("isDefault"), caps.isDefault);
         QVariantList formats;
         formats.reserve(caps.sampleFormats.size());
         for (int format : caps.sampleFormats) {
@@ -682,6 +712,20 @@ QVariantList SettingsController::playbackDeviceCapabilities() const
         }
         entry.insert(QStringLiteral("sampleFormats"), formats);
         entry.insert(QStringLiteral("sampleRates"), rates);
+        result.append(entry);
+    }
+    return result;
+}
+
+QVariantList SettingsController::outputDeviceOptions() const
+{
+    QVariantList result;
+    result.reserve(m_deviceCapabilities.size());
+    for (const auto &caps : m_deviceCapabilities) {
+        QVariantMap entry;
+        entry.insert(QStringLiteral("deviceId"), caps.deviceId);
+        entry.insert(QStringLiteral("deviceName"), caps.deviceName);
+        entry.insert(QStringLiteral("isDefault"), caps.isDefault);
         result.append(entry);
     }
     return result;
@@ -858,6 +902,7 @@ void SettingsController::setPreferredDeviceIdInternal(const QString &deviceId)
     }
     m_preferredDeviceId = deviceId;
     emit preferredDeviceIdChanged();
+    emit effectiveDeviceIdChanged();
     // 设备切换 → 采样率/位深过滤选项随之重算
     emit sampleRateOptionsChanged();
     emit sampleFormatOptionsChanged();
@@ -908,13 +953,28 @@ const PlaybackDeviceCapabilities *SettingsController::selectedDeviceCaps() const
     if (m_deviceCapabilities.isEmpty()) {
         return nullptr;
     }
+    // 解析顺序与设备下拉高亮一致（见 effectiveDeviceId）：显式选择 → 系统默认
+    // （isDefault）→ 列表首台。此回退同时服务采样率/位深过滤：跟随系统默认时
+    // 候选选项必须按"真正生效设备"（默认设备）的能力过滤，而不是列表首台。
+    if (!m_preferredDeviceId.isEmpty()) {
+        for (const auto &caps : m_deviceCapabilities) {
+            if (caps.deviceId == m_preferredDeviceId) {
+                return &caps;
+            }
+        }
+    }
     for (const auto &caps : m_deviceCapabilities) {
-        if (caps.deviceId == m_preferredDeviceId) {
+        if (caps.isDefault) {
             return &caps;
         }
     }
-    // 未选择或所选设备已失效：回退第一台设备（与设备下拉默认显示一致）
     return &m_deviceCapabilities.first();
+}
+
+QString SettingsController::effectiveDeviceId() const
+{
+    const PlaybackDeviceCapabilities *caps = selectedDeviceCaps();
+    return caps != nullptr ? caps->deviceId : QString();
 }
 
 QVariantList SettingsController::buildOptions(const QList<int> &standardValues,

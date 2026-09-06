@@ -19,11 +19,14 @@ namespace Seriona::App {
 // 映射，经 BackendBridge::enumeratePlaybackDeviceCapabilities 填充）。
 // sampleFormats/sampleRates 为空 = 未枚举或全支持（T4 语义：miniaudio 的
 // ma_format_unknown / sampleRate==0 不产生条目），设置窗口下拉显示全部标准选项。
+// isDefault = 系统默认播放设备（后端 ma_device_info.isDefault 透传；语义随后端而异：
+// PulseAudio/PipeWire 下可靠，ALSA 下可能全部为 false，只用于 UI 标记/默认高亮）。
 struct PlaybackDeviceCapabilities {
     QString deviceId;
     QString deviceName;
     QList<int> sampleFormats{};
     QList<int> sampleRates{};
+    bool isDefault{false};
 };
 
 // 输出设置控制器：应用设置存储（默认内存，注入后经后端键值存储）持久化 +
@@ -62,6 +65,10 @@ class SettingsController : public QObject
     Q_PROPERTY(QStringList playbackDevices READ playbackDevices NOTIFY playbackDevicesChanged)
     Q_PROPERTY(QStringList playbackDeviceNames READ playbackDeviceNames NOTIFY playbackDeviceNamesChanged)
     Q_PROPERTY(QString preferredDeviceId READ preferredDeviceId WRITE setPreferredDeviceId NOTIFY preferredDeviceIdChanged)
+    // 当前生效（高亮）输出设备 id：显式选择优先，其次系统默认设备（isDefault），
+    // 再无标记项回退列表首台。设备下拉高亮与采样率/位深过滤（selectedDeviceCaps）
+    // 共用同一解析，保证"跟随系统默认"时两处一致。
+    Q_PROPERTY(QString effectiveDeviceId READ effectiveDeviceId NOTIFY effectiveDeviceIdChanged)
     Q_PROPERTY(int sampleRate READ sampleRate WRITE setSampleRate NOTIFY sampleRateChanged)
     Q_PROPERTY(int sampleFormat READ sampleFormat WRITE setSampleFormat NOTIFY sampleFormatChanged)
     Q_PROPERTY(int bufferDurationMs READ bufferDurationMs WRITE setBufferDurationMs NOTIFY bufferDurationMsChanged)
@@ -72,6 +79,10 @@ class SettingsController : public QObject
     Q_PROPERTY(QVariantList sampleRateOptions READ sampleRateOptions NOTIFY sampleRateOptionsChanged)
     Q_PROPERTY(QVariantList sampleFormatOptions READ sampleFormatOptions NOTIFY sampleFormatOptionsChanged)
     Q_PROPERTY(QVariantList playbackDeviceCapabilities READ playbackDeviceCapabilities NOTIFY playbackDeviceCapabilitiesChanged)
+    // 输出设备下拉的对象模型（与 playbackDevices/playbackDeviceNames 同序同长）：
+    // 每项 { deviceId, deviceName, isDefault }；QML 经 textRole/valueRole/isDefault
+    // 显示名称、按 id 取值、标记并默认高亮系统默认设备。
+    Q_PROPERTY(QVariantList outputDeviceOptions READ outputDeviceOptions NOTIFY outputDeviceOptionsChanged)
     Q_PROPERTY(int autoAdvanceFadeMode READ autoAdvanceFadeMode WRITE setAutoAdvanceFadeMode NOTIFY autoAdvanceFadeModeChanged)
     Q_PROPERTY(bool fadeOnTransport READ fadeOnTransport WRITE setFadeOnTransport NOTIFY fadeOnTransportChanged)
     Q_PROPERTY(bool fadeOnSeek READ fadeOnSeek WRITE setFadeOnSeek NOTIFY fadeOnSeekChanged)
@@ -120,6 +131,7 @@ public:
 
     QString preferredDeviceId() const;
     void setPreferredDeviceId(const QString &deviceId);
+    QString effectiveDeviceId() const;
 
     int sampleRate() const;
     void setSampleRate(int sampleRate);
@@ -168,6 +180,7 @@ public:
     QVariantList sampleRateOptions() const;
     QVariantList sampleFormatOptions() const;
     QVariantList playbackDeviceCapabilities() const;
+    QVariantList outputDeviceOptions() const;
 
     // 后端协商结果落地：只更新属性（含 NOTIFY），不持久化、不推送。
     void setDefaults(int outputMode, int sampleRate, int bufferDurationMs, const QString &preferredDeviceId);
@@ -198,6 +211,7 @@ signals:
     void playbackDevicesChanged();
     void playbackDeviceNamesChanged();
     void preferredDeviceIdChanged();
+    void effectiveDeviceIdChanged();
     void sampleRateChanged();
     void sampleFormatChanged();
     void bufferDurationMsChanged();
@@ -216,6 +230,7 @@ signals:
     void sampleRateOptionsChanged();
     void sampleFormatOptionsChanged();
     void playbackDeviceCapabilitiesChanged();
+    void outputDeviceOptionsChanged();
 
 private:
     void setOutputModeInternal(int mode);
