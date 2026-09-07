@@ -654,14 +654,8 @@ Window {
                             clip: true
                             contentWidth: bandRow.width
                             contentHeight: bandRow.height
-                            ScrollBar.horizontal: ScrollBar {
-                                policy: ScrollBar.AsNeeded
-                                height: Theme.scrollbarWidth
-                                background: Rectangle { color: "transparent" }
-                                contentItem: Rectangle {
-                                    radius: Theme.radiusSmall
-                                    color: parent.hovered ? Theme.scrollbarHoverColor : Theme.scrollbarColor
-                                }
+                            ScrollBar.horizontal: StyledScrollBar {
+                                objectName: "eqHStyledScrollBar"
                             }
                             ScrollBar.vertical.policy: ScrollBar.AlwaysOff
 

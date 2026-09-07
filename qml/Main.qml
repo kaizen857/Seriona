@@ -597,14 +597,29 @@ Window {
                     var mode31 = smokeFindByObjectName(equalizerWindow, "eqMode31Button");
                     var mode10 = smokeFindByObjectName(equalizerWindow, "eqMode10Button");
                     if (mode31 && mode10) {
+                        // GEQ 横向滚动条已收敛为 StyledScrollBar（ScrollBar.horizontal 附挂，
+                        // objectName=eqHStyledScrollBar）：31 段内容(2106px)溢出视口 → size<1
+                        // 句柄可见；切 10 段(678px)不溢出 → AsNeeded 整条隐藏（size 钳 1.0）。
+                        var hBar = smokeFindByObjectName(equalizerWindow, "eqHStyledScrollBar");
+                        console.log("[smoke] eq hStyledScrollBar hit objectName=eqHStyledScrollBar"
+                                + " type=" + (hBar ? String(hBar) : "(null)")
+                                + " isStyled=" + (hBar !== null && hBar.verticalBar !== undefined));
                         mode31.click();
                         if (appFacade.settings.bandMode === 31
                                 && smokeCountByObjectNamePrefix(equalizerWindow, "eqBandSlider") === 31)
                             console.log("[smoke] eq mode31 band sliders=31");
+                        if (hBar)
+                            console.log("[smoke] eq hStyledScrollBar mode31 size=" + hBar.size.toFixed(3)
+                                    + " visible=" + hBar.visible
+                                    + " contentItem.visible=" + hBar.contentItem.visible);
                         mode10.click();
                         if (appFacade.settings.bandMode === 10
                                 && smokeCountByObjectNamePrefix(equalizerWindow, "eqBandSlider") === 10)
                             console.log("[smoke] eq mode10 band sliders=10");
+                        if (hBar)
+                            console.log("[smoke] eq hStyledScrollBar mode10 size=" + hBar.size.toFixed(3)
+                                    + " visible=" + hBar.visible
+                                    + " contentItem.visible=" + hBar.contentItem.visible);
                     }
                     step = 4;
                     smokeTimer.interval = 100;

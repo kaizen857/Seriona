@@ -285,13 +285,17 @@ void UiOnlyHandlerPolicyTest::qmlLayoutSourceContractsStayStable()
     });
 
     // 三态滚动条规格已收敛到共享组件 StyledScrollBar（唯一真源）；
-    // 结构断言跟随规格转移，防止组件内规格回退/删除
+    // 结构断言跟随规格转移，防止组件内规格回退/删除。竖/横两向共用：厚轴按
+    // orientation 取 width（竖向默认语义）/ height（横向），hover/pressed 6→10
+    // 加宽表达式与 AsNeeded 隐藏语义为两向共享规格，均须保持锁定。
     const QString styledScrollBarQml = sourceFile(QStringLiteral("qml/components/StyledScrollBar.qml"));
     expectContainsAll(styledScrollBarQml, {
         "ScrollBar {",
         "policy: ScrollBar.AsNeeded",
-        "width: isHoveredOrPressed ? 10 : Theme.scrollbarWidth",
         "readonly property bool isHoveredOrPressed: control.hovered || control.pressed",
+        "readonly property bool verticalBar: orientation === Qt.Vertical",
+        "width: verticalBar ? (isHoveredOrPressed ? 10 : Theme.scrollbarWidth) : undefined",
+        "height: verticalBar ? undefined : (isHoveredOrPressed ? 10 : Theme.scrollbarWidth)",
         "visible: control.size < 1.0",
         "radius: width / 2",
         "color: control.pressed ? Theme.pressedColor"
