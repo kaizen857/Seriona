@@ -7,15 +7,37 @@
 #include <QVariant>
 #include <QtTest/QTest>
 
+#include <limits>
 #include <memory>
 
 namespace {
 
+using Seriona::App::kEqBandCount10;
+using Seriona::App::kEqBandCount31;
+using Seriona::App::kEqBandMode10;
+using Seriona::App::kEqBandMode31;
+using Seriona::App::kEqBassBoostGains10;
+using Seriona::App::kEqCurvePointCount;
+using Seriona::App::kEqSpectrumBinCount;
+
 constexpr auto kOutputGroup = "output";
+constexpr auto kEqGroup = "equalizer";
 
 QString storageKey(const QString &group, const QString &key)
 {
     return group + QLatin1Char('\x1f') + key;
+}
+
+// 等差数列双精度表（first + i*step；调用方保证落在 0.1 增益网格上——
+// 写入侧 roundEqGainTenth 归一到 0.1，离网值会使断言与存储值失配）
+QVariantList makeEqGains(int count, double first, double step)
+{
+    QVariantList gains;
+    gains.reserve(count);
+    for (int i = 0; i < count; ++i) {
+        gains.append(first + i * step);
+    }
+    return gains;
 }
 
 } // namespace
@@ -61,6 +83,13 @@ private slots:
     void transitionApplyPacksCurrentNineFields();
     void transitionExecutorUnsetNoopPersistence();
     void transitionStartupApplySequence();
+    void eqDefaults();
+    void eqPersistRoundTrip();
+    void eqMirrorWriterContract();
+    void eqDebounceMergeAndImmediateCommit();
+    void eqPresetCrudBuiltinProtected();
+    void eqPresetTenThirtyOneIndependent();
+    void eqPresetSanitizeDirtyStorage();
 
 private:
     Seriona::App::AppSettingsBackend testBackend();
@@ -1356,6 +1385,514 @@ void SettingsControllerTest::transitionStartupApplySequence()
     settings.apply();
     QCOMPARE(transitionPayloads.size(), 2);
     QCOMPARE(outputPushes, 2);
+}
+
+void SettingsControllerTest::eqDefaults()
+{
+    Seriona::App::SettingsController settings;
+
+    // 默认：enabled=false / bandMode=10 / preGain 0.0 / 两档增益全 0 定长 10|31 /
+    // limiter=false / spectrum=false；订阅镜像与用户预设区为空
+    QCOMPARE(settings.enabled(), false);
+    QCOMPARE(settings.bandMode(), kEqBandMode10);
+    QCOMPARE(settings.preGainDb(), 0.0);
+    QCOMPARE(settings.bandGains10().size(), kEqBandCount10);
+    QCOMPARE(settings.bandGains31().size(), kEqBandCount31);
+    for (const QVariant &gain : settings.bandGains10()) {
+        QCOMPARE(gain.toDouble(), 0.0);
+    }
+    for (const QVariant &gain : settings.bandGains31()) {
+        QCOMPARE(gain.toDouble(), 0.0);
+    }
+    QCOMPARE(settings.limiterEnabled(), false);
+    QCOMPARE(settings.spectrumEnabled(), false);
+    QVERIFY(settings.spectrumBins().isEmpty());
+    QVERIFY(settings.curvePoints().isEmpty());
+    QVERIFY(settings.curveFrequencies().isEmpty());
+
+    // 预设列表默认 = 内置 8 款恒序在前（builtin=true 只读，10 档 gains 定长）
+    const QVariantList presets = settings.eqPresetList();
+    QCOMPARE(presets.size(), 8);
+    const QStringList builtinIds{QStringLiteral("flat"), QStringLiteral("bass-boost"), QStringLiteral("treble-boost"),
+                                 QStringLiteral("vocal"), QStringLiteral("pop"), QStringLiteral("rock"),
+                                 QStringLiteral("classical"), QStringLiteral("jazz")};
+    for (int i = 0; i < presets.size(); ++i) {
+        const QVariantMap entry = presets.at(i).toMap();
+        QCOMPARE(entry.value(QStringLiteral("id")).toString(), builtinIds.at(i));
+        QVERIFY(entry.value(QStringLiteral("builtin")).toBool());
+        QCOMPARE(entry.value(QStringLiteral("preGainDb")).toDouble(), 0.0);
+        QCOMPARE(entry.value(QStringLiteral("gains")).toList().size(), kEqBandCount10);
+    }
+}
+
+void SettingsControllerTest::eqPersistRoundTrip()
+{
+    // 0.5 步进全在 0.1 增益网格上（写入归一化后与输入逐位一致，double 精度不损）
+    const QVariantList gains10 = makeEqGains(kEqBandCount10, -3.0, 0.5);
+    const QVariantList gains31 = makeEqGains(kEqBandCount31, -1.5, 0.5);
+    {
+        Seriona::App::SettingsController writer;
+        writer.setSettingsStorageBackend(testBackend());
+        writer.setEnabled(true);
+        writer.setBandMode(kEqBandMode31);
+        writer.setPreGainDb(-3.3);
+        writer.setBandGains10(gains10);
+        writer.setBandGains31(gains31);
+        writer.setLimiterEnabled(true);
+        writer.setSpectrumEnabled(true);
+        QCOMPARE(writer.enabled(), true);
+        QCOMPARE(writer.bandMode(), kEqBandMode31);
+        QCOMPARE(writer.preGainDb(), -3.3);
+        QCOMPARE(writer.bandGains10(), gains10);
+        QCOMPARE(writer.bandGains31(), gains31);
+        QCOMPARE(writer.limiterEnabled(), true);
+        QCOMPARE(writer.spectrumEnabled(), true);
+    }
+
+    // 落盘键 = equalizer 组 7 个用户可设键（无 stray 键、无镜像键）
+    QCOMPARE(m_store.size(), 7);
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("enabled")).toBool(), true);
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("bandMode")).toInt(), kEqBandMode31);
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("preGainDb")).toDouble(), -3.3);
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("bandGains10")).toList(), gains10);
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("bandGains31")).toList(), gains31);
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("limiterEnabled")).toBool(), true);
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("spectrumEnabled")).toBool(), true);
+
+    // 第二实例共享假后端 → reload 值完整还原（含小数 double）；reload 不推送
+    Seriona::App::SettingsController reader;
+    reader.setSettingsStorageBackend(testBackend());
+    int pushes = 0;
+    reader.setApplyEqualizerConfigExecutor(
+        [&pushes](bool, int, double, const QVariantList &, bool, bool) {
+            ++pushes;
+        });
+    reader.reloadFromSettings();
+    QCOMPARE(reader.enabled(), true);
+    QCOMPARE(reader.bandMode(), kEqBandMode31);
+    QCOMPARE(reader.preGainDb(), -3.3);
+    QCOMPARE(reader.bandGains10(), gains10);
+    QCOMPARE(reader.bandGains31(), gains31);
+    QCOMPARE(reader.limiterEnabled(), true);
+    QCOMPARE(reader.spectrumEnabled(), true);
+    QCOMPARE(pushes, 0);
+
+    // 镜像 3 键零持久化：存储无 equalizer 组外键；reload 后镜像仍为空默认
+    QVERIFY(!storedContains(kEqGroup, QStringLiteral("spectrumBins")));
+    QVERIFY(!storedContains(kEqGroup, QStringLiteral("curvePoints")));
+    QVERIFY(!storedContains(kEqGroup, QStringLiteral("curveFrequencies")));
+    QVERIFY(reader.spectrumBins().isEmpty());
+    QVERIFY(reader.curvePoints().isEmpty());
+    QVERIFY(reader.curveFrequencies().isEmpty());
+}
+
+void SettingsControllerTest::eqMirrorWriterContract()
+{
+    Seriona::App::SettingsController settings;
+    settings.setSettingsStorageBackend(testBackend());
+    QSignalSpy pointsSpy(&settings, &Seriona::App::SettingsController::curvePointsChanged);
+    QSignalSpy freqsSpy(&settings, &Seriona::App::SettingsController::curveFrequenciesChanged);
+    QSignalSpy binsSpy(&settings, &Seriona::App::SettingsController::spectrumBinsChanged);
+    int pushes = 0;
+    settings.setApplyEqualizerConfigExecutor(
+        [&pushes](bool, int, double, const QVariantList &, bool, bool) {
+            ++pushes;
+        });
+
+    const QVariantList points = makeEqGains(kEqCurvePointCount, 0.0, 1.0);
+    const QVariantList freqs = makeEqGains(kEqCurvePointCount, 20.0, 110.5);
+    const QVariantList bins = makeEqGains(kEqSpectrumBinCount, -60.0, 1.0);
+
+    // 定长契约：长度不符（181/180、180/181、59/61）整体丢弃，不落值不发 NOTIFY
+    settings.mirrorEqualizerCurve(points, makeEqGains(kEqCurvePointCount - 1, 20.0, 110.5));
+    settings.mirrorEqualizerCurve(makeEqGains(kEqCurvePointCount - 1, 0.0, 1.0), freqs);
+    settings.mirrorSpectrumBins(makeEqGains(kEqSpectrumBinCount - 1, -60.0, 1.0));
+    settings.mirrorSpectrumBins(makeEqGains(kEqSpectrumBinCount + 1, -60.0, 1.0));
+    QVERIFY(settings.curvePoints().isEmpty());
+    QVERIFY(settings.curveFrequencies().isEmpty());
+    QVERIFY(settings.spectrumBins().isEmpty());
+    QCOMPARE(pointsSpy.count(), 0);
+    QCOMPARE(freqsSpy.count(), 0);
+    QCOMPARE(binsSpy.count(), 0);
+
+    // 合法定长（181/181/60）→ 落值 + NOTIFY
+    settings.mirrorEqualizerCurve(points, freqs);
+    settings.mirrorSpectrumBins(bins);
+    QCOMPARE(settings.curvePoints(), points);
+    QCOMPARE(settings.curveFrequencies(), freqs);
+    QCOMPARE(settings.spectrumBins(), bins);
+    QCOMPARE(pointsSpy.count(), 1);
+    QCOMPARE(freqsSpy.count(), 1);
+    QCOMPARE(binsSpy.count(), 1);
+
+    // 同值重推幂等去重：不发 NOTIFY
+    settings.mirrorEqualizerCurve(points, freqs);
+    settings.mirrorSpectrumBins(bins);
+    QCOMPARE(pointsSpy.count(), 1);
+    QCOMPARE(freqsSpy.count(), 1);
+    QCOMPARE(binsSpy.count(), 1);
+
+    // 变值（单点差）→ 再 NOTIFY，值更新
+    QVariantList changedPoints = points;
+    changedPoints[kEqCurvePointCount / 2] = changedPoints.at(kEqCurvePointCount / 2).toDouble() + 1.0;
+    settings.mirrorEqualizerCurve(changedPoints, freqs);
+    QCOMPARE(settings.curvePoints(), changedPoints);
+    QCOMPARE(settings.curveFrequencies(), freqs);
+    QCOMPARE(pointsSpy.count(), 2);
+    QCOMPARE(freqsSpy.count(), 2);
+
+    // 镜像写者零持久化（存储零键零增长）+ 零推送（executor 探针零次）
+    QVERIFY(m_store.isEmpty());
+    QCOMPARE(pushes, 0);
+}
+
+void SettingsControllerTest::eqDebounceMergeAndImmediateCommit()
+{
+    struct EqPack {
+        bool enabled = false;
+        int bandMode = 0;
+        double preGainDb = 0.0;
+        QVariantList gains;
+        bool limiterEnabled = false;
+        bool spectrumEnabled = false;
+    };
+
+    Seriona::App::SettingsController settings;
+    settings.setSettingsStorageBackend(testBackend());
+    QList<EqPack> packs;
+    settings.setApplyEqualizerConfigExecutor(
+        [&packs](bool enabled, int bandMode, double preGainDb, const QVariantList &bandGains, bool limiterEnabled,
+                 bool spectrumEnabled) {
+            packs.append(EqPack{enabled, bandMode, preGainDb, bandGains, limiterEnabled, spectrumEnabled});
+        });
+    int outputPushes = 0;
+    settings.setApplyOutputConfigExecutor(
+        [&outputPushes](int, int, int, int, const QString &) {
+            ++outputPushes;
+        });
+
+    // 连续参数（bandGains10 + preGainDb）多次连写 → 50ms 窗口内零推送，
+    // 到期单次推送且载荷 = 全量终值（enabled/bandMode/limiter/spectrum 同步携带）
+    const QVariantList final10 = makeEqGains(kEqBandCount10, 1.0, 0.5);
+    settings.setBandGains10(makeEqGains(kEqBandCount10, 0.5, 0.5));
+    settings.setPreGainDb(2.0);
+    settings.setBandGains10(makeEqGains(kEqBandCount10, 0.0, 0.5));
+    settings.setPreGainDb(4.0);
+    settings.setBandGains10(final10);
+    QCOMPARE(packs.size(), 0);
+    QTRY_COMPARE_WITH_TIMEOUT(packs.size(), 1, 2000);
+    QCOMPARE(packs.at(0).enabled, false);
+    QCOMPARE(packs.at(0).bandMode, kEqBandMode10);
+    QCOMPARE(packs.at(0).preGainDb, 4.0);
+    QCOMPARE(packs.at(0).gains, final10);
+    QCOMPARE(packs.at(0).limiterEnabled, false);
+    QCOMPARE(packs.at(0).spectrumEnabled, false);
+    QTest::qWait(600);
+    QCOMPARE(packs.size(), 1);
+
+    // 窗口外再写 → 再推（独立第二次）
+    settings.setPreGainDb(-2.5);
+    QCOMPARE(packs.size(), 1);
+    QTRY_COMPARE_WITH_TIMEOUT(packs.size(), 2, 2000);
+    QCOMPARE(packs.at(1).preGainDb, -2.5);
+    QCOMPARE(packs.at(1).gains, final10);
+    QTest::qWait(600);
+    QCOMPARE(packs.size(), 2);
+
+    // 离散项（enabled/bandMode/limiter/spectrum）写即推（不等窗口）
+    settings.setEnabled(true);
+    QCOMPARE(packs.size(), 3);
+    QCOMPARE(packs.at(2).enabled, true);
+    settings.setBandMode(kEqBandMode31);
+    QCOMPARE(packs.size(), 4);
+    QCOMPARE(packs.at(3).bandMode, kEqBandMode31);
+    QCOMPARE(packs.at(3).gains.size(), kEqBandCount31);
+    settings.setLimiterEnabled(true);
+    QCOMPARE(packs.size(), 5);
+    QCOMPARE(packs.at(4).limiterEnabled, true);
+    settings.setSpectrumEnabled(true);
+    QCOMPARE(packs.size(), 6);
+    QCOMPARE(packs.at(5).spectrumEnabled, true);
+    QCOMPARE(packs.at(5).bandMode, kEqBandMode31);
+
+    // 预设/复位 = 立即项：applyEqPreset 立即推一次（按 31 档取内置数组），resetEq 再立即推
+    QVERIFY(settings.applyEqPreset(QStringLiteral("bass-boost")));
+    QCOMPARE(packs.size(), 7);
+    QCOMPARE(packs.at(6).preGainDb, 0.0);
+    QCOMPARE(packs.at(6).gains.size(), kEqBandCount31);
+    QVERIFY(settings.resetEq());
+    QCOMPARE(packs.size(), 8);
+    QCOMPARE(packs.at(7).preGainDb, 0.0);
+    QCOMPARE(packs.at(7).gains, makeEqGains(kEqBandCount31, 0.0, 0.0));
+    QCOMPARE(packs.at(7).enabled, true);
+    QTest::qWait(400);
+    QCOMPARE(packs.size(), 8);
+
+    // 启动路径 apply()：EQ executor 顺带推一次全量现值；output executor 各归其道
+    QCOMPARE(outputPushes, 0);
+    settings.apply();
+    QCOMPARE(packs.size(), 9);
+    QCOMPARE(packs.at(8).enabled, true);
+    QCOMPARE(packs.at(8).bandMode, kEqBandMode31);
+    QCOMPARE(outputPushes, 1);
+
+    // 未绑定 executor（默认 mock-only 形态）全链 no-op：不崩、持久化仍工作
+    Seriona::App::SettingsController unbound;
+    unbound.setSettingsStorageBackend(testBackend());
+    unbound.setEnabled(true);
+    unbound.setBandMode(kEqBandMode31);
+    unbound.setPreGainDb(2.5);
+    unbound.setBandGains10(makeEqGains(kEqBandCount10, 0.5, 0.5));
+    unbound.setBandGains31(makeEqGains(kEqBandCount31, -1.0, 0.5));
+    unbound.setLimiterEnabled(true);
+    unbound.setSpectrumEnabled(true);
+    QVERIFY(unbound.addEqPreset(QStringLiteral("unbound-preset")));
+    QVERIFY(unbound.applyEqPreset(QStringLiteral("flat")));
+    QVERIFY(unbound.resetEq());
+    QTest::qWait(150); // 去抖到期经未绑定 executor 亦为 no-op（不崩）
+
+    // 复位后落盘终值：enabled/bandMode/limiter/spectrum 保持，两档增益与 preGain 平坦
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("enabled")).toBool(), true);
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("bandMode")).toInt(), kEqBandMode31);
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("limiterEnabled")).toBool(), true);
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("spectrumEnabled")).toBool(), true);
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("preGainDb")).toDouble(), 0.0);
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("bandGains10")).toList(), makeEqGains(kEqBandCount10, 0.0, 0.0));
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("bandGains31")).toList(), makeEqGains(kEqBandCount31, 0.0, 0.0));
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("userPresets31")).toList().size(), 1);
+
+    // 无绑定下的 reload 全链还原（含 31 档用户预设），零推送
+    Seriona::App::SettingsController unboundReader;
+    unboundReader.setSettingsStorageBackend(testBackend());
+    int readerPushes = 0;
+    unboundReader.setApplyEqualizerConfigExecutor(
+        [&readerPushes](bool, int, double, const QVariantList &, bool, bool) {
+            ++readerPushes;
+        });
+    unboundReader.reloadFromSettings();
+    QCOMPARE(unboundReader.enabled(), true);
+    QCOMPARE(unboundReader.bandMode(), kEqBandMode31);
+    QCOMPARE(unboundReader.preGainDb(), 0.0);
+    QCOMPARE(unboundReader.limiterEnabled(), true);
+    QCOMPARE(unboundReader.spectrumEnabled(), true);
+    QCOMPARE(unboundReader.eqPresetList().size(), 9);
+    QCOMPARE(unboundReader.eqPresetList().at(8).toMap().value(QStringLiteral("name")).toString(),
+             QStringLiteral("unbound-preset"));
+    QCOMPARE(readerPushes, 0);
+}
+
+void SettingsControllerTest::eqPresetCrudBuiltinProtected()
+{
+    Seriona::App::SettingsController settings;
+    settings.setSettingsStorageBackend(testBackend());
+    QSignalSpy listSpy(&settings, &Seriona::App::SettingsController::eqPresetListChanged);
+
+    // 内置 8 款恒在前 builtin=true；10 档下各档数组定长 10，值同常量表
+    const QVariantList initial = settings.eqPresetList();
+    QCOMPARE(initial.size(), 8);
+    const QVariantMap bass = initial.at(1).toMap();
+    const QVariantList bassGains = bass.value(QStringLiteral("gains")).toList();
+    QCOMPARE(bassGains.size(), kEqBandCount10);
+    for (int i = 0; i < kEqBandCount10; ++i) {
+        QCOMPARE(bassGains.at(i).toDouble(), kEqBassBoostGains10[i]);
+    }
+
+    // 内置保护：rename/delete 内置 id 与未知 id 均 false，列表不动
+    QVERIFY(!settings.renameEqPreset(QStringLiteral("bass-boost"), QStringLiteral("改写内置")));
+    QVERIFY(!settings.deleteEqPreset(QStringLiteral("flat")));
+    QVERIFY(!settings.renameEqPreset(QStringLiteral("no-such-id"), QStringLiteral("x")));
+    QVERIFY(!settings.deleteEqPreset(QStringLiteral("no-such-id")));
+    QCOMPARE(settings.eqPresetList(), initial);
+    QCOMPARE(listSpy.count(), 0);
+
+    // 用户 add：以当前增益/预增益存档；列表尾随内置（builtin=false）
+    const QVariantList custom = makeEqGains(kEqBandCount10, 0.5, 0.5);
+    settings.setBandGains10(custom);
+    settings.setPreGainDb(2.0);
+    QVERIFY(settings.addEqPreset(QStringLiteral("  我的曲线 ")));
+    QCOMPARE(listSpy.count(), 1);
+    QCOMPARE(settings.eqPresetList().size(), 9);
+    const QVariantMap userEntry = settings.eqPresetList().at(8).toMap();
+    QCOMPARE(userEntry.value(QStringLiteral("id")).toString(), QStringLiteral("user-1"));
+    QCOMPARE(userEntry.value(QStringLiteral("name")).toString(), QStringLiteral("我的曲线"));
+    QVERIFY(!userEntry.value(QStringLiteral("builtin")).toBool());
+    QCOMPARE(userEntry.value(QStringLiteral("preGainDb")).toDouble(), 2.0);
+    QCOMPARE(userEntry.value(QStringLiteral("gains")).toList(), custom);
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("userPresets10")).toList().size(), 1);
+
+    // rename 用户预设
+    QVERIFY(settings.renameEqPreset(QStringLiteral("user-1"), QStringLiteral("改名后")));
+    QCOMPARE(listSpy.count(), 2);
+    QCOMPARE(settings.eqPresetList().at(8).toMap().value(QStringLiteral("name")).toString(), QStringLiteral("改名后"));
+
+    // 非法名拒绝（空 / 全空白 / 超 64 字符），列表与存储不动
+    const QString tooLong(65, QLatin1Char('a'));
+    QVERIFY(!settings.renameEqPreset(QStringLiteral("user-1"), QString()));
+    QVERIFY(!settings.renameEqPreset(QStringLiteral("user-1"), QStringLiteral("   ")));
+    QVERIFY(!settings.renameEqPreset(QStringLiteral("user-1"), tooLong));
+    QVERIFY(!settings.addEqPreset(QStringLiteral(" ")));
+    QVERIFY(!settings.addEqPreset(tooLong));
+    QCOMPARE(listSpy.count(), 2);
+    QCOMPARE(settings.eqPresetList().at(8).toMap().value(QStringLiteral("name")).toString(), QStringLiteral("改名后"));
+
+    // delete 用户预设；删除后存储键清空；重复删除 false
+    QVERIFY(settings.deleteEqPreset(QStringLiteral("user-1")));
+    QCOMPARE(listSpy.count(), 3);
+    QCOMPARE(settings.eqPresetList(), initial);
+    QVERIFY(!settings.deleteEqPreset(QStringLiteral("user-1")));
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("userPresets10")).toList().size(), 0);
+
+    // addEqPresetWithValues 归一化：越界钳位 ±15、短表补零定长 10
+    const QVariantList raw{25.0, -25.0, 3.3, 4.5};
+    QVERIFY(settings.addEqPresetWithValues(QStringLiteral("vals"), raw, 30.0));
+    QCOMPARE(listSpy.count(), 4);
+    const QVariantMap valEntry = settings.eqPresetList().at(8).toMap();
+    QCOMPARE(valEntry.value(QStringLiteral("preGainDb")).toDouble(), 15.0);
+    const QVariantList normalized = valEntry.value(QStringLiteral("gains")).toList();
+    QCOMPARE(normalized.size(), kEqBandCount10);
+    QCOMPARE(normalized.at(0).toDouble(), 15.0);
+    QCOMPARE(normalized.at(1).toDouble(), -15.0);
+    QCOMPARE(normalized.at(2).toDouble(), 3.3);
+    QCOMPARE(normalized.at(3).toDouble(), 4.5);
+    for (int i = 4; i < kEqBandCount10; ++i) {
+        QCOMPARE(normalized.at(i).toDouble(), 0.0);
+    }
+
+    // NaN 项归一为 0.0（防非有限值穿透预设存储）；非法名拒绝
+    const QVariantList nanGains{std::numeric_limits<double>::quiet_NaN()};
+    QVERIFY(settings.addEqPresetWithValues(QStringLiteral("nan-entry"), nanGains, 0.0));
+    QCOMPARE(settings.eqPresetList().size(), 10);
+    QCOMPARE(settings.eqPresetList().at(9).toMap().value(QStringLiteral("gains")).toList().at(0).toDouble(), 0.0);
+    QVERIFY(!settings.addEqPresetWithValues(QString(), raw, 0.0));
+}
+
+void SettingsControllerTest::eqPresetTenThirtyOneIndependent()
+{
+    Seriona::App::SettingsController settings;
+    settings.setSettingsStorageBackend(testBackend());
+
+    // 10 档存档用户预设（当前档增益/预增益快照）
+    const QVariantList tenGains = makeEqGains(kEqBandCount10, 1.0, 0.5);
+    settings.setBandGains10(tenGains);
+    settings.setPreGainDb(1.5);
+    QVERIFY(settings.addEqPreset(QStringLiteral("ten-mode-preset")));
+    QCOMPARE(settings.eqPresetList().size(), 9);
+    QCOMPARE(settings.eqPresetList().at(8).toMap().value(QStringLiteral("id")).toString(), QStringLiteral("user-1"));
+
+    // 切 31 档：10 档用户预设不可见；内置 8 款恒在前且 gains 按 31 档定长
+    QSignalSpy listSpy(&settings, &Seriona::App::SettingsController::eqPresetListChanged);
+    settings.setBandMode(kEqBandMode31);
+    QCOMPARE(listSpy.count(), 1);
+    QCOMPARE(settings.eqPresetList().size(), 8);
+    for (const QVariant &entry : settings.eqPresetList()) {
+        const QVariantMap map = entry.toMap();
+        QVERIFY(map.value(QStringLiteral("builtin")).toBool());
+        QCOMPARE(map.value(QStringLiteral("gains")).toList().size(), kEqBandCount31);
+    }
+
+    // 31 档独立存档（与 10 档同 id 序列 user-1，互不覆盖）
+    QVERIFY(settings.addEqPreset(QStringLiteral("thirty-one-preset")));
+    QCOMPARE(settings.eqPresetList().size(), 9);
+
+    // 切回 10 档：10 档预设仍在、31 档预设不可见
+    settings.setBandMode(kEqBandMode10);
+    QCOMPARE(settings.eqPresetList().size(), 9);
+    QCOMPARE(settings.eqPresetList().at(8).toMap().value(QStringLiteral("name")).toString(),
+             QStringLiteral("ten-mode-preset"));
+
+    // 两档存储键独立
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("userPresets10")).toList().size(), 1);
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("userPresets31")).toList().size(), 1);
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("userPresets10")).toList().at(0).toMap().value(
+                 QStringLiteral("name"))
+                 .toString(),
+             QStringLiteral("ten-mode-preset"));
+    QCOMPARE(storedValue(kEqGroup, QStringLiteral("userPresets31")).toList().at(0).toMap().value(
+                 QStringLiteral("name"))
+                 .toString(),
+             QStringLiteral("thirty-one-preset"));
+
+    // 预设应用按当前档位取对应存储：31 档改值后应用 user-1 → 恢复 31 档自身存档
+    settings.setBandMode(kEqBandMode31);
+    settings.setBandGains31(makeEqGains(kEqBandCount31, 0.0, 0.5));
+    QVERIFY(settings.applyEqPreset(QStringLiteral("user-1")));
+    QCOMPARE(settings.bandGains31(), makeEqGains(kEqBandCount31, 0.0, 0.0));
+    QCOMPARE(settings.preGainDb(), 1.5); // 存档于 10/31 档添加时点的当前预增益
+
+    // 10 档 preset 在 31 档不可应用（id 不在 31 档槽）→ 但 31 档 user-1 属 thirty-one-preset
+    settings.setBandMode(kEqBandMode31);
+    QVERIFY(settings.applyEqPreset(QStringLiteral("user-1"))); // 值未变：无动作仍返回 true
+    QCOMPARE(settings.bandGains31(), makeEqGains(kEqBandCount31, 0.0, 0.0));
+}
+
+void SettingsControllerTest::eqPresetSanitizeDirtyStorage()
+{
+    // 脏数据预置（手动灌入假后端 10 档槽）：
+    // 丢弃：空名（首尾空白）/"user-" 前缀缺失/重复 id/超长名；
+    // 保留但归一化：preGain 越界钳位、gains 短表补零 + 越界项钳位
+    QVariantList dirty;
+    QVariantMap good;
+    good.insert(QStringLiteral("id"), QStringLiteral("user-1"));
+    good.insert(QStringLiteral("name"), QStringLiteral("  合法条目  "));
+    good.insert(QStringLiteral("preGainDb"), 0.0);
+    good.insert(QStringLiteral("gains"), makeEqGains(kEqBandCount10, 1.0, 0.5));
+    dirty.append(good);
+    QVariantMap emptyName;
+    emptyName.insert(QStringLiteral("id"), QStringLiteral("user-2"));
+    emptyName.insert(QStringLiteral("name"), QStringLiteral("   "));
+    emptyName.insert(QStringLiteral("gains"), makeEqGains(kEqBandCount10, 0.0, 0.0));
+    dirty.append(emptyName);
+    QVariantMap dupId;
+    dupId.insert(QStringLiteral("id"), QStringLiteral("user-1"));
+    dupId.insert(QStringLiteral("name"), QStringLiteral("重复id"));
+    dupId.insert(QStringLiteral("gains"), makeEqGains(kEqBandCount10, 0.0, 0.0));
+    dirty.append(dupId);
+    QVariantMap noPrefix;
+    noPrefix.insert(QStringLiteral("id"), QStringLiteral("evil-1"));
+    noPrefix.insert(QStringLiteral("name"), QStringLiteral("无前缀"));
+    noPrefix.insert(QStringLiteral("gains"), makeEqGains(kEqBandCount10, 0.0, 0.0));
+    dirty.append(noPrefix);
+    QVariantMap longName;
+    longName.insert(QStringLiteral("id"), QStringLiteral("user-3"));
+    longName.insert(QStringLiteral("name"), QString(65, QLatin1Char('x')));
+    longName.insert(QStringLiteral("gains"), makeEqGains(kEqBandCount10, 0.0, 0.0));
+    dirty.append(longName);
+    QVariantMap clamped;
+    clamped.insert(QStringLiteral("id"), QStringLiteral("user-4"));
+    clamped.insert(QStringLiteral("name"), QStringLiteral("钳位"));
+    clamped.insert(QStringLiteral("preGainDb"), 40.0);
+    clamped.insert(QStringLiteral("gains"), QVariantList{99.0, -99.0});
+    dirty.append(clamped);
+    m_store.insert(storageKey(kEqGroup, QStringLiteral("userPresets10")), dirty);
+
+    Seriona::App::SettingsController settings;
+    settings.setSettingsStorageBackend(testBackend());
+    settings.reloadFromSettings();
+
+    // 仅合法 + 钳位两条存活（8 内置 + 2 用户）
+    const QVariantList presets = settings.eqPresetList();
+    QCOMPARE(presets.size(), 10);
+    const QVariantMap user0 = presets.at(8).toMap();
+    QCOMPARE(user0.value(QStringLiteral("id")).toString(), QStringLiteral("user-1"));
+    QCOMPARE(user0.value(QStringLiteral("name")).toString(), QStringLiteral("合法条目")); // 首尾空白被裁
+    QVERIFY(!user0.value(QStringLiteral("builtin")).toBool());
+    QCOMPARE(user0.value(QStringLiteral("gains")).toList(), makeEqGains(kEqBandCount10, 1.0, 0.5));
+    const QVariantMap user1 = presets.at(9).toMap();
+    QCOMPARE(user1.value(QStringLiteral("id")).toString(), QStringLiteral("user-4"));
+    QCOMPARE(user1.value(QStringLiteral("preGainDb")).toDouble(), 15.0);
+    const QVariantList clampedGains = user1.value(QStringLiteral("gains")).toList();
+    QCOMPARE(clampedGains.size(), kEqBandCount10);
+    QCOMPARE(clampedGains.at(0).toDouble(), 15.0);
+    QCOMPARE(clampedGains.at(1).toDouble(), -15.0);
+    for (int i = 2; i < kEqBandCount10; ++i) {
+        QCOMPARE(clampedGains.at(i).toDouble(), 0.0);
+    }
+
+    // 另一档无脏数据 → 切 31 档仅内置 8 款；镜像键不受 reload 影响（仍空）
+    settings.setBandMode(kEqBandMode31);
+    QCOMPARE(settings.eqPresetList().size(), 8);
+    QVERIFY(settings.curvePoints().isEmpty());
+    QVERIFY(settings.spectrumBins().isEmpty());
 }
 
 QTEST_GUILESS_MAIN(SettingsControllerTest)

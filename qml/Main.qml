@@ -104,6 +104,65 @@ Window {
         return result;
     }
 
+    // smoke 窗内交互辅助：按 objectName 定位 / 计数（settings-menu EQ 断言用；零等待，仅遍历对象树）
+    function smokeFindByObjectName(root, targetName) {
+        var seen = [];
+        var stack = [root];
+        while (stack.length > 0) {
+            var cur = stack.pop();
+            if (cur === undefined || cur === null)
+                continue;
+            if (seen.indexOf(cur) !== -1)
+                continue;
+            seen.push(cur);
+            if (cur.objectName !== undefined && String(cur.objectName) === targetName)
+                return cur;
+            // Popup 经 Overlay 重挂后不在 item 树内，但实例仍可从宿主 Loader 的 item 引用取到
+            if (cur.item !== undefined && cur.item !== null
+                    && String(cur.item.objectName) === targetName)
+                return cur.item;
+            var toVisit = [];
+            if (cur.contentItem !== undefined && cur.contentItem !== null)
+                toVisit.push(cur.contentItem);
+            var data = cur.data;
+            if (data !== undefined) {
+                for (var i = 0; i < data.length; ++i)
+                    toVisit.push(data[i]);
+            }
+            for (var j = toVisit.length - 1; j >= 0; --j)
+                stack.push(toVisit[j]);
+        }
+        return null;
+    }
+
+    function smokeCountByObjectNamePrefix(root, namePrefix) {
+        var count = 0;
+        var seen = [];
+        var stack = [root];
+        while (stack.length > 0) {
+            var cur = stack.pop();
+            if (cur === undefined || cur === null)
+                continue;
+            if (seen.indexOf(cur) !== -1)
+                continue;
+            seen.push(cur);
+            var name = cur.objectName;
+            if (name !== undefined && String(name).indexOf(namePrefix) === 0)
+                ++count;
+            var toVisit = [];
+            if (cur.contentItem !== undefined && cur.contentItem !== null)
+                toVisit.push(cur.contentItem);
+            var data = cur.data;
+            if (data !== undefined) {
+                for (var i = 0; i < data.length; ++i)
+                    toVisit.push(data[i]);
+            }
+            for (var j = toVisit.length - 1; j >= 0; --j)
+                stack.push(toVisit[j]);
+        }
+        return count;
+    }
+
     function smokeVisualStateJson() {
         var state = {
             "scenario": window.smokeScenario,
@@ -519,6 +578,50 @@ Window {
             } else if (step === 2) {
                 if (equalizerWindow.visible) {
                     console.log("[smoke] equalizerWindow opened");
+                    // 既有开窗断言保持；窗口暂不关闭，进入窗内交互步骤（F2.6）
+                    step = 3;
+                    smokeTimer.interval = 100;
+                    smokeTimer.start();
+                }
+            } else if (step === 3) {
+                if (equalizerWindow.visible) {
+                    // 总开关点击 → settings.enabled 翻转（Qt6.8+ click() 模拟真实按下/释放，走 toggled 链）
+                    var sw = smokeFindByObjectName(equalizerWindow, "eqMasterSwitch");
+                    if (sw) {
+                        var enabledBefore = appFacade.settings.enabled;
+                        sw.click();
+                        if (appFacade.settings.enabled !== enabledBefore)
+                            console.log("[smoke] eq masterSwitch toggled settings.enabled -> " + appFacade.settings.enabled);
+                    }
+                    // 10/31 切档点击 → settings.bandMode 变化 + 竖条数随档重建（Repeater 即时）
+                    var mode31 = smokeFindByObjectName(equalizerWindow, "eqMode31Button");
+                    var mode10 = smokeFindByObjectName(equalizerWindow, "eqMode10Button");
+                    if (mode31 && mode10) {
+                        mode31.click();
+                        if (appFacade.settings.bandMode === 31
+                                && smokeCountByObjectNamePrefix(equalizerWindow, "eqBandSlider") === 31)
+                            console.log("[smoke] eq mode31 band sliders=31");
+                        mode10.click();
+                        if (appFacade.settings.bandMode === 10
+                                && smokeCountByObjectNamePrefix(equalizerWindow, "eqBandSlider") === 10)
+                            console.log("[smoke] eq mode10 band sliders=10");
+                    }
+                    step = 4;
+                    smokeTimer.interval = 100;
+                    smokeTimer.start();
+                }
+            } else if (step === 4) {
+                if (equalizerWindow.visible) {
+                    // 管理按钮点击 → Loader 惰性激活 + 预设弹层 visible（Popup 无开合动画，同步可见）
+                    var manage = smokeFindByObjectName(equalizerWindow, "eqManagePresetsButton");
+                    if (manage) {
+                        manage.click();
+                        var dialog = smokeFindByObjectName(equalizerWindow, "equalizerPresetDialog");
+                        if (dialog && dialog.visible)
+                            console.log("[smoke] eq presetDialog visible");
+                        if (dialog)
+                            dialog.close();
+                    }
                     equalizerWindow.close();
                 }
             }

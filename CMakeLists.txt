@@ -165,6 +165,7 @@ set(SERIONA_APP_LAYER_SOURCES
     src/app/navigation_controller.h
     src/app/settings_controller.cpp
     src/app/settings_controller.h
+    src/app/equalizer_presets.h
     src/app/app_settings_storage.cpp
     src/app/app_settings_storage.h
     src/app/backend_snapshot_mapper.cpp
@@ -197,6 +198,7 @@ set(SERIONA_QML_MODULE_FILES
     qml/components/BubbleMenuItem.qml
     qml/components/BubbleSubMenuItem.qml
     qml/components/DynamicBackground.qml
+    qml/components/EqBandSlider.qml
     qml/components/StyleButton.qml
     qml/components/Sidebar.qml
     qml/components/SharedToolTip.qml
@@ -216,6 +218,7 @@ set(SERIONA_QML_MODULE_FILES
     qml/views/StartupView.qml
     qml/windows/SettingsWindow.qml
     qml/windows/EqualizerWindow.qml
+    qml/windows/EqualizerPresetDialog.qml
     qml/windows/TrackDetailWindow.qml
 )
 
@@ -375,6 +378,7 @@ if(BUILD_TESTING)
         src/app/app_settings_storage.cpp
         src/app/app_settings_storage.h
         src/app/settings_controller.h
+        src/app/equalizer_presets.h
     )
     target_include_directories(seriona_frontend_settings_controller_tests
         PRIVATE src/app
@@ -416,6 +420,13 @@ add_test(NAME seriona_frontend_settings_transition_roundtrip COMMAND seriona_fro
 add_test(NAME seriona_frontend_settings_transition_apply_pack COMMAND seriona_frontend_settings_controller_tests transitionApplyPacksCurrentNineFields)
 add_test(NAME seriona_frontend_settings_transition_executor_unset COMMAND seriona_frontend_settings_controller_tests transitionExecutorUnsetNoopPersistence)
 add_test(NAME seriona_frontend_settings_transition_startup_apply COMMAND seriona_frontend_settings_controller_tests transitionStartupApplySequence)
+    add_test(NAME seriona_frontend_settings_eq_defaults COMMAND seriona_frontend_settings_controller_tests eqDefaults)
+    add_test(NAME seriona_frontend_settings_eq_persist_roundtrip COMMAND seriona_frontend_settings_controller_tests eqPersistRoundTrip)
+    add_test(NAME seriona_frontend_settings_eq_mirror_writer COMMAND seriona_frontend_settings_controller_tests eqMirrorWriterContract)
+    add_test(NAME seriona_frontend_settings_eq_debounce_immediate COMMAND seriona_frontend_settings_controller_tests eqDebounceMergeAndImmediateCommit)
+    add_test(NAME seriona_frontend_settings_eq_preset_crud COMMAND seriona_frontend_settings_controller_tests eqPresetCrudBuiltinProtected)
+    add_test(NAME seriona_frontend_settings_eq_preset_ten_thirty_one COMMAND seriona_frontend_settings_controller_tests eqPresetTenThirtyOneIndependent)
+    add_test(NAME seriona_frontend_settings_eq_preset_sanitize COMMAND seriona_frontend_settings_controller_tests eqPresetSanitizeDirtyStorage)
 
     # 播放次数/星级持久化（T16）：纯 QML 面（无后端依赖），mock-only 构建同样注册
     add_executable(seriona_frontend_track_stats_tests
@@ -638,6 +649,7 @@ add_test(NAME seriona_frontend_settings_transition_startup_apply COMMAND seriona
         add_test(NAME seriona_frontend_ui_only_no_backend_command COMMAND seriona_frontend_ui_only_handler_policy_tests uiOnlyHandlersDoNotUseBackendCommands)
         add_test(NAME seriona_frontend_qml_startup_property_contract COMMAND seriona_frontend_ui_only_handler_policy_tests qmlStartupDoesNotCallQtApplicationPropertyFunction)
         add_test(NAME seriona_frontend_qml_layout COMMAND seriona_frontend_ui_only_handler_policy_tests qmlLayoutSourceContractsStayStable)
+        add_test(NAME seriona_frontend_ui_only_equalizer_contract COMMAND seriona_frontend_ui_only_handler_policy_tests equalizerWindowSourceContractsStayStable)
 
         add_executable(seriona_frontend_library_select_track_tests
             tests/frontend/adapter/tst_library_select_track.cpp
@@ -1237,6 +1249,8 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
         add_test(NAME seriona_frontend_backend_bridge_set_transition_config COMMAND seriona_frontend_backend_bridge_tests submitTransitionConfigBuildsTypedBackendCommand)
         add_test(NAME seriona_frontend_backend_bridge_set_transition_config_invalid COMMAND seriona_frontend_backend_bridge_tests submitTransitionConfigRejectsInvalidPayloadWithoutDispatch)
         add_test(NAME seriona_frontend_backend_bridge_transition_no_reload_while_playing COMMAND seriona_frontend_backend_bridge_tests transitionConfigWhilePlayingDoesNotReloadOrInterrupt)
+        add_test(NAME seriona_frontend_backend_bridge_set_equalizer_config COMMAND seriona_frontend_backend_bridge_tests submitEqualizerConfigBuildsTypedBackendCommand)
+        add_test(NAME seriona_frontend_backend_bridge_set_equalizer_config_invalid COMMAND seriona_frontend_backend_bridge_tests submitEqualizerConfigRejectsInvalidPayloadWithoutDispatch)
         add_test(NAME seriona_frontend_backend_bridge_play_next_track COMMAND seriona_frontend_backend_bridge_tests playNextTrackBuildsQueueCommand)
         add_test(NAME seriona_frontend_backend_bridge_play_next_empty COMMAND seriona_frontend_backend_bridge_tests playNextTrackRejectsEmptyIdWithoutDispatch)
         add_test(NAME seriona_frontend_backend_bridge_remove_from_queue COMMAND seriona_frontend_backend_bridge_tests removeFromQueueBuildsIndexedCommand)

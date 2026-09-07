@@ -93,6 +93,10 @@ private:
     void handleLibrarySnapshotChanged(
         const seriona::control::PlayerStateSnapshot &player,
         const seriona::control::LibraryStateSnapshot &library);
+    // F1.3：均衡器状态/频谱快照 → SettingsController 镜像属性（curvePoints/
+    // curveFrequencies/spectrumBins）；快照经 bridge 访问器取回，主线程落地。
+    void handleEqualizerStateChanged();
+    void handleSpectrumChanged();
 #endif
 
     PlaybackController m_playback;

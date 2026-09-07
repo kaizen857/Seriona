@@ -115,6 +115,7 @@ private slots:
     void uiOnlyHandlersDoNotUseBackendCommands();
     void qmlStartupDoesNotCallQtApplicationPropertyFunction();
     void qmlLayoutSourceContractsStayStable();
+    void equalizerWindowSourceContractsStayStable();
 };
 
 void UiOnlyHandlerPolicyTest::uiOnlyHandlersDoNotUseBackendCommands()
@@ -344,6 +345,95 @@ void UiOnlyHandlerPolicyTest::qmlLayoutSourceContractsStayStable()
         "id: restoreButton",
         "id: addFolderButton"
     });
+}
+
+// F2.6 实况契约：EqualizerWindow.qml（1153 行全实现）不再是占位窗口。
+// 本函数以源文本静态断言锁住 EQ 窗口 objectName 面 + 关键行为接线 + 防回归项。
+// 文件机制边界：本测试无法实例化 QML/访问 settings（GUILESS + 纯文本契约），
+// 运行时行为（点击 → settings 翻转 → Repeater 重建）由 settings-menu smoke 的
+// 窗内交互步骤动态覆盖（见 Main.qml smokeTimer step3/step4）。
+void UiOnlyHandlerPolicyTest::equalizerWindowSourceContractsStayStable()
+{
+    const QString eqWindowQml = sourceFile(QStringLiteral("qml/windows/EqualizerWindow.qml"));
+    const QString bandSliderQml = sourceFile(QStringLiteral("qml/components/EqBandSlider.qml"));
+    const QString presetDialogQml = sourceFile(QStringLiteral("qml/windows/EqualizerPresetDialog.qml"));
+
+    // —— objectName 契约面（实测全部存在，供 smoke/无障碍/自动化按名定位）——
+    // 工具行 / 图谱区 / 控制条 / GEQ 竖条区 / 弹层：eqBandSliderN 为 Repeater 随档重建
+    expectContainsAll(eqWindowQml, {
+        "objectName: \"equalizerWindow\"",
+        "objectName: \"eqMode10Button\"",
+        "objectName: \"eqMode31Button\"",
+        "objectName: \"eqMasterSwitch\"",
+        "objectName: \"eqResetButton\"",
+        "objectName: \"eqSpectrumSwitch\"",
+        "objectName: \"eqGraphCanvas\"",
+        "objectName: \"eqGraphEmptyHint\"",
+        "objectName: \"eqLimiterSwitch\"",
+        "objectName: \"eqPresetApplyButton\"",
+        "objectName: \"eqSavePresetButton\"",
+        "objectName: \"eqManagePresetsButton\"",
+        "objectName: \"eqPreGainSlider\"",
+        "objectName: \"eqPresetPickerMenu\"",
+        "objectName: \"eqSavePresetPopup\"",
+        "objectName: \"eqSaveNameInput\"",
+        "objectName: \"eqBandSlider\" + index"
+    });
+
+    // —— settings 解析契约（动态上下文解析 Main 的 appFacade；无则 null 只读降级）——
+    expectContainsAll(eqWindowQml, {
+        "readonly property var settings: _resolveSettings()",
+        "function _resolveSettings()",
+        "typeof appFacade",
+        "return appFacade.settings;",
+        "return null;"
+    });
+
+    // —— 行为接线：总开关/10/31 切档写 settings 离散项；Repeater 竖条数随档位重建 ——
+    expectContainsAll(eqWindowQml, {
+        "if (root.settings)",
+        "root.settings.enabled = checked",
+        "root.settings.bandMode = 10;",
+        "root.settings.bandMode = 31;",
+        "readonly property int _bandMode: (settings && settings.bandMode === 31) ? 31 : 10",
+        "readonly property int _bandCount: _bandMode === 31 ? 31 : 10",
+        "model: root._bandCount",
+        "width: root._bandCount * 66 + (root._bandCount - 1) * spacing",
+        "root.settings[key] = list;"
+    });
+
+    // —— Esc 关闭路径（contentRect 焦点链）——
+    expectContainsAll(eqWindowQml, {
+        "Keys.onEscapePressed",
+        "root.close()"
+    });
+
+    // —— 预设管理：Loader 惰性激活 + 显式 settings 注入 + 弹层对象契约 ——
+    expectContainsAll(eqWindowQml, {
+        "id: presetDialogLoader",
+        "active: false",
+        "sourceComponent: Component {",
+        "EqualizerPresetDialog {",
+        "settings: root.settings",
+        "function openManagePresets()"
+    });
+    expectContainsAll(presetDialogQml, {
+        "objectName: \"equalizerPresetDialog\"",
+        "objectName: \"equalizerPresetDialogClose\"",
+        "closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside"
+    });
+
+    // —— 防回归：EQ 域无占位反馈/无后端命令直发；竖条根 value 纯外部可写（B1）——
+    expectAbsent(eqWindowQml, QStringLiteral("submitCommand"));
+    expectAbsent(eqWindowQml, QStringLiteral("showUnsupportedFeedback"));
+    expectContainsAll(bandSliderQml, {
+        "signal userEdited(real newValue)",
+        "target: bandSlider",
+        "Math.max(root._gainMin, Math.min(root._gainMax, root.value))",
+        "root.userEdited(bandSlider.value)",
+        "root.userEdited(grid)"
+    });
+    expectAbsent(bandSliderQml, QStringLiteral("root.value ="));
 }
 
 QTEST_GUILESS_MAIN(UiOnlyHandlerPolicyTest)

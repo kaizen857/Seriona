@@ -20,6 +20,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -54,6 +55,13 @@ public:
         std::scoped_lock lock(m_mutex);
         ++m_configureTransitionCalls;
         m_lastTransitionConfig = config;
+    }
+
+    void setEqualizer(const seriona::audio::EqualizerConfig &config) override
+    {
+        std::scoped_lock lock(m_mutex);
+        ++m_setEqualizerCalls;
+        m_lastEqualizerConfig = config;
     }
 
     void loadTrack(const seriona::audio::TrackPlaybackRequest &) override
@@ -106,6 +114,18 @@ public:
         return m_configureTransitionCalls;
     }
 
+    seriona::audio::EqualizerConfig lastEqualizerConfig() const
+    {
+        std::scoped_lock lock(m_mutex);
+        return m_lastEqualizerConfig;
+    }
+
+    int setEqualizerCalls() const
+    {
+        std::scoped_lock lock(m_mutex);
+        return m_setEqualizerCalls;
+    }
+
     int loadTrackCalls() const
     {
         std::scoped_lock lock(m_mutex);
@@ -155,10 +175,12 @@ private:
     seriona::audio::BackendEventSink m_eventSink;
     seriona::audio::AudioOutputConfig m_lastOutputConfig;
     seriona::audio::TransitionConfig m_lastTransitionConfig;
+    seriona::audio::EqualizerConfig m_lastEqualizerConfig;
     int m_stopCalls = 0;
     int m_eventSinkClearCalls = 0;
     int m_configureOutputCalls = 0;
     int m_configureTransitionCalls = 0;
+    int m_setEqualizerCalls = 0;
     int m_loadTrackCalls = 0;
 };
 
@@ -500,6 +522,8 @@ private slots:
     void submitTransitionConfigBuildsTypedBackendCommand();
     void submitTransitionConfigRejectsInvalidPayloadWithoutDispatch();
     void transitionConfigWhilePlayingDoesNotReloadOrInterrupt();
+    void submitEqualizerConfigBuildsTypedBackendCommand();
+    void submitEqualizerConfigRejectsInvalidPayloadWithoutDispatch();
 };
 
 void BackendBridgeTest::threading()
@@ -1193,6 +1217,143 @@ void BackendBridgeTest::transitionConfigWhilePlayingDoesNotReloadOrInterrupt()
 
     // 播放状态不被打断（仍 Playing，无 Loading/Stopped 事件泄漏到快照）
     QTRY_COMPARE(bridge.playerSnapshot().playback.state, seriona::control::PlaybackStatus::Playing);
+
+    bridge.shutdown();
+}
+
+void BackendBridgeTest::submitEqualizerConfigBuildsTypedBackendCommand()
+{
+    ControllerHarness harness;
+    Seriona::App::BackendBridge bridge(harness.factory(true));
+    waitForInitialPlayerSnapshot(bridge);
+
+    // 31 档全量：6 参按 EqualizerConfig 字段声明序组包 → SetEqualizerConfig 到达音频服务
+    QVariantList gains31;
+    gains31.reserve(31);
+    for (int i = 0; i < 31; ++i) {
+        gains31.append((i - 15) * 0.5);
+    }
+    const seriona::control::MediaControllerCommandResult full = bridge.submitEqualizerConfig(
+        true, 31, -3.5, gains31, true, false);
+    QVERIFY(full.accepted);
+    QCOMPARE(full.code, seriona::control::MediaControllerErrorCode::None);
+    QCOMPARE(harness.audio->setEqualizerCalls(), 1);
+    const seriona::audio::EqualizerConfig fullConfig = harness.audio->lastEqualizerConfig();
+    QCOMPARE(fullConfig.enabled, true);
+    QCOMPARE(fullConfig.mode, seriona::audio::EqualizerBandMode::Band31);
+    QCOMPARE(fullConfig.preGainDb, -3.5f);
+    for (int i = 0; i < 31; ++i) {
+        QCOMPARE(fullConfig.bandGainsDb[static_cast<std::size_t>(i)], static_cast<float>((i - 15) * 0.5));
+    }
+    QCOMPARE(fullConfig.limiterEnabled, true);
+
+    // 10 档：mode=Band10；bandGainsDb 恒 31 定长，仅前 10 项拷贝生效，余 21 项零填充
+    QVariantList gains10;
+    gains10.reserve(10);
+    for (int i = 0; i < 10; ++i) {
+        gains10.append(2.5 + i * 0.5);
+    }
+    const seriona::control::MediaControllerCommandResult ten = bridge.submitEqualizerConfig(
+        false, 10, 2.5, gains10, false, true);
+    QVERIFY(ten.accepted);
+    QCOMPARE(ten.code, seriona::control::MediaControllerErrorCode::None);
+    QCOMPARE(harness.audio->setEqualizerCalls(), 2);
+    const seriona::audio::EqualizerConfig tenConfig = harness.audio->lastEqualizerConfig();
+    QCOMPARE(tenConfig.enabled, false);
+    QCOMPARE(tenConfig.mode, seriona::audio::EqualizerBandMode::Band10);
+    QCOMPARE(tenConfig.preGainDb, 2.5f);
+    QCOMPARE(tenConfig.limiterEnabled, false);
+    for (int i = 0; i < 10; ++i) {
+        QCOMPARE(tenConfig.bandGainsDb[static_cast<std::size_t>(i)], static_cast<float>(2.5 + i * 0.5));
+    }
+    for (int i = 10; i < 31; ++i) {
+        QCOMPARE(tenConfig.bandGainsDb[static_cast<std::size_t>(i)], 0.0f);
+    }
+
+    // 语义隔离：EQ 命令不触发 ConfigureOutput/SetTransitionConfig/LoadTrack/stop
+    QCOMPARE(harness.audio->configureOutputCalls(), 0);
+    QCOMPARE(harness.audio->configureTransitionCalls(), 0);
+    QCOMPARE(harness.audio->loadTrackCalls(), 0);
+    QCOMPARE(harness.audio->stopCalls(), 0);
+
+    bridge.shutdown();
+}
+
+void BackendBridgeTest::submitEqualizerConfigRejectsInvalidPayloadWithoutDispatch()
+{
+    ControllerHarness harness;
+    Seriona::App::BackendBridge bridge(harness.factory(true));
+    waitForInitialPlayerSnapshot(bridge);
+
+    QSignalSpy notifySpy(&bridge, &Seriona::App::BackendBridge::domainNotificationQueued);
+    const std::size_t baselineNotifications = bridge.notifications().size();
+
+    QVariantList valid10;
+    valid10.reserve(10);
+    for (int i = 0; i < 10; ++i) {
+        valid10.append(0.5);
+    }
+
+    // bandMode 越界（仅 10/31）
+    const seriona::control::MediaControllerCommandResult badMode = bridge.submitEqualizerConfig(
+        false, 7, 0.0, valid10, false, false);
+    QVERIFY(!badMode.accepted);
+    QCOMPARE(badMode.code, seriona::control::MediaControllerErrorCode::InvalidCommand);
+
+    // preGain 越界（±15）与 NaN
+    QVariantList valid31;
+    valid31.reserve(31);
+    for (int i = 0; i < 31; ++i) {
+        valid31.append(0.0);
+    }
+    const seriona::control::MediaControllerCommandResult highGain = bridge.submitEqualizerConfig(
+        false, 31, 16.0, valid31, false, false);
+    QVERIFY(!highGain.accepted);
+    QCOMPARE(highGain.code, seriona::control::MediaControllerErrorCode::InvalidCommand);
+    const seriona::control::MediaControllerCommandResult lowGain = bridge.submitEqualizerConfig(
+        false, 31, -16.0, valid31, false, false);
+    QVERIFY(!lowGain.accepted);
+    const seriona::control::MediaControllerCommandResult nanGain = bridge.submitEqualizerConfig(
+        false, 31, std::numeric_limits<double>::quiet_NaN(), valid31, false, false);
+    QVERIFY(!nanGain.accepted);
+    QCOMPARE(nanGain.code, seriona::control::MediaControllerErrorCode::InvalidCommand);
+
+    // 增益长度与档位错配（10 档 9 项 / 31 档 10 项）
+    const QVariantList short10 = valid10.mid(0, 9);
+    const seriona::control::MediaControllerCommandResult shortGains = bridge.submitEqualizerConfig(
+        false, 10, 0.0, short10, false, false);
+    QVERIFY(!shortGains.accepted);
+    QCOMPARE(shortGains.code, seriona::control::MediaControllerErrorCode::InvalidCommand);
+    const seriona::control::MediaControllerCommandResult wrongModeLength = bridge.submitEqualizerConfig(
+        false, 31, 0.0, valid10, false, false);
+    QVERIFY(!wrongModeLength.accepted);
+    QCOMPARE(wrongModeLength.code, seriona::control::MediaControllerErrorCode::InvalidCommand);
+
+    // 逐项越界（15.5 / -15.5 / NaN）
+    QVariantList over = valid10;
+    over[3] = 15.5;
+    const seriona::control::MediaControllerCommandResult itemOver = bridge.submitEqualizerConfig(
+        false, 10, 0.0, over, false, false);
+    QVERIFY(!itemOver.accepted);
+    QCOMPARE(itemOver.code, seriona::control::MediaControllerErrorCode::InvalidCommand);
+    QVariantList under = valid10;
+    under[0] = -15.5;
+    const seriona::control::MediaControllerCommandResult itemUnder = bridge.submitEqualizerConfig(
+        false, 10, 0.0, under, false, false);
+    QVERIFY(!itemUnder.accepted);
+    QVariantList nanItem = valid10;
+    nanItem[1] = std::numeric_limits<double>::quiet_NaN();
+    const seriona::control::MediaControllerCommandResult itemNan = bridge.submitEqualizerConfig(
+        false, 10, 0.0, nanItem, false, false);
+    QVERIFY(!itemNan.accepted);
+
+    // 全部本地拒绝：零外发 + 每次拒绝入队一条 CommandRejected 通知
+    QCOMPARE(harness.audio->setEqualizerCalls(), 0);
+    QCOMPARE(harness.audio->configureTransitionCalls(), 0);
+    QCOMPARE(notifySpy.count(), 9);
+    QCOMPARE(bridge.notifications().size(), baselineNotifications + 9);
+    QCOMPARE(bridge.notifications().back().kind, seriona::control::ControlDomainNotificationKind::CommandRejected);
+    QCOMPARE(bridge.notifications().back().errorCode, seriona::control::MediaControllerErrorCode::InvalidCommand);
 
     bridge.shutdown();
 }

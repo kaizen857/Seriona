@@ -24,6 +24,7 @@
 #include <spdlog/spdlog.h>
 
 #include <exception>
+#include <cmath>
 #include <optional>
 #include <string>
 #include <utility>
@@ -440,6 +441,67 @@ seriona::control::MediaControllerCommandResult BackendBridge::submitTransitionCo
     return submitCommand(command);
 }
 
+seriona::control::MediaControllerCommandResult BackendBridge::submitEqualizerConfig(
+    bool enabled,
+    int bandMode,
+    double preGainDb,
+    const QVariantList &bandGains,
+    bool limiterEnabled,
+    bool spectrumEnabled)
+{
+    // 数值域与后端 reducer handleSetEqualizerConfig 逐条一致（读到即镜像）：bandMode
+    // 仅 10/31；preGainDb 与 bandGains 每项 ±15dB（含非有限值拒绝）。settings_controller
+    // 已保证载荷恒在合法域，此处为桥层防御（直接调用/测试路径同样拦截）。
+    auto reject = [this](const char *message) {
+        seriona::control::MediaControllerCommandResult result = invalidCommandResult(message);
+        spdlog::warn("SetEqualizerConfig rejected locally: {}", message);
+        enqueueCommandFailureNotification(result);
+        return result;
+    };
+    if (bandMode != 10 && bandMode != 31) {
+        return reject("SetEqualizerConfig band mode is out of range (10 or 31)");
+    }
+    if (!std::isfinite(preGainDb) || preGainDb < -15.0 || preGainDb > 15.0) {
+        return reject("SetEqualizerConfig pre-gain is out of range (±15 dB)");
+    }
+    const qsizetype bandCount = bandMode == 10 ? 10 : 31;
+    if (bandGains.size() != bandCount) {
+        return reject("SetEqualizerConfig band gains length must match band mode (10 or 31)");
+    }
+    for (qsizetype i = 0; i < bandCount; ++i) {
+        const double gainDb = bandGains.at(i).toDouble();
+        if (!std::isfinite(gainDb) || gainDb < -15.0 || gainDb > 15.0) {
+            return reject("SetEqualizerConfig band gains are out of range (±15 dB)");
+        }
+    }
+
+    // 组包顺序 = EqualizerConfig 字段声明顺序 = 后端 reducer 解析顺序（跨端契约）；
+    // bandGainsDb 恒 31 项定长，mode=10 时仅前 10 项有效（后端按 mode 取前缀），
+    // 其余保持聚合初始化默认 0.0f。
+    seriona::audio::EqualizerConfig config;
+    config.enabled = enabled;
+    config.mode = (bandMode == 10) ? seriona::audio::EqualizerBandMode::Band10
+                                   : seriona::audio::EqualizerBandMode::Band31;
+    config.preGainDb = static_cast<float>(preGainDb);
+    for (qsizetype i = 0; i < bandCount; ++i) {
+        config.bandGainsDb[static_cast<std::size_t>(i)] = static_cast<float>(bandGains.at(i).toDouble());
+    }
+    config.limiterEnabled = limiterEnabled;
+
+    // spectrum 开关通道裁定（方案 a，详见头注释）：后端命令面无 spectrum 命令 →
+    // 只缓存期望值并如实 no-op（开启沿 warn 一次），不伪造命令；EQ 5 项载荷照常外发。
+    if (spectrumEnabled && !m_spectrumEnabledRequested) {
+        spdlog::warn("SetEqualizerConfig spectrumEnabled has no backend command channel; "
+                     "the switch stays persisted front-end only until the backend wires a spectrum command");
+    }
+    m_spectrumEnabledRequested = spectrumEnabled;
+
+    seriona::control::MediaControlCommand command;
+    command.kind = seriona::control::MediaControlCommandKind::SetEqualizerConfig;
+    command.equalizerConfig = std::move(config);
+    return submitCommand(command);
+}
+
 seriona::control::MediaControllerCommandResult BackendBridge::deleteTarget(const QString &path, bool folder)
 {
     const QString normalized = path.trimmed();
@@ -588,6 +650,16 @@ const seriona::control::LibraryStateSnapshot &BackendBridge::librarySnapshot() c
     return m_librarySnapshot;
 }
 
+const seriona::audio::EqualizerStateSnapshot &BackendBridge::equalizerStateSnapshot() const
+{
+    return m_equalizerSnapshot;
+}
+
+const seriona::audio::SpectrumSnapshot &BackendBridge::spectrumSnapshot() const
+{
+    return m_spectrumSnapshot;
+}
+
 const std::deque<seriona::control::ControlDomainNotification> &BackendBridge::notifications() const
 {
     return m_notifications;
@@ -669,6 +741,34 @@ void BackendBridge::registerSubscriptions()
             receiver->enqueueNotification(std::move(notification));
         }, Qt::QueuedConnection);
     });
+    // F1.3 均衡器/频谱订阅（仿上三路）：回调在控制线程触发 → QueuedConnection 搬运到
+    // 主线程（QPointer 收尾 + shutdown 守卫同款）。订阅即推当前快照：均衡器生效面
+    // （generation≥1）或空快照（generation=0）；频谱面无写者 → 收默认空快照，由
+    // F2 呈现空态。
+    m_equalizerSubscription = m_controller->subscribeEqualizerState([receiver](seriona::audio::EqualizerStateSnapshot snapshot) mutable {
+        if (receiver.isNull()) {
+            return;
+        }
+
+        QMetaObject::invokeMethod(receiver.data(), [receiver, snapshot = std::move(snapshot)]() mutable {
+            if (receiver.isNull() || receiver->m_shuttingDown) {
+                return;
+            }
+            receiver->applyEqualizerStateSnapshot(std::move(snapshot));
+        }, Qt::QueuedConnection);
+    });
+    m_spectrumSubscription = m_controller->subscribeSpectrum([receiver](seriona::audio::SpectrumSnapshot snapshot) mutable {
+        if (receiver.isNull()) {
+            return;
+        }
+
+        QMetaObject::invokeMethod(receiver.data(), [receiver, snapshot = std::move(snapshot)]() mutable {
+            if (receiver.isNull() || receiver->m_shuttingDown) {
+                return;
+            }
+            receiver->applySpectrumSnapshot(std::move(snapshot));
+        }, Qt::QueuedConnection);
+    });
 }
 
 void BackendBridge::unsubscribeAll()
@@ -676,6 +776,8 @@ void BackendBridge::unsubscribeAll()
     unsubscribe(m_playerSubscription);
     unsubscribe(m_librarySubscription);
     unsubscribe(m_notificationSubscription);
+    unsubscribe(m_equalizerSubscription);
+    unsubscribe(m_spectrumSubscription);
 }
 
 void BackendBridge::submitShutdownStop()
@@ -699,6 +801,18 @@ void BackendBridge::applyLibrarySnapshot(seriona::control::LibraryStateSnapshot 
 {
     m_librarySnapshot = std::move(snapshot);
     emit librarySnapshotChanged();
+}
+
+void BackendBridge::applyEqualizerStateSnapshot(seriona::audio::EqualizerStateSnapshot snapshot)
+{
+    m_equalizerSnapshot = std::move(snapshot);
+    emit equalizerStateChanged();
+}
+
+void BackendBridge::applySpectrumSnapshot(seriona::audio::SpectrumSnapshot snapshot)
+{
+    m_spectrumSnapshot = std::move(snapshot);
+    emit spectrumChanged();
 }
 
 void BackendBridge::enqueueCommandFailureNotification(const seriona::control::MediaControllerCommandResult &result)
