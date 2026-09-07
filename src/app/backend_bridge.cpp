@@ -488,18 +488,38 @@ seriona::control::MediaControllerCommandResult BackendBridge::submitEqualizerCon
     }
     config.limiterEnabled = limiterEnabled;
 
-    // spectrum 开关通道裁定（方案 a，详见头注释）：后端命令面无 spectrum 命令 →
-    // 只缓存期望值并如实 no-op（开启沿 warn 一次），不伪造命令；EQ 5 项载荷照常外发。
-    if (spectrumEnabled && !m_spectrumEnabledRequested) {
-        spdlog::warn("SetEqualizerConfig spectrumEnabled has no backend command channel; "
-                     "the switch stays persisted front-end only until the backend wires a spectrum command");
-    }
-    m_spectrumEnabledRequested = spectrumEnabled;
-
     seriona::control::MediaControlCommand command;
     command.kind = seriona::control::MediaControlCommandKind::SetEqualizerConfig;
     command.equalizerConfig = std::move(config);
-    return submitCommand(command);
+    const seriona::control::MediaControllerCommandResult eqResult = submitCommand(command);
+    if (!eqResult.accepted) {
+        // EQ 主载荷被拒（控制器不可用/后端拒绝）：失败已走 submitCommand 的
+        // CommandRejected 通知链反馈。频谱开关同走该入口，同因必同败——跳过本次
+        // 发送避免重复通知；缓存不动 → 后续同值提交自动补发。
+        return eqResult;
+    }
+
+    // spectrum 开关（R3 真命令化）：后端命令面已接线（R2 追加 SetSpectrumEnabled，
+    // 24 种命令；载荷 = MediaControlCommand::spectrumEnabled）→ 与缓存期望比较，
+    // 首次（从未成功发送过）或位变化时经 submitCommand 独立外发 SetSpectrumEnabled
+    // 真命令——离散开关语义：调用方（settings_controller 立即项路径）在开关点击即
+    // 达本函数，不经 50ms EQ 去抖；EQ 去抖到期重复提交同值不重发（缓存去重）。
+    // 与 SetEqualizerConfig 同通道语义隔离：后端纯门控转发至音频服务原子位
+    // （SetMuted/SetVolume 直转先例），绝不触发输出重载/设备生命周期/均衡器状态。
+    if (!m_spectrumEnabledRequested.has_value() || *m_spectrumEnabledRequested != spectrumEnabled) {
+        seriona::control::MediaControlCommand spectrumCommand;
+        spectrumCommand.kind = seriona::control::MediaControlCommandKind::SetSpectrumEnabled;
+        spectrumCommand.spectrumEnabled = spectrumEnabled;
+        const seriona::control::MediaControllerCommandResult spectrumResult = submitCommand(spectrumCommand);
+        if (spectrumResult.accepted) {
+            m_spectrumEnabledRequested = spectrumEnabled;
+        } else {
+            // 命令被拒：缓存保持旧期望 → 后续同值提交自动补发（最终状态收敛）；
+            // 失败已由 submitCommand 的 CommandRejected 通知链反馈。
+            spdlog::warn("SetSpectrumEnabled command rejected: {}", spectrumResult.message);
+        }
+    }
+    return eqResult;
 }
 
 seriona::control::MediaControllerCommandResult BackendBridge::deleteTarget(const QString &path, bool folder)
@@ -743,8 +763,8 @@ void BackendBridge::registerSubscriptions()
     });
     // F1.3 均衡器/频谱订阅（仿上三路）：回调在控制线程触发 → QueuedConnection 搬运到
     // 主线程（QPointer 收尾 + shutdown 守卫同款）。订阅即推当前快照：均衡器生效面
-    // （generation≥1）或空快照（generation=0）；频谱面无写者 → 收默认空快照，由
-    // F2 呈现空态。
+    // （generation≥1）或空快照（generation=0）；频谱面 R2 已接线（订阅即推驻留槽
+    // 现读值，其后按后端分析发布频率增量推送）。
     m_equalizerSubscription = m_controller->subscribeEqualizerState([receiver](seriona::audio::EqualizerStateSnapshot snapshot) mutable {
         if (receiver.isNull()) {
             return;

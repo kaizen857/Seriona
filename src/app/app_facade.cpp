@@ -95,8 +95,9 @@ void AppFacade::handleEqualizerStateChanged()
 void AppFacade::handleSpectrumChanged()
 {
     const seriona::audio::SpectrumSnapshot &snapshot = m_backendBridge->spectrumSnapshot();
-    // 频谱订阅面后端暂无写者：收默认空快照（generation=0，60 桶全 0）→ 镜像仍按契约
-    // 60 桶落地，UI 空态呈现归 F2。更新频率 = 后端发布频率，此处不节流不放大。
+    // 频谱推送面 R2 已接线（后端 SpectrumUpdated 事件 → 控制器驻留槽 → 订阅回调）；
+    // 快照按契约 60 桶落地（generation=0 的默认空快照同样按契约镜像，UI 空态由
+    // EqualizerWindow 呈现）。更新频率 = 后端发布频率，此处不节流不放大。
     m_settings.mirrorSpectrumBins(floatArrayToVariantList(snapshot.binsDb));
 }
 #endif
@@ -191,8 +192,9 @@ AppFacade::AppFacade(QObject *parent)
     });
     // 均衡器组推送（F1.3）：SettingsController 内部完成 50ms 去抖（连续控件）与立即
     // 推送（离散控件/预设/复位），此处仅透传 BackendBridge 的 SetEqualizerConfig
-    // 组包/校验（6 参全量，spectrum 通道裁定见 backend_bridge.h submitEqualizerConfig
-    // 注释——载荷无该字段，桥层缓存 no-op，不伪造命令）。
+    // 组包/校验（6 参全量，spectrum 拆分与真命令落点见 backend_bridge.h
+    // submitEqualizerConfig 注释——EQ 走 SetEqualizerConfig，spectrum 位变化
+    // 独立外发 SetSpectrumEnabled）。
     // apply() 耦合评估（F1.2 review 观察 ②）：output 离散 setter/去抖到期均经 apply()
     // → EQ executor 绑定后这些路径附带重推一次相同 EQ 载荷；后端 reducer 收等值命令
     // 仅 generation++，无听感影响；EQ 段放 apply() 系计划裁定（启动同步一次），与

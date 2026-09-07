@@ -79,12 +79,13 @@ public:
     // 绝不外发非法命令；组包 = audio::EqualizerConfig（字段声明顺序即跨端契约）→
     // SetEqualizerConfig 命令（与 ConfigureOutput/SetTransitionConfig 语义隔离：
     // 仅更新均衡参数，绝不触发输出重载/设备生命周期）。
-    // spectrumEnabled 通道裁定：后端 EqualizerConfig 载荷无 spectrum 字段、MediaController
-    // 命令面 23 种命令无 spectrum 命令（setSpectrumEnabled 是 AudioPlaybackService 独立
-    // 虚方法，控制层/订阅面无写者通道）→ 本桥层仅缓存期望值并如实 no-op（开启沿
-    // warn 一次，不伪造命令不静默吞）；频谱功能待后端命令面接线。UI 开关持久化
-    // （settings_controller）不受影响；频谱订阅面收默认空快照（generation 0），
-    // UI 侧由 F2 呈现空态。
+    // spectrumEnabled 通道（R3 真命令化）：spectrum 位非 EqualizerConfig 字段，属
+    // 后端独立开关命令 SetSpectrumEnabled（R2 追加，命令面 24 种；载荷字段
+    // MediaControlCommand::spectrumEnabled）——本桥层在 EQ 命令照发之外，与缓存
+    // 期望比较（m_spectrumEnabledRequested），首次或位变化时经 submitCommand 独立
+    // 立即外发（离散开关语义，不经 50ms EQ 去抖——去抖只归 settings_controller
+    // 的连续控件；去抖到期重复提交同值由缓存去重不重发）。UI 开关持久化
+    // （settings_controller）不受影响；频谱订阅面（R2 已接线推送）正常收快照。
     seriona::control::MediaControllerCommandResult submitEqualizerConfig(
         bool enabled,
         int bandMode,
@@ -124,7 +125,8 @@ signals:
     void librarySnapshotChanged();
     // F1.3：均衡器状态/频谱快照落地通知（AppFacade 据此把快照镜像到
     // SettingsController 的 curvePoints/curveFrequencies/spectrumBins 属性）。
-    // 频谱订阅面后端暂无写者：spectrumChanged 只在收默认空快照时触发一次。
+    // 频谱推送面 R2 已接线（后端 SpectrumUpdated 事件 → 控制器驻留槽 →
+    // 订阅回调），spectrumChanged 按后端发布频率触发。
     void equalizerStateChanged();
     void spectrumChanged();
     void domainNotificationQueued();
@@ -159,10 +161,11 @@ private:
     seriona::audio::EqualizerStateSnapshot m_equalizerSnapshot;
     seriona::audio::SpectrumSnapshot m_spectrumSnapshot;
     std::deque<seriona::control::ControlDomainNotification> m_notifications;
-    // F1.3 spectrum 通道裁定（方案 a）：无后端命令通道时的期望值缓存——submitEqualizerConfig
-    // 的 spectrumEnabled 只落到这里（开启沿 warn 一次），不伪造命令；后端命令面接线后可
-    // 从此缓存回读生效。UI 开关持久化不受影响。
-    bool m_spectrumEnabledRequested = false;
+    // R3：频谱开关期望值缓存（最后一次成功外发 SetSpectrumEnabled 的值；nullopt =
+    // 从未成功发送——首次提交即发真命令）。submitEqualizerConfig 的 spectrum 段
+    // 与它比较，位变化才经 submitCommand 外发；命令被拒时不更新 → 下次同值提交
+    // 自动补发（最终状态收敛）。UI 开关持久化不受影响。
+    std::optional<bool> m_spectrumEnabledRequested;
 #endif
     bool m_started = false;
     bool m_shuttingDown = false;

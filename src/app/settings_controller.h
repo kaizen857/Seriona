@@ -151,8 +151,8 @@ public:
     // EQ 提交载荷 = 当前 EQ 设置的全量组包（无部分状态）：enabled/bandMode/preGainDb
     // + 当前档位增益数组（bandMode 10/31 取一档、定长 10/31）+ limiterEnabled/spectrumEnabled；
     // bandGains 由组包方按 m_bandMode 择一传入，消费方（F1.3 BackendBridge::submitEqualizerConfig）
-    // 不需感知另一档。spectrumEnabled 非后端 EqualizerConfig 字段（独立接口方法，命令面
-    // 无 spectrum 命令）——通道裁定与拆分落点见 backend_bridge.h submitEqualizerConfig 注释。
+    // 不需感知另一档。spectrumEnabled 非后端 EqualizerConfig 字段——后端以独立命令
+    // SetSpectrumEnabled 承接（R2/R3），拆分落点见 backend_bridge.h submitEqualizerConfig 注释。
     using ApplyEqualizerConfigExecutor = std::function<void(bool enabled,
                                                             int bandMode,
                                                             double preGainDb,

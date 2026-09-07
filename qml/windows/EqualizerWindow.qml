@@ -14,7 +14,7 @@ import Seriona
 //      频谱 bins（60 桶，半透明下层，可开关）→ 频响曲线（181 点，2px 上层）
 //   ③ 底部控制条：限幅器开关 + 预设快捷应用 + 保存（另存为用户预设）+ 管理
 //   ④ GEQ 竖条区：pre-gain 固定左 + 分隔线 + 横向 ScrollView 内 band 竖条
-//      （内容不缩放，宽度不足横向滚动）
+//      （内容不缩放，宽度不足横向滚动；R4 加 bandWheelV/H 滚轮横滑映射）
 //
 // —— settings 来源（42 接线裁定）——
 // 44 弹层与全部控件按 SettingsWindow 惯例消费 settings（AppFacade 的 SettingsController）。
@@ -36,17 +36,19 @@ import Seriona
 //
 // —— 数据语义（F1.3 镜像面）——
 // curvePoints/curveFrequencies = 181 点（reducer 先行全轴 20-20k 对数；首帧快照未到前
-// 为空/全 0 频率轴 → 容错为空态，不绘线）。spectrumBins = 60 桶 double（后端频谱推送未
-// 接线 = 空快照 60 全 0 → 判为"无频谱数据"）。bandGains10/31 = QVariantList 逐项 ±15dB
+// 为空/全 0 频率轴 → 容错为空态，不绘线）。spectrumBins = 60 桶 double（R2/R3 已接通：
+// 开关经真命令 SetSpectrumEnabled 外发，60 桶按后端分析发布频率经订阅增量镜像——空态
+// 仅在开关关/静音/桶数据未到时出现，判空见 graphHintText 三态）。bandGains10/31 =
+// QVariantList 逐项 ±15dB
 // （0.1 网格；C++ setter 归一化 + 50ms 去抖推送）。bandMode 10/31、enabled、
 // limiterEnabled、spectrumEnabled 变更 C++ 即持久化 + 立即推送。
 //
-// —— fs<40k 截断标注裁定（如实降级）——
+// —— fs<40k 截断标注裁定（如实降级，保持）——
 // 频谱桶轴上限按 fs/2 截断需要快照 sampleRate；settings 镜像面未存 sampleRate（任务 38
 // 裁定：settings.sampleRate 是输出目标率，回填会污染输出配置，不映射；F1.3 只镜像了
 // binsDb 60 桶）。前端拿不到实际 fs → 本任务不加 C++ 镜像面（无数据源、徒增面），频谱桶
 // 按 20-20k 全轴绘制；后端已把不可测桶（≥0.95×fs/2 band）置 -120 地板。此为已知限制，
-// 待后端频谱推送接线并镜像 sampleRate 后可在此补充截断（单点：_freqX 映射）。
+// 待镜像面补充 sampleRate 后可在此补截断标注（单点：_freqX 映射）。
 Window {
     id: root
     objectName: "equalizerWindow"
@@ -56,8 +58,10 @@ Window {
 
     width: 860
     height: 620
-    minimumWidth: 640
-    minimumHeight: 420
+    // R4 用户实测：默认打开尺寸即最佳最小尺寸（再缩高度不够用），下限贴默认。
+    // 自绘八向 resize 的缩放起点 = 默认尺寸，只能放大不能缩小到布局裁切。
+    minimumWidth: 860
+    minimumHeight: 620
 
     // ================================================================
     // settings 解析 + 常量表 + 图谱几何/判定助手（见文件头裁定注释）
@@ -118,6 +122,26 @@ Window {
                 return true;
         }
         return false;
+    }
+
+    // 图谱空态文案（R4/R3 数据语义）：无频响数据 → 播放引导；有频响但频谱开关关 →
+    // 「频谱已关闭」（开关在卡片头，未开启不催数据）；开关开但桶数据未到 → 「暂无频谱数据」。
+    // 本函数在 text 绑定求值期间直读 settings 属性 → QML 依赖捕获使 NOTIFY 到达后自动刷新。
+    function graphHintText() {
+        if (!root.hasCurveData())
+            return qsTr("播放音频后显示实时频响");
+        if (root.settings && !root.settings.spectrumEnabled)
+            return qsTr("频谱已关闭");
+        return qsTr("暂无频谱数据");
+    }
+
+    // 横向平移 band 滚动内容（R4 C：bandWheelV/H 的公共落点）。delta 单位为像素
+    // （普通滚轮的角度增量已由调用方折算：每 120° ≈ 66px = 一个 band 宽；触控板
+    // 像素增量按 1:1）。两端自动钳制在 [0, contentWidth - 视口宽]。
+    function scrollBandsByPx(delta) {
+        var flick = bandScroll.contentItem;
+        flick.contentX = Math.max(0, Math.min(flick.contentX + delta,
+                            flick.contentWidth - flick.width));
     }
 
     // 颜色 → 带 alpha 的 canvas 可用色（色相仍取自 Theme token）
@@ -491,14 +515,14 @@ Window {
                                 onHeightChanged: requestPaint()
                             }
 
-                            // 空态提示（覆盖于画布之上）：无频响数据 → 播放引导；
-                            // 有频响但无频谱数据 → 频谱说明。依赖在 visible 绑定表达式内
-                            // 直读 settings 属性 → NOTIFY 自动刷新。
+                            // 空态提示（覆盖于画布之上）：文案按「有频响 + 频谱开关态」区分
+                            // （见 graphHintText；R4 微调）。依赖在绑定表达式内直读 settings
+                            // 属性 → NOTIFY 自动刷新。
                             Text {
                                 id: graphEmptyHint
                                 objectName: "eqGraphEmptyHint"
                                 anchors.centerIn: parent
-                                text: root.hasCurveData() ? qsTr("暂无频谱数据") : qsTr("播放音频后显示实时频响")
+                                text: root.graphHintText()
                                 color: Theme.textDisabled
                                 font.pixelSize: Theme.fontBody
                                 visible: !root.hasCurveData() || !root.hasSpectrumData()
@@ -646,6 +670,42 @@ Window {
                                 width: root._bandCount * 66 + (root._bandCount - 1) * spacing
                                 height: bandScroll.availableHeight
                                 spacing: Theme.spacing2
+
+                                // —— 横向浏览滚轮映射（R4 用户实测修正 C）——
+                                // ScrollView 内的 Flickable 在鼠标语义下不把滚轮折算到横向内容：
+                                // 31 段内容(2106px)远超视口(~751px)时只能拖底部横向滚动条，滚轮/
+                                // 触控板无法逐段浏览。两个 WheelHandler（bandWheelV 垂直轴 /
+                                // bandWheelH 水平轴）声明在滚动内容（bandRow）内——命中链上深于
+                                // ScrollView 自带的 wheel 处理，先拿到事件并按各自的 orientation
+                                // 过滤（Qt 的 wantsPointerEvent 只放行匹配轴的 wheel）：
+                                //   · bandWheelV：普通鼠标垂直滚轮 / 触控板纵滑 → 映射为横向平移；
+                                //   · bandWheelH：触控板横向手势 / 侧向滚轮 / Shift+轮(angleDelta.x)。
+                                // 普通滚轮角度增量每刻度(120°) ≈ 66px（一个 band 宽），触控板像素
+                                // 增量 1:1，经 root.scrollBandsByPx 两端自动钳制。wheel 事件不带
+                                // 鼠标按键，不抢 Slider 竖拖 / 读数点击编辑；仅指针停在本内容上
+                                // 才生效（pre-gain / 分隔线区不触发）。
+                                WheelHandler {
+                                    id: bandWheelV
+                                    orientation: Qt.Vertical
+                                    acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                                    onWheel: (event) => {
+                                        var dy = event.pixelDelta.y !== 0 ? event.pixelDelta.y
+                                                : (event.angleDelta.y !== 0 ? event.angleDelta.y / 120 * 66 : 0);
+                                        if (dy !== 0)
+                                            root.scrollBandsByPx(dy);
+                                    }
+                                }
+                                WheelHandler {
+                                    id: bandWheelH
+                                    orientation: Qt.Horizontal
+                                    acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                                    onWheel: (event) => {
+                                        var dx = event.pixelDelta.x !== 0 ? event.pixelDelta.x
+                                                : (event.angleDelta.x !== 0 ? event.angleDelta.x / 120 * 66 : 0);
+                                        if (dx !== 0)
+                                            root.scrollBandsByPx(dx);
+                                    }
+                                }
 
                                 Repeater {
                                     model: root._bandCount

@@ -10,15 +10,15 @@ import Seriona
 //   - 0 dB 中线：滑块行程正中绘有中性色刻度线；正值增益（手柄在线上方）以
 //     「增强色」填充中线上段，负值增益（手柄在线下方）以「削减色」填充中线
 //     下段，拖动跨 0 即时切换颜色与方向。
-//   - 顶部数值文本（如 +2.5 / −3.0 / 0.0，一位小数）；单击进入 TextField 编辑：
+//   - 顶部频率标签：band 身份（外部传 bandLabel 自定义文本，pre-gain 传"总增益"；
+//     否则按 bandFrequencyHz 自动格式化：31/62/125/250/500/1k/2k/4k/8k/16k 或
+//     1.25k/6.3k 等，内部 helper 完成，不依赖外部频率表）。R4 按用户实测由底部对调至此。
+//   - 底部数值文本（如 +2.5 / −3.0 / 0.0，一位小数）；单击进入 TextField 编辑：
 //     0.1 dB 精度、输入超界提交时钳位到 ±15、回车提交、Esc 取消恢复原值。
-//   - 底部频率标签：外部传 bandLabel 自定义文本（pre-gain 场景传"总增益"）；
-//     否则按 bandFrequencyHz 自动格式化（31/62/125/250/500/1k/2k/4k/8k/16k
-//     或 1.25k/6.3k 等，内部 helper 完成，不依赖外部频率表）。
 // 属性：
 //   value        real   当前增益，数值域 [-15, 15]（内部展示会钳位；允许 0.1 网格）。
-//   bandFrequencyHz real 频段中心频率（Hz）。bandLabel 为空时用它生成底部标签。
-//   bandLabel    string 底部标签文本；非空则覆盖自动频率文本（如 pre-gain "总增益"）。
+//   bandFrequencyHz real 频段中心频率（Hz）。bandLabel 为空时用它生成顶部标签。
+//   bandLabel    string 顶部标签文本；非空则覆盖自动频率文本（如 pre-gain "总增益"）。
 //   positiveColor color 正值增益色（默认 Theme.accentColor —— 品牌强调/增强）。
 //   negativeColor color 负值增益色（默认 Theme.dangerColor —— 削减/负面语义）。
 //   neutralColor color 0 dB 中线 / 零值手柄与文本色（默认 Theme.textSecondary）。
@@ -82,7 +82,7 @@ Item {
         return s + "k";
     }
 
-    // 当前展示的底标签：优先自定义 bandLabel（pre-gain "总增益"），否则按频率格式化。
+    // 当前展示的顶标签：优先自定义 bandLabel（pre-gain "总增益"），否则按频率格式化。
     readonly property string displayBandLabel:
         root.bandLabel.length > 0 ? root.bandLabel : formatFrequency(root.bandFrequencyHz)
 
@@ -104,75 +104,24 @@ Item {
     implicitHeight: 236
 
     // ============================================================
-    // 上部：数值读数区（显示 or 编辑）
+    // 上部：频率 / 自定义标签（band 身份；R4 与下部数值读数对调）
     // ============================================================
     Item {
-        id: readoutArea
+        id: labelArea
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
-        height: 28
+        height: 20
 
-        // 常态读数文本
         Text {
-            id: gainText
             anchors.fill: parent
-            visible: !root._editing
-            text: formatGain(root._displayValue)
-            color: root.enabled ? root._gainColor : Theme.textDisabled
+            text: root.displayBandLabel
+            color: root.enabled ? Theme.textSecondary : Theme.textDisabled
             font.pixelSize: Theme.fontBody
             font.weight: Font.DemiBold
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
-        }
-
-        // 单击读数 → 进入编辑
-        MouseArea {
-            anchors.fill: parent
-            visible: !root._editing
-            enabled: root.enabled
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.beginEditing()
-        }
-
-        // 编辑态输入框（回车提交 / Esc 取消 / 失焦提交）
-        TextField {
-            id: gainEditor
-            anchors.fill: parent
-            visible: root._editing
-            enabled: root.enabled
-            color: Theme.textPrimary
-            font.pixelSize: Theme.fontBody
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-            leftPadding: 2
-            rightPadding: 2
-            topPadding: 3
-            bottomPadding: 3
-            selectByMouse: true
-            validator: RegularExpressionValidator {
-                // 允许中间态：可选符号、至多 2 位整数、至多 1 位小数（0.1 网格）
-                regularExpression: /^[+-]?\d{0,2}(\.\d?)?$/
-            }
-            background: Rectangle {
-                radius: Theme.radiusSmall
-                color: Theme.baseColor
-                border.width: 1
-                border.color: gainEditor.activeFocus ? Theme.borderAccent : Theme.borderColor
-            }
-            onAccepted: root.commitEditing()
-            Keys.onPressed: (event) => {
-                if (event.key === Qt.Key_Escape && root._editing) {
-                    event.accepted = true;   // 消费 Esc：仅取消本编辑器，不外传给窗口关闭逻辑
-                    root.cancelEditing();
-                }
-            }
-            onEditingFinished: {
-                // 失焦（点别处）也按「提交」处理；Esc 已先置 _editing=false，不会重复提交
-                if (root._editing)
-                    root.commitEditing();
-            }
+            elide: Text.ElideRight
         }
     }
 
@@ -181,8 +130,8 @@ Item {
     // ============================================================
     Item {
         id: sliderHost
-        anchors.top: readoutArea.bottom
-        anchors.bottom: labelArea.top
+        anchors.top: labelArea.bottom
+        anchors.bottom: readoutArea.top
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.topMargin: Theme.spacing2
@@ -214,7 +163,7 @@ Item {
 
             Accessible.name: root.displayBandLabel.length > 0 ? root.displayBandLabel
                                                               : qsTr("均衡器频段")
-            Accessible.description: qsTr("上下拖动或使用方向键调节增益，单击上方数值可直接输入")
+            Accessible.description: qsTr("上下拖动或使用方向键调节增益，单击下方数值可直接输入")
 
             // ---- 自定义竖条外观 ----
             background: Item {
@@ -294,22 +243,75 @@ Item {
     }
 
     // ============================================================
-    // 下部：频率 / 自定义标签
+    // 下部：数值读数区（显示 or 编辑；R4 与上部频率标签对调）
     // ============================================================
     Item {
-        id: labelArea
+        id: readoutArea
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        height: 20
+        height: 28
 
+        // 常态读数文本
         Text {
+            id: gainText
             anchors.fill: parent
-            text: root.displayBandLabel
-            color: root.enabled ? Theme.textSecondary : Theme.textDisabled
-            font.pixelSize: Theme.fontCaption
+            visible: !root._editing
+            text: formatGain(root._displayValue)
+            color: root.enabled ? root._gainColor : Theme.textDisabled
+            font.pixelSize: Theme.fontBody
+            font.weight: Font.DemiBold
             horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignTop
+            verticalAlignment: Text.AlignVCenter
+        }
+
+        // 单击读数 → 进入编辑
+        MouseArea {
+            anchors.fill: parent
+            visible: !root._editing
+            enabled: root.enabled
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.beginEditing()
+        }
+
+        // 编辑态输入框（回车提交 / Esc 取消 / 失焦提交）
+        TextField {
+            id: gainEditor
+            anchors.fill: parent
+            visible: root._editing
+            enabled: root.enabled
+            color: Theme.textPrimary
+            font.pixelSize: Theme.fontBody
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            leftPadding: 2
+            rightPadding: 2
+            topPadding: 3
+            bottomPadding: 3
+            selectByMouse: true
+            validator: RegularExpressionValidator {
+                // 允许中间态：可选符号、至多 2 位整数、至多 1 位小数（0.1 网格）
+                regularExpression: /^[+-]?\d{0,2}(\.\d?)?$/
+            }
+            background: Rectangle {
+                radius: Theme.radiusSmall
+                color: Theme.baseColor
+                border.width: 1
+                border.color: gainEditor.activeFocus ? Theme.borderAccent : Theme.borderColor
+            }
+            onAccepted: root.commitEditing()
+            Keys.onPressed: (event) => {
+                if (event.key === Qt.Key_Escape && root._editing) {
+                    event.accepted = true;   // 消费 Esc：仅取消本编辑器，不外传给窗口关闭逻辑
+                    root.cancelEditing();
+                }
+            }
+            onEditingFinished: {
+                // 失焦（点别处）也按「提交」处理；Esc 已先置 _editing=false，不会重复提交
+                if (root._editing)
+                    root.commitEditing();
+            }
         }
     }
 
