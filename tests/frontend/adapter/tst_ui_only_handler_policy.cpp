@@ -351,11 +351,12 @@ void UiOnlyHandlerPolicyTest::qmlLayoutSourceContractsStayStable()
     });
 }
 
-// F2.6 实况契约：EqualizerWindow.qml（1153 行全实现）不再是占位窗口。
+// F2.6 实况契约：EqualizerWindow.qml（图谱区 T10 由 Canvas 重构为 SpectrumGraph +
+// QML 静态刻度覆盖层后）不再是占位窗口。
 // 本函数以源文本静态断言锁住 EQ 窗口 objectName 面 + 关键行为接线 + 防回归项。
 // 文件机制边界：本测试无法实例化 QML/访问 settings（GUILESS + 纯文本契约），
-// 运行时行为（点击 → settings 翻转 → Repeater 重建）由 settings-menu smoke 的
-// 窗内交互步骤动态覆盖（见 Main.qml smokeTimer step3/step4）。
+// 运行时行为（点击 → settings 翻转 → Repeater 重建、图谱状态机序列）由 settings-menu
+// smoke 的窗内交互步骤动态覆盖（见 Main.qml smokeTimer step3-8）。
 void UiOnlyHandlerPolicyTest::equalizerWindowSourceContractsStayStable()
 {
     const QString eqWindowQml = sourceFile(QStringLiteral("qml/windows/EqualizerWindow.qml"));
@@ -405,6 +406,25 @@ void UiOnlyHandlerPolicyTest::equalizerWindowSourceContractsStayStable()
         "width: root._bandCount * 66 + (root._bandCount - 1) * spacing",
         "root.settings[key] = list;"
     });
+
+    // —— T10 图谱区接线契约（Canvas → SpectrumGraph；objectName eqGraphCanvas 保留在
+    // 新 item 上 → 既有锁定零改）：数据/颜色注入 + 频谱开关联动柱区 + 拖动写回胶水 +
+    // 空态三态状态机文案；旧 Canvas 绘制链（Canvas 类型/requestPaint/drawGraph）零残留
+    expectContainsAll(eqWindowQml, {
+        "SpectrumGraph {",
+        "spectrumBins: root.settings ? root.settings.spectrumBins : []",
+        "spectrumBarsVisible: root.settings ? root.settings.spectrumEnabled : true",
+        "preGainDb: root.settings ? root.settings.preGainDb : 0",
+        "onDragReleased: (bandMode, bandIndex, gainDb) => {",
+        "var key = bandMode === 31 ? \"bandGains31\" : \"bandGains10\";",
+        "visible: spectrumGraph.dragBandIndex >= 0",
+        "qsTr(\"播放音频后显示实时频响\")",
+        "qsTr(\"频谱已关闭\")",
+        "qsTr(\"暂无频谱数据\")"
+    });
+    expectAbsent(eqWindowQml, QStringLiteral("requestPaint"));
+    expectAbsent(eqWindowQml, QStringLiteral("Canvas {"));
+    expectAbsent(eqWindowQml, QStringLiteral("drawGraph"));
 
     // —— Esc 关闭路径（contentRect 焦点链）——
     expectContainsAll(eqWindowQml, {

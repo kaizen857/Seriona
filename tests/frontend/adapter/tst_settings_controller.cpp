@@ -1503,7 +1503,7 @@ void SettingsControllerTest::eqMirrorWriterContract()
     const QVariantList freqs = makeEqGains(kEqCurvePointCount, 20.0, 110.5);
     const QVariantList bins = makeEqGains(kEqSpectrumBinCount, -60.0, 1.0);
 
-    // 定长契约：长度不符（181/180、180/181、59/61）整体丢弃，不落值不发 NOTIFY
+    // 定长契约：长度不符（曲线 181/180、180/181，频谱 kEqSpectrumBinCount±1）整体丢弃，不落值不发 NOTIFY
     settings.mirrorEqualizerCurve(points, makeEqGains(kEqCurvePointCount - 1, 20.0, 110.5));
     settings.mirrorEqualizerCurve(makeEqGains(kEqCurvePointCount - 1, 0.0, 1.0), freqs);
     settings.mirrorSpectrumBins(makeEqGains(kEqSpectrumBinCount - 1, -60.0, 1.0));
@@ -1515,7 +1515,7 @@ void SettingsControllerTest::eqMirrorWriterContract()
     QCOMPARE(freqsSpy.count(), 0);
     QCOMPARE(binsSpy.count(), 0);
 
-    // 合法定长（181/181/60）→ 落值 + NOTIFY
+    // 合法定长（181/181/kEqSpectrumBinCount）→ 落值 + NOTIFY
     settings.mirrorEqualizerCurve(points, freqs);
     settings.mirrorSpectrumBins(bins);
     QCOMPARE(settings.curvePoints(), points);

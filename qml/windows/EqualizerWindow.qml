@@ -10,8 +10,12 @@ import Seriona
 //
 // 内容布局（F2.2 任务 42）自上而下四段：
 //   ① 工具行：10/31 频段切换 + 总开关（enabled）+ 复位（resetEq）
-//   ② 图谱区（单 Canvas）：对数频率轴 20-20k、dB 轴 ±15、0dB 中线；
-//      频谱 bins（60 桶，半透明下层，可开关）→ 频响曲线（181 点，2px 上层）
+//   ② 图谱区（SpectrumGraph 自绘 + QML 静态刻度覆盖层，任务 10 重构替代旧 Canvas）：
+//      频谱 dBFS 轴 -60..0（0 顶；左缘 0/-20/-40/-60 标签 + 每 20dB 淡网格线，
+//      全部经 dbFsToY 定位——EQ 曲线叠加但无 EQ 刻度，刻度域仅频谱）；
+//      对数频率轴 20-20k（沿用旧 tick 集，freqToX 定位）；频谱柱（120 桶下层，
+//      随 spectrumEnabled 显隐——spectrumBarsVisible 门控）→ 频响曲线（181 点，
+//      恒显）→ EQ band 手柄（恒显，可拖动写回）
 //   ③ 底部控制条：限幅器开关 + 预设快捷应用 + 保存（另存为用户预设）+ 管理
 //   ④ GEQ 竖条区：pre-gain 固定左 + 分隔线 + 横向 ScrollView 内 band 竖条
 //      （内容不缩放，宽度不足横向滚动；R4 加 bandWheelV/H 滚轮横滑映射）
@@ -36,9 +40,9 @@ import Seriona
 //
 // —— 数据语义（F1.3 镜像面）——
 // curvePoints/curveFrequencies = 181 点（reducer 先行全轴 20-20k 对数；首帧快照未到前
-// 为空/全 0 频率轴 → 容错为空态，不绘线）。spectrumBins = 60 桶 double（R2/R3 已接通：
-// 开关经真命令 SetSpectrumEnabled 外发，60 桶按后端分析发布频率经订阅增量镜像——空态
-// 仅在开关关/静音/桶数据未到时出现，判空见 graphHintText 三态）。bandGains10/31 =
+// 为空/全 0 频率轴 → 容错为空态，不绘线）。spectrumBins = 120 桶 double（R2/R3 已接通：
+// 开关经真命令 SetSpectrumEnabled 外发，120 桶按后端分析发布频率（~40Hz 级）经订阅增量
+// 镜像——空态仅在开关关/静音/桶数据未到时出现，判空见 graphHintText 三态）。bandGains10/31 =
 // QVariantList 逐项 ±15dB
 // （0.1 网格；C++ setter 归一化 + 50ms 去抖推送）。bandMode 10/31、enabled、
 // limiterEnabled、spectrumEnabled 变更 C++ 即持久化 + 立即推送。
@@ -46,9 +50,9 @@ import Seriona
 // —— fs<40k 截断标注裁定（如实降级，保持）——
 // 频谱桶轴上限按 fs/2 截断需要快照 sampleRate；settings 镜像面未存 sampleRate（任务 38
 // 裁定：settings.sampleRate 是输出目标率，回填会污染输出配置，不映射；F1.3 只镜像了
-// binsDb 60 桶）。前端拿不到实际 fs → 本任务不加 C++ 镜像面（无数据源、徒增面），频谱桶
+// binsDb 120 桶）。前端拿不到实际 fs → 本任务不加 C++ 镜像面（无数据源、徒增面），频谱桶
 // 按 20-20k 全轴绘制；后端已把不可测桶（≥0.95×fs/2 band）置 -120 地板。此为已知限制，
-// 待镜像面补充 sampleRate 后可在此补截断标注（单点：_freqX 映射）。
+// 待镜像面补充 sampleRate 后可在此补截断标注（单点：SpectrumGraph.freqToX 委托）。
 Window {
     id: root
     objectName: "equalizerWindow"
@@ -109,7 +113,7 @@ Window {
         return true;
     }
 
-    // 频谱数据判据：60 桶中存在任意非零有效值（空快照 = 60 全 0 → false）
+    // 频谱数据判据：120 桶中存在任意非零有效值（空快照 = 120 全 0 → false）
     function hasSpectrumData() {
         if (!root.settings)
             return false;
@@ -144,27 +148,12 @@ Window {
                             flick.contentWidth - flick.width));
     }
 
-    // 颜色 → 带 alpha 的 canvas 可用色（色相仍取自 Theme token）
+    // 颜色 → 带 alpha 的覆盖层可用色（色相仍取自 Theme token）
     function withAlpha(color, a) {
         return Qt.rgba(color.r, color.g, color.b, a);
     }
 
-    // —— 图谱几何映射（画布局部坐标系） ——
-    // 边距：左 44 留 dB 数字；上 12；右 10；下 24 留频率标签。
-    function plotMetrics(w, h) {
-        var left = 44, right = 10, top = 12, bottom = 24;
-        return { x: left, y: top, w: Math.max(24, w - left - right),
-                 h: Math.max(24, h - top - bottom) };
-    }
-    function freqToX(f, m) {
-        var f0 = 20, f1 = 20000;
-        var lf = Math.log(f / f0) / Math.log(f1 / f0);
-        return m.x + lf * m.w;
-    }
-    function dbToY(db, m) {
-        // +15 → 顶(m.y)，-15 → 底(m.y+m.h)
-        return m.y + ((15 - db) / 30) * m.h;
-    }
+    // 频率标签文本（纯显示格式化，非轴几何——几何单一源为 SpectrumGraph.freqToX）
     function freqLabel(f) {
         if (f < 1000)
             return String(Math.round(f));
@@ -174,98 +163,22 @@ Window {
         return s + "k";
     }
 
-    // 主绘制：网格 → 频谱（下层）→ 曲线（上层）
-    function drawGraph(ctx, w, h) {
-        var m = plotMetrics(w, h);
-        // 底色区（轻微抬升，区分图谱卡片内容）
-        ctx.fillStyle = root.withAlpha(Theme.textPrimary, 0.02);
-        ctx.fillRect(m.x, m.y, m.w, m.h);
-
-        // —— dB 横向网格线（每 5dB 一条，含 ±15 边线）+ 左侧刻度 ——
-        ctx.font = "9px sans-serif";
-        ctx.textBaseline = "middle";
-        for (var db = 15; db >= -15; db -= 5) {
-            var y = dbToY(db, m);
-            var major = (db === 0);
-            ctx.strokeStyle = major ? root.withAlpha(Theme.textPrimary, 0.55)
-                                    : (db === 15 || db === -15 ? root.withAlpha(Theme.textPrimary, 0.28)
-                                                               : root.withAlpha(Theme.textPrimary, 0.13));
-            ctx.lineWidth = major ? 1.2 : 1;
-            ctx.beginPath();
-            ctx.moveTo(m.x, y);
-            ctx.lineTo(m.x + m.w, y);
-            ctx.stroke();
-            // 刻度文本（0 与边线更亮）
-            ctx.fillStyle = major ? root.withAlpha(Theme.textSecondary, 0.9)
-                                  : root.withAlpha(Theme.textSecondary, 0.6);
-            ctx.textAlign = "right";
-            ctx.fillText((db > 0 ? "+" : "") + db, m.x - 5, y);
-        }
-
-        // —— 对数频率竖线 + 底部标签 ——
-        var ticks = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
-        ctx.textAlign = "center";
-        for (var t = 0; t < ticks.length; ++t) {
-            var fx = freqToX(ticks[t], m);
-            ctx.strokeStyle = root.withAlpha(Theme.textPrimary, 0.1);
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(fx, m.y);
-            ctx.lineTo(fx, m.y + m.h);
-            ctx.stroke();
-            ctx.fillStyle = root.withAlpha(Theme.textSecondary, 0.75);
-            ctx.fillText(freqLabel(ticks[t]), fx, m.y + m.h + 11);
-        }
-
-        // —— 频谱 bins（下层半透明；关/无数据则跳过） ——
-        if (root.settings && root.settings.spectrumEnabled && root.hasSpectrumData()) {
-            var bins = root.settings.spectrumBins;
-            var n = bins.length;
-            // 独立标定：0dBFS(0) 抵到 0dB 中线（y0），-60dB 抵图底；[-120..-60] 压缩到底线
-            var y0 = dbToY(0, m);
-            var span = y0 - (m.y + m.h);
-            ctx.fillStyle = root.withAlpha(Theme.accentColor, 0.16);
-            for (var b = 0; b < n; ++b) {
-                var v = bins[b];
-                if (!isFinite(v) || v >= 0)
-                    continue;
-                var frac = Math.min(1, -v / 60);      // -60dB → 全高到底
-                var bx = freqToX(20 * Math.pow(1000, b / (n - 1)), m);
-                var bw = Math.max(1.5, (m.w / n) * 0.72);
-                var by = y0 - frac * span;
-                ctx.fillRect(bx - bw / 2, by, bw, y0 - by);
-            }
-        }
-
-        // —— 频响曲线（上层 2px；无效/空数据不绘，空态由 UI 提示文本表达） ——
-        if (root.hasCurveData()) {
-            var ps = root.settings.curvePoints;
-            var fs = root.settings.curveFrequencies;
-            ctx.strokeStyle = Theme.accentColor;
-            ctx.lineWidth = 2;
-            ctx.lineJoin = "round";
-            ctx.beginPath();
-            var started = false;
-            for (var i = 0; i < ps.length; ++i) {
-                var g = ps[i];
-                if (!isFinite(g))
-                    continue;
-                var cx = freqToX(fs[i], m);
-                var cy = dbToY(Math.max(-15, Math.min(15, g)), m);
-                if (!started) {
-                    ctx.moveTo(cx, cy);
-                    started = true;
-                } else {
-                    ctx.lineTo(cx, cy);
-                }
-            }
-            ctx.stroke();
-        }
-    }
-
-    function requestGraphPaint() {
-        if (graphCanvas)
-            graphCanvas.requestPaint();
+    // 拖动浮层定位：手柄中心（handleCenterX/Y = 绘制同源映射）旁 12px，右溢出翻左，
+    // 上下钳在图谱域内（graphHost 局部坐标）。仅在拖动态（dragBandIndex >= 0）触发；
+    // 由 spectrumGraph.onDragInfoChanged 驱动（Q_INVOKABLE 无 NOTIFY，事件驱动定位）。
+    function _positionDragOverlay() {
+        if (!dragGainOverlay || spectrumGraph.dragBandIndex < 0)
+            return;
+        var hx = spectrumGraph.handleCenterX(spectrumGraph.dragBandIndex);
+        var hy = spectrumGraph.handleCenterY(spectrumGraph.dragBandIndex);
+        if (hx < 0 || hy < 0)
+            return;
+        var px = hx + 12;
+        if (px + dragGainOverlay.width > graphHost.width - 2)
+            px = hx - 12 - dragGainOverlay.width;
+        dragGainOverlay.x = Math.max(2, px);
+        dragGainOverlay.y = Math.max(2, Math.min(hy - dragGainOverlay.height / 2,
+                                                graphHost.height - dragGainOverlay.height - 2));
     }
 
     // ================================================================
@@ -429,7 +342,7 @@ Window {
                 }
 
                 // ----------------------------------------------------
-                // ② 图谱区：卡片 + 单 Canvas（频谱下层/曲线上层/空态）
+                // ② 图谱区：卡片 + SpectrumGraph 自绘 + 静态刻度覆盖层 + 空态
                 // ----------------------------------------------------
                 Rectangle {
                     Layout.fillWidth: true
@@ -486,7 +399,12 @@ Window {
                             }
                         }
 
-                        // 绘图宿主（撑满余下空间；画布 + 空态提示叠放）
+                        // 绘图宿主（撑满余下空间；SpectrumGraph + 静态刻度覆盖层 + 空态提示叠放）。
+                        // 刻度几何与绘制共用同一 SpectrumGraph Q_INVOKABLE 映射源
+                        // （freqToX / dbFsToY），QML 侧不复刻轴公式——永不漂移。旧 Canvas 的
+                        // 绘图区内部边距（左 44 dB 数字 / 上 12 / 右 10 / 下 24 频率标签）平移为
+                        // 宿主锚定：graphHost = SpectrumGraph 全宽/全高几何域，刻度覆盖层全部
+                        // 声明在其内（同坐标系直接定位），dB 标签区在其左侧、频率标签在其下方。
                         Item {
                             id: plotHost
                             Layout.fillWidth: true
@@ -495,29 +413,156 @@ Window {
                             Layout.rightMargin: Theme.spacing4
                             Layout.bottomMargin: Theme.spacing2
 
-                            // Canvas 绘图区（单画布：网格 → 频谱下层 → 曲线上层）
-                            Canvas {
-                                id: graphCanvas
-                                objectName: "eqGraphCanvas"
-                                anchors.fill: parent
-                                renderStrategy: Canvas.Cooperative
+                            // —— 图谱几何域（绘图 + 刻度共用；映射单一源 = spectrumGraph）——
+                            Item {
+                                id: graphHost
+                                anchors.left: parent.left
+                                anchors.leftMargin: 44
+                                anchors.top: parent.top
+                                anchors.topMargin: 12
+                                anchors.right: parent.right
+                                anchors.rightMargin: 10
+                                anchors.bottom: parent.bottom
+                                anchors.bottomMargin: 24
 
-                                onPaint: {
-                                    var ctx = getContext("2d");
-                                    if (!ctx)
-                                        return;
-                                    ctx.clearRect(0, 0, width, height);
-                                    root.drawGraph(ctx, width, height);
+                                // 自绘图谱（objectName 沿用旧 Canvas 的 eqGraphCanvas——契约
+                                // 锁定零改）：数据 = settings 镜像面绑定；颜色 = Theme accent 同族
+                                // 注入；频谱柱区随 spectrumEnabled（spectrumBarsVisible 最小属性）
+                                // 显隐——柱/峰与曲线、band 手柄同 item，QML opacity 方案不可行，
+                                // 故经 C++ 门控柱区几何；曲线与手柄恒显。
+                                SpectrumGraph {
+                                    id: spectrumGraph
+                                    objectName: "eqGraphCanvas"
+                                    anchors.fill: parent
+
+                                    spectrumBins: root.settings ? root.settings.spectrumBins : []
+                                    curvePoints: root.settings ? root.settings.curvePoints : []
+                                    curveFrequencies: root.settings ? root.settings.curveFrequencies : []
+                                    bandMode: root.settings ? root.settings.bandMode : 10
+                                    bandGains10: root.settings ? root.settings.bandGains10 : []
+                                    bandGains31: root.settings ? root.settings.bandGains31 : []
+                                    preGainDb: root.settings ? root.settings.preGainDb : 0
+                                    spectrumBarsVisible: root.settings ? root.settings.spectrumEnabled : true
+
+                                    // 颜色注入（Theme accent 同族，与旧 Canvas 视觉一致）：
+                                    // 柱渐变顶亮/底暗、峰值保持线更亮、曲线 = accent 实色、
+                                    // band 手柄/hover 逐级提亮（hover 近白）
+                                    barTopColor: Qt.lighter(Theme.accentColor, 1.4)
+                                    barBottomColor: Qt.darker(Theme.accentColor, 2.8)
+                                    peakLineColor: Qt.lighter(Theme.accentColor, 1.75)
+                                    curveColor: Theme.accentColor
+                                    handleColor: Qt.lighter(Theme.accentColor, 1.5)
+                                    handleHoverColor: Qt.lighter(Theme.accentColor, 2.1)
+
+                                    // band 手柄拖动释放 → settings 同键整表写回（键名
+                                    // bandGains10/31 与竖条区 EqBandSlider 写回同键同语义 →
+                                    // 竖条随镜像自动同步；settings 赋值经既有 50ms 去抖命令链
+                                    // 外发，不直呼 submit）
+                                    onDragReleased: (bandMode, bandIndex, gainDb) => {
+                                        if (!root.settings)
+                                            return;
+                                        var key = bandMode === 31 ? "bandGains31" : "bandGains10";
+                                        var list = root.settings[key].slice();
+                                        if (bandIndex >= 0 && bandIndex < list.length)
+                                            list[bandIndex] = gainDb;
+                                        root.settings[key] = list;
+                                    }
                                 }
 
-                                // 画布尺寸变化须重绘
-                                onWidthChanged: requestPaint()
-                                onHeightChanged: requestPaint()
+                                // —— 频谱 dBFS 网格（每 20dB 一条：0/-20/-40/-60，y 经 dbFsToY
+                                // 定位；EQ 曲线叠加、无 EQ 刻度——刻度域仅频谱 -60..0）——
+                                Repeater {
+                                    model: [0, -20, -40, -60]
+
+                                    Rectangle {
+                                        required property real modelData
+                                        x: 0
+                                        y: spectrumGraph.dbFsToY(modelData) - 0.5
+                                        width: graphHost.width
+                                        height: 1
+                                        color: root.withAlpha(Theme.textPrimary, 0.12)
+                                    }
+                                }
+
+                                // —— 对数频率轴竖线（沿用旧 tick 集 20..20k，freqToX 定位）——
+                                Repeater {
+                                    model: [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
+
+                                    Rectangle {
+                                        required property real modelData
+                                        x: spectrumGraph.freqToX(modelData) - 0.5
+                                        y: 0
+                                        width: 1
+                                        height: graphHost.height
+                                        color: root.withAlpha(Theme.textPrimary, 0.1)
+                                    }
+                                }
+
+                                // 左缘频谱 dB 刻度标签 0/-20/-40/-60（0 顶；dbFsToY 定位）。
+                                // 对象名 eqScaleLabel*（smoke/T11 断言：4 档刻度存在）。
+                                Repeater {
+                                    model: [0, -20, -40, -60]
+
+                                    Text {
+                                        required property real modelData
+                                        objectName: "eqScaleLabel" + modelData
+                                        text: String(modelData)
+                                        anchors.right: graphHost.left
+                                        anchors.rightMargin: 5
+                                        y: spectrumGraph.dbFsToY(modelData) - height / 2
+                                        color: root.withAlpha(Theme.textSecondary,
+                                                             (modelData === 0 || modelData === -60) ? 0.9 : 0.6)
+                                        font.pixelSize: 9
+                                    }
+                                }
+
+                                // 底部频率标签（沿用旧刻度格式化 freqLabel；freqToX 定位）
+                                Repeater {
+                                    model: [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
+
+                                    Text {
+                                        required property real modelData
+                                        text: root.freqLabel(modelData)
+                                        x: spectrumGraph.freqToX(modelData) - width / 2
+                                        y: graphHost.height + 11 - height / 2
+                                        color: root.withAlpha(Theme.textSecondary, 0.75)
+                                        font.pixelSize: 9
+                                    }
+                                }
+
+                                // 手柄拖动浮层（dragBandIndex >= 0 门控；dragGainDb 释放后保留
+                                // 最后拖值 → 门控于 index 而非值；位置经 handleCenterX/Y 单一源
+                                // 事件驱动定位，见 root._positionDragOverlay）
+                                Rectangle {
+                                    id: dragGainOverlay
+                                    objectName: "eqDragGainOverlay"
+                                    visible: spectrumGraph.dragBandIndex >= 0
+                                    z: 30
+                                    width: 64
+                                    height: 20
+                                    radius: 4
+                                    color: Theme.raisedSurfaceColor
+                                    border.color: Theme.borderColor
+                                    border.width: 1
+
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: {
+                                            var db = spectrumGraph.dragGainDb;
+                                            return (db >= 0 ? "+" : "") + db.toFixed(1) + " dB";
+                                        }
+                                        color: Theme.textPrimary
+                                        font.pixelSize: Theme.fontBody
+                                        font.weight: Font.DemiBold
+                                    }
+                                }
                             }
 
-                            // 空态提示（覆盖于画布之上）：文案按「有频响 + 频谱开关态」区分
-                            // （见 graphHintText；R4 微调）。依赖在绑定表达式内直读 settings
-                            // 属性 → NOTIFY 自动刷新。
+                            // 空态提示（覆盖于图谱之上）：三态状态机与 graphHintText 同序——
+                            // 无曲线（任何开关态）→ 播放引导；有曲线 + 开关 OFF → 频谱已关闭
+                            //（柱区随开关隐藏，曲线仍显 → 仍提示）；有曲线 + 开关 ON + 桶数据
+                            // 空 → 暂无频谱数据。依赖在绑定表达式内直读 settings 属性 →
+                            // NOTIFY 自动刷新。
                             Text {
                                 id: graphEmptyHint
                                 objectName: "eqGraphEmptyHint"
@@ -525,7 +570,18 @@ Window {
                                 text: root.graphHintText()
                                 color: Theme.textDisabled
                                 font.pixelSize: Theme.fontBody
-                                visible: !root.hasCurveData() || !root.hasSpectrumData()
+                                visible: !root.hasCurveData()
+                                         || (root.settings && !root.settings.spectrumEnabled)
+                                         || !root.hasSpectrumData()
+                            }
+
+                            // 拖动态（dragBandIndex/dragGainDb 任一变化）→ 浮层跟随手柄定位
+                            //（Q_INVOKABLE 无 NOTIFY，事件驱动；拖动态外无消耗）
+                            Connections {
+                                target: spectrumGraph
+                                function onDragInfoChanged() {
+                                    root._positionDragOverlay();
+                                }
                             }
                         }
                     }
@@ -739,15 +795,6 @@ Window {
                     }
                 }
             }
-        }
-
-        // 镜像数据变化 → 图谱重绘（QObject 子项，不参与布局）
-        Connections {
-            target: root.settings
-            function onCurvePointsChanged() { root.requestGraphPaint(); }
-            function onCurveFrequenciesChanged() { root.requestGraphPaint(); }
-            function onSpectrumBinsChanged() { root.requestGraphPaint(); }
-            function onSpectrumEnabledChanged() { root.requestGraphPaint(); }
         }
     }
 

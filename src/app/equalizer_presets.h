@@ -16,7 +16,7 @@ inline constexpr int kEqBandMode31 = 31;
 // 波段数；订阅镜像长度（后端推送更新，前端不落盘）
 inline constexpr int kEqBandCount10 = 10;
 inline constexpr int kEqBandCount31 = 31;
-inline constexpr int kEqSpectrumBinCount = 60; // 频谱桶数
+inline constexpr int kEqSpectrumBinCount = 120; // 频谱桶数
 inline constexpr int kEqCurvePointCount = 181; // 频响曲线采样点数（频率轴 20..20k）
 
 // 增益钳位域（与后端 SetEqualizerConfig reducer 校验一致：每项 ±15dB）

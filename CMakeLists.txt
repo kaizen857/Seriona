@@ -166,6 +166,12 @@ set(SERIONA_APP_LAYER_SOURCES
     src/app/settings_controller.cpp
     src/app/settings_controller.h
     src/app/equalizer_presets.h
+    src/app/equalizer_curve_synth.cpp
+    src/app/equalizer_curve_synth.h
+    src/app/spectrum_display_model.cpp
+    src/app/spectrum_display_model.h
+    src/app/spectrum_graph.cpp
+    src/app/spectrum_graph.h
     src/app/app_settings_storage.cpp
     src/app/app_settings_storage.h
     src/app/backend_snapshot_mapper.cpp
@@ -427,6 +433,36 @@ add_test(NAME seriona_frontend_settings_transition_startup_apply COMMAND seriona
     add_test(NAME seriona_frontend_settings_eq_preset_crud COMMAND seriona_frontend_settings_controller_tests eqPresetCrudBuiltinProtected)
     add_test(NAME seriona_frontend_settings_eq_preset_ten_thirty_one COMMAND seriona_frontend_settings_controller_tests eqPresetTenThirtyOneIndependent)
     add_test(NAME seriona_frontend_settings_eq_preset_sanitize COMMAND seriona_frontend_settings_controller_tests eqPresetSanitizeDirtyStorage)
+
+    # 频谱显示平滑模型（T7）：纯 C++（无 QtQuick/QSG 依赖），mock-only 构建同样注册
+    add_executable(seriona_frontend_spectrum_display_model_tests
+        tests/frontend/adapter/tst_spectrum_display_model.cpp
+        src/app/spectrum_display_model.cpp
+        src/app/spectrum_display_model.h
+        src/app/equalizer_presets.h
+    )
+    target_include_directories(seriona_frontend_spectrum_display_model_tests
+        PRIVATE src/app
+    )
+    target_link_libraries(seriona_frontend_spectrum_display_model_tests
+        PRIVATE Qt6::Test
+    )
+    add_test(NAME seriona_frontend_spectrum_model_tau_bands COMMAND seriona_frontend_spectrum_display_model_tests tauConstantsWithinSpecBands)
+    add_test(NAME seriona_frontend_spectrum_model_attack_instant COMMAND seriona_frontend_spectrum_display_model_tests attackIsInstantOnRise)
+    add_test(NAME seriona_frontend_spectrum_model_decay_tau_einv COMMAND seriona_frontend_spectrum_display_model_tests barDecayReachesEInvAtOneTau)
+    add_test(NAME seriona_frontend_spectrum_model_dt_path_independence COMMAND seriona_frontend_spectrum_display_model_tests decayPathIndependentUnderDtSplitting)
+    add_test(NAME seriona_frontend_spectrum_model_steady_state COMMAND seriona_frontend_spectrum_display_model_tests constantInputConvergesToTargetAndHolds)
+    add_test(NAME seriona_frontend_spectrum_model_large_dt_safe COMMAND seriona_frontend_spectrum_display_model_tests largeDtSnapsWithoutOvershootOrNaN)
+    add_test(NAME seriona_frontend_spectrum_model_nonpositive_dt COMMAND seriona_frontend_spectrum_display_model_tests nonPositiveDtIsNoop)
+    add_test(NAME seriona_frontend_spectrum_model_peak_max_hold COMMAND seriona_frontend_spectrum_display_model_tests peakMaxHoldInstantAndIndependentTau)
+    add_test(NAME seriona_frontend_spectrum_model_peak_fall_tau COMMAND seriona_frontend_spectrum_display_model_tests peakFallMeasuredEInvAtTauPeak)
+    add_test(NAME seriona_frontend_spectrum_model_clamp_top COMMAND seriona_frontend_spectrum_display_model_tests aboveZeroDbClampsTop)
+    add_test(NAME seriona_frontend_spectrum_model_floor_zero COMMAND seriona_frontend_spectrum_display_model_tests belowMinusSixtyMapsToZero)
+    add_test(NAME seriona_frontend_spectrum_model_silence_floor COMMAND seriona_frontend_spectrum_display_model_tests silenceFloorRendersAllZeroAndFinite)
+    add_test(NAME seriona_frontend_spectrum_model_reset COMMAND seriona_frontend_spectrum_display_model_tests resetClearsAllChannels)
+    add_test(NAME seriona_frontend_spectrum_model_freq_axis COMMAND seriona_frontend_spectrum_display_model_tests freqLogAxisMappingAnchors)
+    add_test(NAME seriona_frontend_spectrum_model_band_center COMMAND seriona_frontend_spectrum_display_model_tests bandCenterConvention)
+    add_test(NAME seriona_frontend_spectrum_model_db_fraction COMMAND seriona_frontend_spectrum_display_model_tests dbFractionMappingDisplayAndGainDomains)
 
     # 播放次数/星级持久化（T16）：纯 QML 面（无后端依赖），mock-only 构建同样注册
     add_executable(seriona_frontend_track_stats_tests
@@ -876,6 +912,12 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
             src/app/navigation_controller.h
             src/app/settings_controller.cpp
             src/app/settings_controller.h
+            src/app/spectrum_display_model.cpp
+            src/app/spectrum_display_model.h
+            src/app/spectrum_graph.cpp
+            src/app/spectrum_graph.h
+            src/app/equalizer_curve_synth.cpp
+            src/app/equalizer_curve_synth.h
             src/app/backend_snapshot_mapper.cpp
             src/app/backend_snapshot_mapper.h
             src/app/backend_command_adapter.cpp
@@ -942,6 +984,12 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
             src/app/navigation_controller.h
             src/app/settings_controller.cpp
             src/app/settings_controller.h
+            src/app/spectrum_display_model.cpp
+            src/app/spectrum_display_model.h
+            src/app/spectrum_graph.cpp
+            src/app/spectrum_graph.h
+            src/app/equalizer_curve_synth.cpp
+            src/app/equalizer_curve_synth.h
             src/app/backend_snapshot_mapper.cpp
             src/app/backend_snapshot_mapper.h
             src/app/backend_command_adapter.cpp
@@ -1256,6 +1304,33 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
         add_test(NAME seriona_frontend_backend_bridge_play_next_track COMMAND seriona_frontend_backend_bridge_tests playNextTrackBuildsQueueCommand)
         add_test(NAME seriona_frontend_backend_bridge_play_next_empty COMMAND seriona_frontend_backend_bridge_tests playNextTrackRejectsEmptyIdWithoutDispatch)
         add_test(NAME seriona_frontend_backend_bridge_remove_from_queue COMMAND seriona_frontend_backend_bridge_tests removeFromQueueBuildsIndexedCommand)
+
+        # T9 conformance：本地乐观合成（equalizer_curve_synth）与后端 reducer 快照
+        # 逐点一致（≤0.05dB×181×全部测试组）。真 makeMediaController 内嵌 harness，
+        # 链路与 tst_backend_bridge 相同：submitEqualizerConfig → reducer → 镜像读回。
+        add_executable(seriona_frontend_equalizer_curve_conformance_tests
+            tests/frontend/adapter/tst_equalizer_curve_conformance.cpp
+            src/app/backend_bridge.cpp
+            src/app/backend_bridge.h
+            src/app/settings_controller.cpp
+            src/app/app_settings_storage.cpp
+            src/app/app_settings_storage.h
+            src/app/settings_controller.h
+            src/app/backend_command_adapter.cpp
+            src/app/backend_command_adapter.h
+            src/app/equalizer_curve_synth.cpp
+            src/app/equalizer_curve_synth.h
+        )
+        target_include_directories(seriona_frontend_equalizer_curve_conformance_tests
+            PRIVATE src/app
+        )
+        target_compile_definitions(seriona_frontend_equalizer_curve_conformance_tests
+            PRIVATE SERIONA_HAS_BACKEND=1
+        )
+        target_link_libraries(seriona_frontend_equalizer_curve_conformance_tests
+            PRIVATE Qt6::Quick Qt6::Test ${SERIONA_BACKEND_CONTROL_TARGET} ${SERIONA_BACKEND_APP_TARGET} spdlog::spdlog
+        )
+        add_test(NAME seriona_frontend_equalizer_curve_conformance COMMAND seriona_frontend_equalizer_curve_conformance_tests)
 
         add_executable(seriona_frontend_track_detail_tests
             tests/frontend/adapter/tst_track_detail.cpp

@@ -48,7 +48,7 @@ bool isConfigureOutputRejection(const std::string &message)
 #if SERIONA_HAS_BACKEND
 namespace {
 // 后端快照 float 数组 → QML 消费面 QVariantList（double）：EQ 曲线 181 点 / 频谱
-// 60 桶走统一转换；长度由 std::array 模板形参编译期携带，double 与 QML number 直配。
+// 120 桶走统一转换；长度由 std::array 模板形参编译期携带，double 与 QML number 直配。
 template <std::size_t N>
 QVariantList floatArrayToVariantList(const std::array<float, N> &values)
 {
@@ -96,7 +96,7 @@ void AppFacade::handleSpectrumChanged()
 {
     const seriona::audio::SpectrumSnapshot &snapshot = m_backendBridge->spectrumSnapshot();
     // 频谱推送面 R2 已接线（后端 SpectrumUpdated 事件 → 控制器驻留槽 → 订阅回调）；
-    // 快照按契约 60 桶落地（generation=0 的默认空快照同样按契约镜像，UI 空态由
+    // 快照按契约 120 桶落地（generation=0 的默认空快照同样按契约镜像，UI 空态由
     // EqualizerWindow 呈现）。更新频率 = 后端发布频率，此处不节流不放大。
     m_settings.mirrorSpectrumBins(floatArrayToVariantList(snapshot.binsDb));
 }

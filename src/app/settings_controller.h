@@ -72,7 +72,7 @@ struct PlaybackDeviceCapabilities {
 //        配置模式，executor 绑定前 no-op；F1.3 在 AppFacade 注入后启动即同步）；
 //      · 未绑定（mock-only）时 setter/applyEqualizerConfig/resetEq 全链 no-op
 //        （仅持久化，同 transition executor 未绑定先例）。
-//  - spectrumBins(60)/curvePoints(181)/curveFrequencies(181) 为订阅镜像属性：
+//  - spectrumBins(120)/curvePoints(181)/curveFrequencies(181) 为订阅镜像属性：
 //    纯内存态，由后端推送更新（F1.3 mirrorSpectrumBins/mirrorEqualizerCurve 写者，
 //    经 AppFacade 从 BackendBridge 订阅接线），严禁持久化、严禁进入 reloadFromSettings
 //    （勿按频谱帧率写存储——更新频率由后端发布驱动，前端不节流不放大）。
@@ -247,7 +247,7 @@ public:
     QVariantList curveFrequencies() const;
     // 镜像写者（C++/AppFacade 面，后端推送驱动；F1.3）：把 BackendBridge 订阅快照
     // 转成的 QVariantList（double）落到对应镜像成员并 NOTIFY（与现值相同则跳过）。
-    // 定长契约：curvePoints/curveFrequencies 各 181 点、spectrumBins 60 桶；长度不符
+    // 定长契约：curvePoints/curveFrequencies 各 181 点、spectrumBins 120 桶；长度不符
     // 的推送丢弃（后端 std::array 定长，正常不可达，防御异常数据破坏 QML 消费）。
     // 更新频率 = 后端发布频率（EQ 命令生效帧 / 频谱驻留节流帧），前端不节流不放大。
     void mirrorEqualizerCurve(const QVariantList &curvePoints, const QVariantList &curveFrequencies);
