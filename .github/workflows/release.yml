@@ -250,9 +250,16 @@ jobs:
           # → QRhiGles2 初始化失败 abort（2026-09-05 用户实测崩溃）。整个目录补拷。
           cp -r "$QT_ROOT_DIR/plugins/wayland-graphics-integration-client" AppDir/usr/plugins/
           ls AppDir/usr/plugins/wayland-graphics-integration-client/
-          # 分两次跑 linuxdeploy：第二次仅打包（不重跑 plugin qt，避免覆盖补拷目录）；
-          # 仍带 --custom-apprun 保持幂等（AppRun 已存在则不被覆盖）。
-          ./linuxdeploy.AppImage --appdir AppDir --custom-apprun=$GITHUB_WORKSPACE/scripts/appimage-AppRun.sh --output appimage
+          # AppImage 打包改用独立 appimagetool（linuxdeploy.AppImage 内置 plugin-appimage，
+          # --appimage-extract 即可取出）：linuxdeploy 的 desktop 集成会把根图标固定部署为
+          # hicolor 64x64 符号链接，.DirIcon 仅 64px——文件管理器放大显示模糊。先移除该符号
+          # 链接并把 256x256 实体图标放到 AppDir 根，appimagetool 的 .DirIcon 即指向 256px
+          # 实体（不再重跑 linuxdeploy，避免覆盖补拷的 wayland 目录与根图标）。
+          rm -f AppDir/org.kaizen857.Seriona.png
+          cp AppDir/usr/share/icons/hicolor/256x256/apps/org.kaizen857.Seriona.png AppDir/org.kaizen857.Seriona.png
+          ./linuxdeploy.AppImage --appimage-extract > /dev/null
+          ./squashfs-root/plugins/linuxdeploy-plugin-appimage/usr/bin/appimagetool AppDir
+          rm -rf squashfs-root
           tar czf Seriona-${{ env.SERIONA_VERSION }}-linux-x86_64.tar.gz AppDir
         env:
           APPIMAGE_EXTRACT_AND_RUN: '1'
