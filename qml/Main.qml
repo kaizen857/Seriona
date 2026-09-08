@@ -389,6 +389,11 @@ Window {
                         }
 
                         onOpenEqualizerRequested: {
+                            // 首次打开时居中(一次性定位,不跟随主窗口)
+                            if (!equalizerWindow.visible) {
+                                equalizerWindow.x = window.x + (window.width - equalizerWindow.width) / 2;
+                                equalizerWindow.y = window.y + (window.height - equalizerWindow.height) / 2;
+                            }
                             equalizerWindow.show();
                         }
                     }
@@ -538,8 +543,8 @@ Window {
 
     EqualizerWindow {
         id: equalizerWindow
-        x: window.x + (window.width - width) / 2
-        y: window.y + (window.height - height) / 2
+        // x/y 坐标绑定已移除:避免窗口跟随主窗口瞬移(Wayland transient 语义问题)
+        // 首次打开居中逻辑见 openEqualizer 处理器
     }
 
     Timer {
@@ -603,29 +608,27 @@ Window {
                     var mode31 = smokeFindByObjectName(equalizerWindow, "eqMode31Button");
                     var mode10 = smokeFindByObjectName(equalizerWindow, "eqMode10Button");
                     if (mode31 && mode10) {
-                        // GEQ 横向滚动条已收敛为 StyledScrollBar（ScrollBar.horizontal 附挂，
-                        // objectName=eqHStyledScrollBar）：31 段内容(2106px)溢出视口 → size<1
-                        // 句柄可见；切 10 段(678px)不溢出 → AsNeeded 整条隐藏（size 钳 1.0）。
+                        // GEQ 横向滚动条（自绘轨道 objectName=eqHStyledScrollBar，bandHScrollTrack）：
+                        // 31 段内容(2106px)溢出视口 → 轨道 visible 句柄可拖；切 10 段(678px)不溢出
+                        // → 整条隐藏（visible=false）。可见性绑定 = contentWidth > width + 1。
                         var hBar = smokeFindByObjectName(equalizerWindow, "eqHStyledScrollBar");
                         console.log("[smoke] eq hStyledScrollBar hit objectName=eqHStyledScrollBar"
                                 + " type=" + (hBar ? String(hBar) : "(null)")
-                                + " isStyled=" + (hBar !== null && hBar.verticalBar !== undefined));
+                                + " isStyled=" + (hBar !== null && hBar._handleW !== undefined));
                         mode31.click();
                         if (appFacade.settings.bandMode === 31
                                 && smokeCountByObjectNamePrefix(equalizerWindow, "eqBandSlider") === 31)
                             console.log("[smoke] eq mode31 band sliders=31");
                         if (hBar)
-                            console.log("[smoke] eq hStyledScrollBar mode31 size=" + hBar.size.toFixed(3)
-                                    + " visible=" + hBar.visible
-                                    + " contentItem.visible=" + hBar.contentItem.visible);
+                            console.log("[smoke] eq hStyledScrollBar mode31 visible=" + hBar.visible
+                                    + " handleW=" + hBar._handleW.toFixed(1));
                         mode10.click();
                         if (appFacade.settings.bandMode === 10
                                 && smokeCountByObjectNamePrefix(equalizerWindow, "eqBandSlider") === 10)
                             console.log("[smoke] eq mode10 band sliders=10");
                         if (hBar)
-                            console.log("[smoke] eq hStyledScrollBar mode10 size=" + hBar.size.toFixed(3)
-                                    + " visible=" + hBar.visible
-                                    + " contentItem.visible=" + hBar.contentItem.visible);
+                            console.log("[smoke] eq hStyledScrollBar mode10 visible=" + hBar.visible
+                                    + " handleW=" + hBar._handleW.toFixed(1));
                     }
                     step = 4;
                     smokeTimer.interval = 100;
@@ -648,11 +651,11 @@ Window {
                     // 显式置 spectrumEnabled=false（settings_controller.h 默认即 false）防
                     // QSettings 持久化残留 true 造成环境相关通过。
                     // 注：smoke 进程按 main.cpp 契约不启动媒体控制器（backendBridge
-                    // AutostartEnabled=false）→ 镜像曲线恒缺 → hasCurveData() 恒 false，
-                    // graphHintText 恒处首分支「播放引导」（任何开关态均显示，确定性）；
-                    // 「频谱已关闭/暂无频谱数据」两态依赖镜像曲线，需真实后端进程验证
-                    //（本仓 smoke 架构不可达，记录观察项）。曲线到达分支日志保留——
-                    // 若未来 smoke 允许后端，同段日志即可断言完整状态机。
+                    // AutostartEnabled=false）→ 频谱 bins 恒缺、curvePoints 镜像恒缺；
+                    // R5 起显示曲线 = 本地包络（SettingsController 构造器恒置 bandGains10/31
+                    // 零增益 → hasCurveData() 恒 true）→ graphHintText 确定性进入
+                    // 「频谱已关闭」（OFF）/「暂无频谱数据」（ON，bins 空）两态——两态在
+                    // smoke 下均可达，状态机可全量断言（R5 前依赖镜像曲线不可达）。
                     var sl0 = smokeFindByObjectName(equalizerWindow, "eqScaleLabel0");
                     var sl20 = smokeFindByObjectName(equalizerWindow, "eqScaleLabel-20");
                     var sl40 = smokeFindByObjectName(equalizerWindow, "eqScaleLabel-40");
@@ -669,26 +672,21 @@ Window {
                     smokeTimer.start();
                 }
             } else if (step === 5) {
-                // 轮询等待启动链推送曲线（若 smoke 未来接入后端：bridge started → apply →
-                // SetEqualizerConfig → reducer → 镜像往返；上限 ~3s = 15 tick）。当前 smoke
-                // 架构无后端 → 曲线恒缺，轮询必超时 → 记录并继续柱区联动断言。
+                // R5：显示曲线 = 本地包络（bandGains 恒置 → 首 tick 即就绪），无后端等待面；
+                // 轮询仅作 settings 未就绪的兜底（上限 ~3s = 15 tick），记录后继续柱区联动断言。
                 smokeTimer.graphPollTicks = smokeTimer.graphPollTicks + 1;
                 if (equalizerWindow.visible) {
-                    var hintPoll = smokeFindByObjectName(equalizerWindow, "eqGraphEmptyHint");
-                    if (hintPoll && hintPoll.text === "播放音频后显示实时频响")
-                        console.log("[smoke] eq graph play-guide held at poll tick "
-                                + smokeTimer.graphPollTicks + " (deterministic under smoke: no backend)");
-                    var curveLen = appFacade.settings.curvePoints
-                            ? appFacade.settings.curvePoints.length : 0;
-                    if (curveLen > 1) {
+                    var gainLen = appFacade.settings.bandGains10
+                            ? appFacade.settings.bandGains10.length : 0;
+                    if (gainLen > 1) {
                         smokeTimer.graphCurveArrived = true;
-                        console.log("[smoke] eq graph curve arrived tick=" + smokeTimer.graphPollTicks
-                                + " points=" + curveLen);
+                        console.log("[smoke] eq graph envelope ready tick=" + smokeTimer.graphPollTicks
+                                + " bands=" + gainLen);
                         step = 6;
                         smokeTimer.interval = 100;
                         smokeTimer.start();
                     } else if (smokeTimer.graphPollTicks >= 15) {
-                        console.log("[smoke] eq graph curve absent after 3s (smoke backend-isolated, expected)");
+                        console.log("[smoke] eq graph envelope absent after 3s (settings not seeded)");
                         step = 6; // 柱区联动断言不依赖曲线，仍继续
                         smokeTimer.interval = 100;
                         smokeTimer.start();
@@ -700,8 +698,8 @@ Window {
                 }
             } else if (step === 6) {
                 if (equalizerWindow.visible) {
-                    // 相位 A（真实状态机起点 = 默认 OFF）：无曲线（smoke 确定性）→ hint
-                    // 播放引导 + 柱区隐藏；若曲线可达则期望 hint=频谱已关闭。
+                    // 相位 A（真实状态机起点 = 默认 OFF）：包络曲线恒在（R5）+ 开关 OFF →
+                    // hint=频谱已关闭（确定性）+ 柱区隐藏。
                     var gA = smokeFindByObjectName(equalizerWindow, "eqGraphCanvas");
                     var hA = smokeFindByObjectName(equalizerWindow, "eqGraphEmptyHint");
                     if (gA && hA)
@@ -722,8 +720,8 @@ Window {
                 }
             } else if (step === 7) {
                 if (equalizerWindow.visible) {
-                    // 相位 B：开关 ON → 柱区显示（barsVisible=true）；hint 仍播放引导
-                    //（smoke 无曲线）；曲线可达时此处期望 hint=暂无频谱数据（bins 空确定性）。
+                    // 相位 B：开关 ON → 柱区显示（barsVisible=true）；hint=暂无频谱数据
+                    //（R5 确定性：bins 空 + 包络恒在）。
                     var gB = smokeFindByObjectName(equalizerWindow, "eqGraphCanvas");
                     var hB = smokeFindByObjectName(equalizerWindow, "eqGraphEmptyHint");
                     if (gB && hB)
@@ -744,8 +742,8 @@ Window {
                 }
             } else if (step === 8) {
                 if (equalizerWindow.visible) {
-                    // 相位 C：再置 OFF → 柱区隐藏 + hint 回初态（状态机闭环；开关联动三段
-                    // 全断言）。曲线依赖态（频谱已关闭/暂无频谱数据）不可达性见 step4 注释。
+                    // 相位 C：再置 OFF → 柱区隐藏 + hint 回「频谱已关闭」（状态机闭环；开关
+                    // 联动三段全断言）。两态可达性见 step4 注释（R5 起 smoke 下确定性可达）。
                     var gC = smokeFindByObjectName(equalizerWindow, "eqGraphCanvas");
                     var hC = smokeFindByObjectName(equalizerWindow, "eqGraphEmptyHint");
                     if (gC && hC)
@@ -754,7 +752,7 @@ Window {
                     console.log("[smoke] eq graph state machine summary curveArrived="
                             + smokeTimer.graphCurveArrived
                             + " barsGatingOk=" + (gC ? gC.spectrumBarsVisible === false : false)
-                            + " playGuideDeterministic=" + (hC && hC.text === "播放音频后显示实时频响"));
+                            + " spectrumOffHintDeterministic=" + (hC && hC.text === "频谱已关闭"));
                     // T11：关窗后移至风暴完成（step 11 尾部）；此处链续走 T11 定稿断言
                     //（binCount==120 / 手柄计数 10/31 / 快速切换风暴）。
                     step = 9;

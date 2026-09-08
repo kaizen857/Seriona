@@ -22,11 +22,16 @@ namespace Seriona::App {
 // 注册为 QML_ELEMENT（类型名 SpectrumGraph，文件名 spectrum_graph.* 与类名对应）；
 // 窗口接线（EqualizerWindow 图谱区替换 Canvas）属任务 10，本类不依赖窗口层。
 //
-// 数据语义（与 settings 镜像面同源，T10 绑 settings.spectrumBins/curvePoints/
-// curveFrequencies）：
+// 数据语义（与 settings 镜像面同源，T10 绑定 settings.spectrumBins/bandGains*/…）：
 //  - spectrumBins：120 桶 dBFS（0dBFS 满刻度，-120 静音地板；长度由 SettingsController
 //    镜像门 kEqSpectrumBinCount 保证，本 item 按长度自适应绘制，短/空列表按静音补全）；
-//  - curvePoints/curveFrequencies：181 点频响曲线（等长；频率轴 20..20k 对数）。
+//  - 显示曲线（R5）：本地 PCHIP 包络（手柄点平滑插值，恒过手柄），由 bandMode +
+//    活动档 bandGains 合成——见 synthesizeGraphicEnvelopeCurve 与 rebuildEnvelopeCurve。
+//    R5 前曲线 = 后端物理响应镜像（curvePoints/curveFrequencies 181 点，RBJ 逐点叠加）；
+//    R5 调研结论：消费级 GEQ/播放器 UI 曲线 = 手柄点目标包络，物理叠加会「峰高于手柄」
+//    （相邻高增益带裙边叠加），与编辑语义冲突——故显示与 DSP 解耦：曲线随增益即时本地
+//    更新，音频仍为后端真实 RBJ。后端镜像曲线仍经 settings.curvePoints 订阅到达
+//    （后端契约面保留），本类不再消费其绘制。
 //
 // 渲染与推进架构（T8 决策，单线程无锁依据：Qt Quick 官方约定——GUI 线程写
 // item 状态（属性 setter/16ms 推进定时器），渲染线程在帧同步期于
@@ -80,13 +85,9 @@ namespace Seriona::App {
 //    qml/windows/EqualizerWindow.qml:721-734 与锁测试 tst_ui_only_handler_policy）
 //    同键同语义（bandMode=10 → "bandGains10"，31 → "bandGains31"）；本类不写
 //    settings（app 级写回胶水归 T10/T11，本任务不承诺）。
-//  - 乐观合成（拖动期间本地 RBJ 合成 181 点曲线）：拖动开始/每次增益变化时用
-//    synthesizeEqualizerCurve 全语义合成（preGainDb + 当前档增益 + 拖动值）；
-//    仲裁位设计（避免抖动）：拖动中显示本地合成；释放后置 pending 位——曲线保持
-//    合成结果直到下一帧后端镜像 curvePoints 到达（到达即覆盖，值差 ≤0.05dB 无缝），
-//    镜像缺席时合成结果兜底常显（无橡皮筋/无闪断）。bandMode 切换 / 整表写回 /
-//    拖动中止清除合成与 pending（镜像或空态为准）。绘制与镜像共用 m_curveDbs 通道
-//    ——同一几何路径，仅顶点数据源切换（x 轴同一 181 点对数轴）。
+//  - 显示曲线 = 本地 PCHIP 包络（R5，见类头数据语义节）：任何增益/档位/拖动值
+//    变化即重建 181 点包络（rebuildEnvelopeCurve；拖动态以吸附值替换拖动 band）——
+//    曲线恒过手柄、无过冲、即时更新（无镜像仲裁/pending；释放落值后直接重建）。
 //  - 手柄节点追加在曲线节点之后（尾区）；节点树组合（柱/峰 固定 + 曲线 0/3 +
 //    手柄 0/n）变化时整树重建（仅组合变化帧分配），每帧仅写顶点。
 // ============================================================================
@@ -98,8 +99,6 @@ class SpectrumGraph : public QQuickItem
     Q_OBJECT
     // 数据属性（订阅镜像只读面；变更触发重绘）
     Q_PROPERTY(QVariantList spectrumBins READ spectrumBins WRITE setSpectrumBins NOTIFY spectrumBinsChanged)
-    Q_PROPERTY(QVariantList curvePoints READ curvePoints WRITE setCurvePoints NOTIFY curvePointsChanged)
-    Q_PROPERTY(QVariantList curveFrequencies READ curveFrequencies WRITE setCurveFrequencies NOTIFY curveFrequenciesChanged)
     // 频谱桶数（固定 120，镜像门同源常量）
     Q_PROPERTY(int binCount READ binCount CONSTANT)
     // 颜色注入（QML 层 Theme 值；柱顶亮/底暗渐变 + 峰值线 + 曲线）
@@ -129,10 +128,6 @@ public:
 
     QVariantList spectrumBins() const { return m_spectrumBins; }
     void setSpectrumBins(const QVariantList &bins);
-    QVariantList curvePoints() const { return m_curvePoints; }
-    void setCurvePoints(const QVariantList &points);
-    QVariantList curveFrequencies() const { return m_curveFrequencies; }
-    void setCurveFrequencies(const QVariantList &frequencies);
     // binCount 与模型同源（= equalizer_presets.h kEqSpectrumBinCount）
     int binCount() const { return SpectrumDisplayModel::kBinCount; }
 
@@ -187,8 +182,6 @@ public:
 
 signals:
     void spectrumBinsChanged();
-    void curvePointsChanged();
-    void curveFrequenciesChanged();
     void barTopColorChanged();
     void barBottomColorChanged();
     void peakLineColorChanged();
@@ -222,7 +215,6 @@ protected:
 private:
     // 数据镜像：QVariantList（仅变更时转换）+ 定长 double 数组（绘制消费）
     void convertSpectrumBinsLocked();
-    void convertCurveLocked();
     // band 增益镜像（QVariantList → 定长数组，钳 ±15、非有限 → 0）
     void convertBandGains(int mode);
     void convertBandGainsList(const QVariantList &list, std::span<double> dst);
@@ -241,17 +233,16 @@ private:
     // 命中测试：局部坐标 → 手柄序号（距中心 ≤ 8px 取最近；无命中 -1）
     int handleHitTest(const QPointF &localPos) const;
     void setHoverIndex(int index); // hover 变化才重绘
-    void beginDrag(int bandIndex, const QPointF &localPos); // 命中起始拖动态 + 合成起点
-    void updateDragValue(const QPointF &localPos); // 拖动中：钳 ±15 + 0.1 吸附 + 合成
+    void beginDrag(int bandIndex, const QPointF &localPos); // 命中起始拖动态 + 包络起点
+    void updateDragValue(const QPointF &localPos); // 拖动中：钳 ±15 + 0.1 吸附 + 包络重建
     void endDrag(const QPointF &localPos, bool commit); // 释放提交 or 中止（ungrab/外部干预）
-    void cancelDrag(); // 中止：清拖动态/合成/pending，无释放信号
-    void resetOptimisticCurve(); // 清合成曲线与 pending（模式切换/整表写回/中止）
-    void synthesizeOptimisticCurve(); // 按当前值 + 拖动值合成 181 点 → m_optimistic*
+    void cancelDrag(); // 中止：清拖动态并回落包络（无释放信号）
+    void rebuildEnvelopeCurve(); // 按活动档增益（拖动态含吸附值）合成 181 点包络
     void notifyDragInfo();
     void updateCursorShape();
     // 活动档内部镜像存储值（index 域外按 0）
     double storedBandGain(int mode, int bandIndex) const;
-    // 曲线显示源仲裁（拖动/pending → 乐观合成；否则镜像；镜像缺席 → 乐观兜底）
+    // 曲线显示源 = 本地包络通道（m_curveFreqs/Dbs/Count；<2 点视为无曲线）
     void resolveCurveSource(const double *&freqs, const double *&dbs, int &count) const;
     // 上一帧绘制布局签名（曲线点数/可见性/手柄数；与当前不符 → 整树重建）。
     // updatePaintNode 于帧同步期读写（GUI 线程阻塞中），无跨线程竞争。
@@ -259,17 +250,16 @@ private:
     int m_paintHandleN = -1;
 
     QVariantList m_spectrumBins;
-    QVariantList m_curvePoints;
-    QVariantList m_curveFrequencies;
 
     // 定长镜像（构造期一次性定长，无每帧分配）
     std::array<double, SpectrumDisplayModel::kBinCount> m_binsDb{};
     // 收敛判据影子目标：与喂入模型同一转换步用同一纯函数（spectrumDbToFraction）
     // 计算，仅作推进循环停表判据（模型 target 内部量不可直读；同源计算无漂移）
     std::array<double, SpectrumDisplayModel::kBinCount> m_shadowTarget{};
+    // 显示曲线通道（R5 包络；频率轴 = 合成轴 20..20k 对数，同公式）
     std::array<double, kEqCurvePointCount> m_curveFreqs{};
     std::array<double, kEqCurvePointCount> m_curveDbs{};
-    int m_curveCount = 0; // 有效曲线点数（<2 视为无曲线，跳过曲线几何）
+    int m_curveCount = 0; // 包络有效点数（0/181；<2 视为无曲线，跳过曲线几何）
 
     // band 编辑面状态（T9）
     QVariantList m_bandGains10;
@@ -287,11 +277,6 @@ private:
     int m_hoverBandIndex = -1; // hover 手柄（无 = -1）
     int m_dragBandIndex = -1; // 拖动手柄（无 = -1）
     double m_dragGainDb = 0.0; // 拖动吸附值（释放信号值源）
-    bool m_dragPendingMirror = false; // 释放后待镜像仲裁位（见类头乐观合成节）
-    // 乐观合成镜像（拖动显示源；181 点定长；频率轴 = 合成轴）
-    std::array<double, kEqCurvePointCount> m_optimisticFreqs{};
-    std::array<double, kEqCurvePointCount> m_optimisticDbs{};
-    int m_optimisticCount = 0; // 0 = 无合成数据
 
     // 显示平滑模型（成员组合；T8 消费 T7 交付，常量/映射以模型为单一源）
     SpectrumDisplayModel m_displayModel;

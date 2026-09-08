@@ -1,11 +1,16 @@
 #pragma once
 
-// —— EQ 频响曲线乐观合成（任务 9，纯 C++23，零 Qt 依赖）——
-// 用途：拖动手柄期间本地合成 181 点频响曲线（拖动显示仲裁；后端镜像 curvePoints
-// 到达前展示、到达后由真实镜像覆盖），消除 50-100ms 设置回环造成的"橡皮筋追点"。
+// —— EQ 频响曲线纯合成（纯 C++23，零 Qt 依赖）——
+// 两个同轴纯函数（均输出 181 点 20..20k 对数均匀轴）：
+//   · synthesizeEqualizerCurve：物理叠加响应（RBJ peaking 逐点叠加 + preGain），
+//     与后端 reducer 快照逐点同源——conformance 测试锁 ≤0.05dB；R5 前作拖动显示
+//     源，R5 起显示曲线改用包络（本函数保留：后端物理响应同源锁 + 未来真实响应
+//     显示模式的本地合成面）；
+//   · synthesizeGraphicEnvelopeCurve：R5 显示曲线（手柄点 PCHIP 包络，恒过手柄、
+//     不过冲，与 DSP 物理响应解耦）——见下方声明注释。
 //
 // ★ 同源声明（review 核对项，勿漂移）：
-//   本文件的曲线语义与后端 makeEqualizerStateSnapshot 逐条同源 ——
+//   synthesizeEqualizerCurve 的曲线语义与后端 makeEqualizerStateSnapshot 逐条同源 ——
 //   Seriona_Backend/src/control/control_state_reducer.cpp:306-363：
 //     · 轴生成  :306-313  （181 点 20..20k 对数均匀，f[i]=20·1000^(i/180)）；
 //     · RBJ 响应 :319-336 （:335-336 Band10 分支 return 的分母含 pow(x/(a·q),2.0)，
@@ -67,5 +72,17 @@ struct EqualizerCurveSynthResult {
                                                                  double preGainDb,
                                                                  std::span<const double> bandGains,
                                                                  std::uint32_t sampleRateOrZero = 0) noexcept;
+
+// —— 图形包络合成（R5：GEQ 显示曲线 = 过手柄点的目标包络，与 DSP 解耦）——
+// 调研结论（消费级 GEQ/播放器惯例，Spotify/foobar2000/moOde 同）：GEQ UI 曲线画
+// 「手柄点平滑包络」而非逐点物理叠加——物理响应在相邻高增益带叠加后中心会高出
+// 手柄 4-5dB（peaking 裙边贡献），与「手柄即所见增益」的编辑语义冲突。
+// 本函数以 (ISO 中心频点, 档增益) 为型值点，对 181 点对数轴做 PCHIP 单调三次
+// 插值（Fritsch–Carlson 斜率约束）：曲线恒过每个手柄、段间单调、绝不过冲
+// （Catmull-Rom 等过冲样条会产生「峰高于手柄」的同类问题，故不用）。
+// 不含 preGainDb（总增益不进编辑包络；与主流播放器推子图形语义一致——音频仍含）。
+[[nodiscard]] EqualizerCurveSynthResult synthesizeGraphicEnvelopeCurve(
+    int bandMode,
+    std::span<const double> bandGains) noexcept;
 
 } // namespace Seriona::App

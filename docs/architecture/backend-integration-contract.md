@@ -84,4 +84,4 @@ Seriona 前端 QML 不直接持有后端状态；中间层 owners 负责把后�
 
 - 后端 DSP 越界守卫：中心频率 ≥ 0.95×(fs/2) 的频段整体硬直通（不进滤波链；奈奎斯特外的增益命令零影响）。
 - 曲线合成同源守卫仅 fs > 0 时参与；产品路径镜像快照恒 fs=0（sampleRate 未回填）→ 镜像 181 点曲线按全轴 20–20k 计算，截断分支不参与。
-- 频段中心频率与 Q 常量单点定义于后端 `inc/seriona/audio/equalizer_tables.h`；前端拖动乐观合成与后端 reducer 同源公式（`equalizer_curve_synth` 拷贝自 reducer，conformance 锁 worst ≤ 0.05 dB 漂移上界）。
+- 频段中心频率与 Q 常量单点定义于后端 `inc/seriona/audio/equalizer_tables.h`；前端物理合成函数（`equalizer_curve_synth::synthesizeEqualizerCurve` 拷贝自 reducer）与后端 reducer 同源公式（conformance 锁 worst ≤ 0.05 dB 漂移上界）。R5 起图谱区显示曲线改为**本地 PCHIP 手柄点包络**（`synthesizeGraphicEnvelopeCurve`，恒过手柄、与 DSP 物理响应解耦——消费级 GEQ 惯例），物理合成函数仅保留为同源锁/未来真实响应显示面，不再作拖动显示源。

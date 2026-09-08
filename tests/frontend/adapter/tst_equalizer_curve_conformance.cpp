@@ -210,6 +210,7 @@ class EqualizerCurveConformanceTest : public QObject
 
 private slots:
     void synthMatchesBackendReducerOverAllCases();
+    void envelopeStaysWithinHandlesAndPassesThroughKnots();
 };
 
 void EqualizerCurveConformanceTest::synthMatchesBackendReducerOverAllCases()
@@ -285,6 +286,76 @@ void EqualizerCurveConformanceTest::synthMatchesBackendReducerOverAllCases()
     std::printf("[conformance] overall: %s (worst deviation %.6f dB)\n",
                 allPassed ? "ALL PASS" : "FAILED", worstOverall);
     QVERIFY2(allPassed, "本地乐观合成与后端 reducer 逐点差 > 0.05dB（公式/常量漂移）");
+}
+
+// R5 图形包络断言：synthesizeGraphicEnvelopeCurve（PCHIP 过手柄点包络）——
+// 锁三个几何性质（用户可感知的「手柄贴曲线/曲线不过冲」契约）：
+//   1. 不过冲：181 点响应全部落在手柄增益值域 [min, max]（PCHIP 段内单调保证，
+//      若回归为 Catmull-Rom 过冲样条/物理叠加曲线，此断言红）；
+//   2. 过手柄：在手柄中心频点处对相邻采样折线插值，值 ≈ 档增益（容差 0.5dB——
+//      31 段 ±15 交替最坏情形折线拱高 ≤0.35dB，0.5dB 阈值具区分度）；
+//   3. 轴单调：频率轴严格升序（绘制 x 依赖单调轴，折线无回绕）。
+// 输入 = 后端同组测试用例（bandMode/gains；preGain 不进包络，本函数不使用）。
+void EqualizerCurveConformanceTest::envelopeStaysWithinHandlesAndPassesThroughKnots()
+{
+    bool allPassed = true;
+    double worstRangeViolation = 0.0;
+    double worstKnotDeviation = 0.0;
+    const auto xOf = [](double hz) { return std::log10(hz / 20.0) / 3.0; };
+    for (const SynthTestCase &test : testCases()) {
+        double caseRangeViolation = 0.0;
+        double caseKnotDeviation = 0.0;
+        std::array<double, 31> gains{};
+        for (int i = 0; i < test.gainCount; ++i)
+            gains[static_cast<std::size_t>(i)] = test.gains[static_cast<std::size_t>(i)];
+        const Seriona::App::EqualizerCurveSynthResult env = Seriona::App::synthesizeGraphicEnvelopeCurve(
+            test.bandMode, std::span<const double>(gains.data(), static_cast<std::size_t>(test.gainCount)));
+
+        const double minGain = *std::min_element(gains.begin(), gains.begin() + test.gainCount);
+        const double maxGain = *std::max_element(gains.begin(), gains.begin() + test.gainCount);
+        for (int i = 0; i < 181; ++i) {
+            const double db = env.responseDb[static_cast<std::size_t>(i)];
+            const double rangeViolation = std::max(minGain - db, db - maxGain);
+            caseRangeViolation = std::max(caseRangeViolation, rangeViolation);
+            if (rangeViolation > 1e-9)
+                allPassed = false;
+        }
+        double lastX = -1.0;
+        for (int i = 0; i < 181; ++i) {
+            const double x = xOf(env.frequenciesHz[static_cast<std::size_t>(i)]);
+            if (x <= lastX)
+                allPassed = false;
+            lastX = x;
+        }
+        for (int b = 0; b < test.gainCount; ++b) {
+            const double knotX = xOf(Seriona::App::eqIsoBandCenterHz(test.bandMode, b));
+            const double expected = test.gains[static_cast<std::size_t>(b)];
+            // 折线插值：找 knotX 两侧采样（频率轴单调升序；首尾手柄落在轴端点内）
+            std::size_t hi = 1;
+            while (hi + 1 < env.frequenciesHz.size()
+                   && xOf(env.frequenciesHz[hi]) < knotX)
+                ++hi;
+            const double x0 = xOf(env.frequenciesHz[hi - 1]);
+            const double x1 = xOf(env.frequenciesHz[hi]);
+            const double t = x1 > x0 ? (knotX - x0) / (x1 - x0) : 0.0;
+            const double interpolated = env.responseDb[hi - 1]
+                + t * (env.responseDb[hi] - env.responseDb[hi - 1]);
+            const double dev = std::fabs(interpolated - expected);
+            caseKnotDeviation = std::max(caseKnotDeviation, dev);
+            if (dev > 0.5)
+                allPassed = false;
+        }
+        worstRangeViolation = std::max(worstRangeViolation, caseRangeViolation);
+        worstKnotDeviation = std::max(worstKnotDeviation, caseKnotDeviation);
+        std::printf("[envelope] %-24s mode=%2d rangeViolation=%.6fdB"
+                    " worstKnotDev=%.4fdB  %s\n",
+                    test.name, test.bandMode, caseRangeViolation, caseKnotDeviation,
+                    allPassed ? "PASS" : "FAIL");
+    }
+    std::printf("[envelope] overall: %s (rangeViolation %.6f dB / knotDev %.4f dB)\n",
+                allPassed ? "ALL PASS" : "FAILED", worstRangeViolation, worstKnotDeviation);
+    QVERIFY2(allPassed,
+             "包络越出手柄值域（不过冲失败）或手柄处折线偏差 > 0.5dB（过手柄失败）");
 }
 
 QTEST_GUILESS_MAIN(EqualizerCurveConformanceTest)

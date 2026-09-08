@@ -1,6 +1,7 @@
 #include "spectrum_graph.h"
 
 #include <QCursor>
+#include <QDebug>
 #include <QHoverEvent>
 #include <QMouseEvent>
 #include <QSGGeometry>
@@ -161,28 +162,6 @@ void SpectrumGraph::convertSpectrumBinsLocked()
     m_displayModel.setBinsDb(m_binsDb);
 }
 
-void SpectrumGraph::convertCurveLocked()
-{
-    m_curveCount = 0;
-    if (m_curveFrequencies.size() != m_curvePoints.size())
-        return;
-    const int n = std::min(static_cast<int>(m_curveFrequencies.size()),
-                           static_cast<int>(m_curveFreqs.size()));
-    if (n < 2)
-        return;
-    for (int i = 0; i < n; ++i) {
-        const double freq = m_curveFrequencies.at(i).toDouble();
-        const double db = m_curvePoints.at(i).toDouble();
-        if (!std::isfinite(freq) || !std::isfinite(db)) {
-            m_curveCount = 0; // 任一非法点 → 整条曲线跳过（无 NaN 几何）
-            return;
-        }
-        m_curveFreqs[static_cast<std::size_t>(i)] = freq;
-        m_curveDbs[static_cast<std::size_t>(i)] = db;
-    }
-    m_curveCount = n;
-}
-
 void SpectrumGraph::setSpectrumBins(const QVariantList &bins)
 {
     if (m_spectrumBins == bins)
@@ -193,37 +172,25 @@ void SpectrumGraph::setSpectrumBins(const QVariantList &bins)
         m_displayModel.reset();
         m_shadowTarget.fill(0.0);
     } else {
-        convertSpectrumBinsLocked();
+        bool allZero = true;
+        const int n = bins.size();
+        for (int i = 0; i < n && allZero; ++i) {
+            const QVariant &value = bins.at(i);
+            if (value.isValid() && value.toDouble() != 0.0)
+                allZero = false;
+        }
+        if (n > 0 && allZero) {
+            // 后端默认空快照为 120×0.0（非 -120 静音标记）：0.0dBFS 会画顶满，
+            // 与 UI「暂无频谱数据」判据（hasSpectrumData 全零 → false）同语义归零。
+            m_displayModel.reset();
+            m_shadowTarget.fill(0.0);
+        } else {
+            convertSpectrumBinsLocked();
+        }
     }
     emit spectrumBinsChanged();
     update();
     syncAnimTimer();
-}
-
-void SpectrumGraph::setCurvePoints(const QVariantList &points)
-{
-    if (m_curvePoints == points)
-        return;
-    m_curvePoints = points;
-    convertCurveLocked();
-    if (m_curveCount >= 2 && m_dragBandIndex < 0) {
-        // 镜像曲线到达 → 仲裁位复位：此后显示以镜像为准（乐观合成仅拖动/待镜像期显示）。
-        // 拖动中到达的镜像（上一释放配置的迟到回环）不打断本地合成（防抖），
-        // 存入镜像面待释放后仲裁——见类头「乐观合成」节。
-        m_dragPendingMirror = false;
-    }
-    emit curvePointsChanged();
-    update();
-}
-
-void SpectrumGraph::setCurveFrequencies(const QVariantList &frequencies)
-{
-    if (m_curveFrequencies == frequencies)
-        return;
-    m_curveFrequencies = frequencies;
-    convertCurveLocked();
-    emit curveFrequenciesChanged();
-    update();
 }
 
 void SpectrumGraph::setBarTopColor(const QColor &color)
@@ -334,11 +301,11 @@ void SpectrumGraph::setBandMode(int mode)
     if (m_bandMode == clamped)
         return;
     m_bandMode = clamped;
-    // 档位切换 → 中止拖动并重建手柄集（无释放信号；同整表写回纪律）
+    // 档位切换 → 中止拖动并重建手柄集与包络（无释放信号；同整表写回纪律）
     if (m_dragBandIndex >= 0)
         cancelDrag();
     else
-        resetOptimisticCurve();
+        rebuildEnvelopeCurve();
     setHoverIndex(-1);
     emit bandModeChanged();
     update();
@@ -348,6 +315,36 @@ void SpectrumGraph::setBandGains10(const QVariantList &gains)
 {
     if (m_bandGains10 == gains)
         return;
+    // 拖动自回环识别（R5 实时联动）：拖动态中 QML 胶水每帧把拖动值写回 settings，
+// 经镜像 NOTIFY 回到本 setter——若外部表与内部镜像仅差拖动带（且该带 == 拖动
+// 吸附值），视为本组件拖动的回声而非外部干预：只同步镜像与列表，不中止拖动、
+// 不重建包络（否则拖动会自断）。
+    if (m_bandMode == kEqBandMode10 && m_dragBandIndex >= 0
+        && m_dragBandIndex < gains.size()) {
+        bool dragEcho = true;
+        for (int i = 0; i < gains.size(); ++i) {
+            if (i == m_dragBandIndex)
+                continue;
+            if (i < m_bandGains10.size()) {
+                const double cur = m_bandGains10.at(i).toDouble();
+                const double incoming = gains.at(i).toDouble();
+                if (std::abs(cur - incoming) > 1e-9) {
+                    dragEcho = false;
+                    break;
+                }
+            } else {
+                dragEcho = false;
+                break;
+            }
+        }
+        if (dragEcho && std::abs(gains.at(m_dragBandIndex).toDouble() - m_dragGainDb) <= 1e-9) {
+            m_bandGains10 = gains;
+            convertBandGains(kEqBandMode10);
+            emit bandGains10Changed();
+            update();
+            return;
+        }
+    }
     m_bandGains10 = gains;
     convertBandGains(kEqBandMode10);
     if (m_bandMode == kEqBandMode10) {
@@ -355,7 +352,7 @@ void SpectrumGraph::setBandGains10(const QVariantList &gains)
         if (m_dragBandIndex >= 0)
             cancelDrag();
         else
-            resetOptimisticCurve();
+            rebuildEnvelopeCurve();
         setHoverIndex(-1);
     }
     emit bandGains10Changed();
@@ -366,13 +363,40 @@ void SpectrumGraph::setBandGains31(const QVariantList &gains)
 {
     if (m_bandGains31 == gains)
         return;
+    // 拖动自回环识别：同 setBandGains10（R5 实时联动，见上）。
+    if (m_bandMode == kEqBandMode31 && m_dragBandIndex >= 0
+        && m_dragBandIndex < gains.size()) {
+        bool dragEcho = true;
+        for (int i = 0; i < gains.size(); ++i) {
+            if (i == m_dragBandIndex)
+                continue;
+            if (i < m_bandGains31.size()) {
+                const double cur = m_bandGains31.at(i).toDouble();
+                const double incoming = gains.at(i).toDouble();
+                if (std::abs(cur - incoming) > 1e-9) {
+                    dragEcho = false;
+                    break;
+                }
+            } else {
+                dragEcho = false;
+                break;
+            }
+        }
+        if (dragEcho && std::abs(gains.at(m_dragBandIndex).toDouble() - m_dragGainDb) <= 1e-9) {
+            m_bandGains31 = gains;
+            convertBandGains(kEqBandMode31);
+            emit bandGains31Changed();
+            update();
+            return;
+        }
+    }
     m_bandGains31 = gains;
     convertBandGains(kEqBandMode31);
     if (m_bandMode == kEqBandMode31) {
         if (m_dragBandIndex >= 0)
             cancelDrag();
         else
-            resetOptimisticCurve();
+            rebuildEnvelopeCurve();
         setHoverIndex(-1);
     }
     emit bandGains31Changed();
@@ -385,9 +409,7 @@ void SpectrumGraph::setPreGainDb(double gainDb)
     if (qFuzzyCompare(m_preGainDb, sanitized))
         return;
     m_preGainDb = sanitized;
-    // preGain 参与每点响应：拖动中变化 → 立即重合成（保持乐观曲线与读数一致）
-    if (m_dragBandIndex >= 0)
-        synthesizeOptimisticCurve();
+    // preGain 不进入编辑包络（R5：曲线 = 手柄点目标包络，音频仍含前置增益）→ 无需重合成
     emit preGainDbChanged();
     update();
 }
@@ -526,24 +548,23 @@ void SpectrumGraph::notifyDragInfo()
     update();
 }
 
-// 乐观合成：181 点 × 当前档增益（拖动 band 用吸附值替换）——纯函数合成（同源见
-// equalizer_curve_synth.h）；频率轴取合成轴（与镜像轴同公式，绘制 x 同源）。
-void SpectrumGraph::synthesizeOptimisticCurve()
+// 包络合成：181 点 × 活动档增益（拖动 band 用吸附值替换）——PCHIP 单调插值纯函数
+// （R5，见 equalizer_curve_synth.h synthesizeGraphicEnvelopeCurve）；频率轴取合成轴
+// （20..20k 对数，绘制 x 同源）。活动档无增益（count==0）→ 无曲线（手柄同门）。
+void SpectrumGraph::rebuildEnvelopeCurve()
 {
+    if (activeGainCount() <= 0) {
+        m_curveCount = 0;
+        return;
+    }
     std::array<double, kEqBandCount31> gains = activeGains();
     if (m_dragBandIndex >= 0 && m_dragBandIndex < static_cast<int>(gains.size()))
         gains[static_cast<std::size_t>(m_dragBandIndex)] = m_dragGainDb;
-    const EqualizerCurveSynthResult syn = synthesizeEqualizerCurve(
-        m_bandMode, m_preGainDb, std::span<const double>(gains.data(), activeGainCount()));
-    m_optimisticFreqs = syn.frequenciesHz;
-    m_optimisticDbs = syn.responseDb;
-    m_optimisticCount = kEqCurvePointCount;
-}
-
-void SpectrumGraph::resetOptimisticCurve()
-{
-    m_optimisticCount = 0;
-    m_dragPendingMirror = false;
+    const EqualizerCurveSynthResult syn =
+        synthesizeGraphicEnvelopeCurve(m_bandMode, std::span<const double>(gains.data(), gains.size()));
+    m_curveFreqs = syn.frequenciesHz;
+    m_curveDbs = syn.responseDb;
+    m_curveCount = kEqCurvePointCount;
 }
 
 void SpectrumGraph::beginDrag(int bandIndex, const QPointF &localPos)
@@ -551,7 +572,7 @@ void SpectrumGraph::beginDrag(int bandIndex, const QPointF &localPos)
     m_dragBandIndex = bandIndex;
     m_dragGainDb = storedBandGain(m_bandMode, bandIndex); // 起点 = 当前值
     setHoverIndex(bandIndex);
-    synthesizeOptimisticCurve();
+    rebuildEnvelopeCurve();
     updateDragValue(localPos); // 首帧即跟随（含吸附/合成）
     notifyDragInfo();
 }
@@ -566,9 +587,9 @@ void SpectrumGraph::updateDragValue(const QPointF &localPos)
     const double raw = kMinEqGainDb + fraction * (kMaxEqGainDb - kMinEqGainDb);
     const double snapped = snapGainToGrid(raw); // 钳 ±15 已含在吸附前
     if (qFuzzyCompare(m_dragGainDb, snapped))
-        return; // 未跨网格：位置/合成均不需更新（0.1dB 台阶内移动无感）
+        return; // 未跨网格：位置/包络均不需更新（0.1dB 台阶内移动无感）
     m_dragGainDb = snapped;
-    synthesizeOptimisticCurve();
+    rebuildEnvelopeCurve();
     notifyDragInfo();
 }
 
@@ -590,27 +611,28 @@ void SpectrumGraph::endDrag(const QPointF &localPos, bool commit)
             m_bandGains10Db[static_cast<std::size_t>(bandIndex)] = value;
             m_bandGains10.replace(bandIndex, value);
         }
-        m_dragPendingMirror = true; // 仲裁位：曲线保持合成结果直至下一帧镜像到达
     }
     m_dragBandIndex = -1;
     setHoverIndex(-1); // 释放后指针仍在手柄上 → 由后续 hover 事件重设（不经由此处）
+    // 落值（commit）或中止（!commit）后包络统一回落到当前内部镜像：commit 落值已入
+    // 镜像 → 终态包络含释放值；中止则镜像未变 → 包络回落原值。手柄与曲线同源，无
+    // 橡皮筋、无镜像回环等待（R5 本地包络恒即时）。
+    rebuildEnvelopeCurve();
     notifyDragInfo();
     if (commit)
         emit dragReleased(bandMode, bandIndex, m_dragGainDb);
-    else
-        resetOptimisticCurve(); // 中止：合成与 pending 清除（镜像或空态为准）
     update();
 }
 
 void SpectrumGraph::cancelDrag()
 {
     if (m_dragBandIndex < 0) {
-        resetOptimisticCurve();
+        rebuildEnvelopeCurve();
         return;
     }
     m_dragBandIndex = -1;
     setHoverIndex(-1);
-    resetOptimisticCurve();
+    rebuildEnvelopeCurve();
     notifyDragInfo();
     update();
 }
@@ -672,26 +694,17 @@ void SpectrumGraph::hoverLeaveEvent(QHoverEvent *)
         setHoverIndex(-1);
 }
 
-// 曲线显示源仲裁（T9）：拖动中 / 释放后待镜像（pending）→ 乐观合成；否则镜像
-// （后端权威）优先，镜像缺席（未接线/空数据）时乐观合成兜底常显。
+// 曲线显示源 = 本地包络通道（R5）：m_curveFreqs/Dbs/Count 由 rebuildEnvelopeCurve 维护，
+// 数据变化即重建（无镜像仲裁/pending——包络恒本地即时）。
 void SpectrumGraph::resolveCurveSource(const double *&freqs, const double *&dbs, int &count) const
 {
     freqs = nullptr;
     dbs = nullptr;
     count = 0;
-    const bool optimisticHeld = (m_dragBandIndex >= 0 || m_dragPendingMirror) && m_optimisticCount >= 2;
-    if (optimisticHeld) {
-        freqs = m_optimisticFreqs.data();
-        dbs = m_optimisticDbs.data();
-        count = m_optimisticCount;
-    } else if (m_curveCount >= 2) {
+    if (m_curveCount >= 2) {
         freqs = m_curveFreqs.data();
         dbs = m_curveDbs.data();
         count = m_curveCount;
-    } else if (m_optimisticCount >= 2) {
-        freqs = m_optimisticFreqs.data();
-        dbs = m_optimisticDbs.data();
-        count = m_optimisticCount;
     }
 }
 
@@ -746,7 +759,7 @@ void SpectrumGraph::onAnimTick()
 //   [3] 曲线下 pass DrawTriangles     6×(N−1)
 //   [4] 曲线上 pass DrawTriangles     6×(N−1)
 //   [5..] 手柄    DrawTriangleFan     20×k 顶点（k = 手柄数，hover/拖动放大提亮）
-// 曲线显示源（镜像/乐观）仲裁后共用同一几何路径：仅顶点数据源切换（x 轴同公式）。
+// 曲线显示源（本地包络通道）共用同一几何路径：仅顶点数据源固定（x 轴同公式）。
 // spectrumBarsVisible=false 时柱/峰节点写零面积退化几何（节点数/组合签名不变，
 // 见柱节注释；T10 频谱开关联动）。
 QSGNode *SpectrumGraph::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
@@ -807,7 +820,12 @@ QSGNode *SpectrumGraph::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
         barV[5].set(x1, yTop, topColor.r, topColor.g, topColor.b, topColor.a);
         barV += kBarQuadVertices;
     }
+    // 节点级标脏（渲染线程 GPU 路径关键）：QSGGeometry::markVertexDataDirty 只标记
+    // geometry 内部待上传，节点须经 markDirty(QSGNode::DirtyGeometry) 才触发渲染器
+    // 重新上传顶点缓冲——缺失时屏显停留首帧内容（CPU/offscreen 软件路径无此问题，
+    // GPU 后端症状为柱/曲线/手柄全部冻结，仅交互强制的窗口级重绘才刷新一次）。
     barNode->geometry()->markVertexDataDirty();
+    barNode->markDirty(QSGNode::DirtyGeometry);
 
     // —— 峰值保持线：每柱顶部 peakLineHeight(2px) 亮色横条，独立顶点色 ——
     // 隐藏时同样退化（yTop=yBottom=h 零面积）。
@@ -828,9 +846,10 @@ QSGNode *SpectrumGraph::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
         peakV += kBarQuadVertices;
     }
     peakNode->geometry()->markVertexDataDirty();
+    peakNode->markDirty(QSGNode::DirtyGeometry);
 
     if (curveVisible) {
-        // —— 曲线：显示源（镜像/乐观）181 点 → 频率 fraction×w 定位 x；增益→y ——
+        // —— 曲线：本地包络（R5）181 点 → 频率 fraction×w 定位 x；增益→y ——
         QSGGeometryNode *fillNode = ensureGeometryNode(root, 2, 2 * curveN, QSGGeometry::DrawTriangleStrip);
         QSGGeometryNode *softNode = ensureGeometryNode(root, 3, kRibbonSegmentVertices * (curveN - 1), QSGGeometry::DrawTriangles);
         QSGGeometryNode *coreNode = ensureGeometryNode(root, 4, kRibbonSegmentVertices * (curveN - 1), QSGGeometry::DrawTriangles);
@@ -854,6 +873,7 @@ QSGNode *SpectrumGraph::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
             fillV[2 * i + 1].set(x, y, fillRgba.r, fillRgba.g, fillRgba.b, fillRgba.a);
         }
         fillNode->geometry()->markVertexDataDirty();
+        fillNode->markDirty(QSGNode::DirtyGeometry);
 
         // 双 pass 伪 AA：下 3px 半透明（0.35α）+ 上 1.5px 实色
         for (int s = 0; s < curveN - 1; ++s) {
@@ -869,7 +889,9 @@ QSGNode *SpectrumGraph::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
                          static_cast<float>(kCurveCoreWidthPx * 0.5), coreRgba);
         }
         softNode->geometry()->markVertexDataDirty();
+        softNode->markDirty(QSGNode::DirtyGeometry);
         coreNode->geometry()->markVertexDataDirty();
+        coreNode->markDirty(QSGNode::DirtyGeometry);
     }
 
     // —— band 手柄（T9）：每档一个圆盘，中心 (freqToX(ISO 频点), dbToY(增益)) ——
@@ -891,6 +913,7 @@ QSGNode *SpectrumGraph::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
                          static_cast<float>(dbToY(gain)), static_cast<float>(radius),
                          emphasized ? handleHoverRgba : handleRgba);
             node->geometry()->markVertexDataDirty();
+            node->markDirty(QSGNode::DirtyGeometry);
         }
     }
     return root;

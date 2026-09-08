@@ -38,9 +38,12 @@ import Seriona
 // .omo/plans/equalizer-b0-notes.md 任务 42 记录）。弹层根自带 objectName
 // "equalizerPresetDialog"，46 打开后可按 findChild 断言。
 //
-// —— 数据语义（F1.3 镜像面）——
-// curvePoints/curveFrequencies = 181 点（reducer 先行全轴 20-20k 对数；首帧快照未到前
-// 为空/全 0 频率轴 → 容错为空态，不绘线）。spectrumBins = 120 桶 double（R2/R3 已接通：
+// —— 数据语义（F1.3 镜像面 + R5 包络显示）——
+// 频响曲线（R5 起）：显示曲线 = 本地 PCHIP 包络（手柄点单调插值，恒过手柄），由
+// SpectrumGraph 按 bandMode + 活动档 bandGains 合成——不依赖 curvePoints 镜像/播放；
+// 镜像 curvePoints/curveFrequencies（181 点 reducer 物理响应）仍经 settings 订阅到达
+// （后端契约面保留），不再作为绘图源（R5 调研：消费级 GEQ 曲线 = 手柄包络，物理叠加
+// 会「峰高于手柄」）。spectrumBins = 120 桶 double（R2/R3 已接通：
 // 开关经真命令 SetSpectrumEnabled 外发，120 桶按后端分析发布频率（~40Hz 级）经订阅增量
 // 镜像——空态仅在开关关/静音/桶数据未到时出现，判空见 graphHintText 三态）。bandGains10/31 =
 // QVariantList 逐项 ±15dB
@@ -57,7 +60,9 @@ Window {
     id: root
     objectName: "equalizerWindow"
 
-    flags: Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+    flags: Qt.Dialog | Qt.FramelessWindowHint
+    // Qt.WindowStaysOnTopHint removed: Wayland 协议不支持应用自行置顶(xdg-shell 设计限制),
+    // 该标志在 KDE Plasma/Wayland 下无效且可能触发兼容层意外行为
     color: "transparent"
 
     width: 860
@@ -96,18 +101,18 @@ Window {
         return (index >= 0 && index < t.length) ? t[index] : 0;
     }
 
-    // 图谱判据：曲线数据有效（频率轴 20-20k 单调且点对与增益等长）
+    // 图谱判据：曲线数据有效（R5 起曲线 = 本地包络，源 = 活动档增益列表——
+    // bandGains10/31 由 SettingsController 构造器恒置 10/31 项 → 无后端也恒真；
+    // 无 settings 或活动档列表空/含非有限值才为 false，走「播放引导」兜底）
     function hasCurveData() {
         if (!root.settings)
             return false;
-        var fs = root.settings.curveFrequencies;
-        var ps = root.settings.curvePoints;
-        if (!fs || !ps || fs.length < 2 || ps.length !== fs.length)
+        var key = root._bandMode === 31 ? "bandGains31" : "bandGains10";
+        var gains = root.settings[key];
+        if (!gains || gains.length < 1)
             return false;
-        if (fs[0] <= 0 || fs[fs.length - 1] <= fs[0])
-            return false;
-        for (var i = 0; i < fs.length; ++i) {
-            if (!isFinite(fs[i]) || fs[i] <= 0)
+        for (var i = 0; i < gains.length; ++i) {
+            if (!isFinite(gains[i]))
                 return false;
         }
         return true;
@@ -128,8 +133,9 @@ Window {
         return false;
     }
 
-    // 图谱空态文案（R4/R3 数据语义）：无频响数据 → 播放引导；有频响但频谱开关关 →
-    // 「频谱已关闭」（开关在卡片头，未开启不催数据）；开关开但桶数据未到 → 「暂无频谱数据」。
+    // 图谱空态文案（R5 数据语义）：活动档增益缺省（settings 未就绪）→ 播放引导兜底；
+    // 增益就绪但频谱开关关 →「频谱已关闭」（开关在卡片头，未开启不催数据）；
+    // 增益就绪、开关开但桶数据未到 →「暂无频谱数据」。
     // 本函数在 text 绑定求值期间直读 settings 属性 → QML 依赖捕获使 NOTIFY 到达后自动刷新。
     function graphHintText() {
         if (!root.hasCurveData())
@@ -436,8 +442,6 @@ Window {
                                     anchors.fill: parent
 
                                     spectrumBins: root.settings ? root.settings.spectrumBins : []
-                                    curvePoints: root.settings ? root.settings.curvePoints : []
-                                    curveFrequencies: root.settings ? root.settings.curveFrequencies : []
                                     bandMode: root.settings ? root.settings.bandMode : 10
                                     bandGains10: root.settings ? root.settings.bandGains10 : []
                                     bandGains31: root.settings ? root.settings.bandGains31 : []
@@ -559,10 +563,10 @@ Window {
                             }
 
                             // 空态提示（覆盖于图谱之上）：三态状态机与 graphHintText 同序——
-                            // 无曲线（任何开关态）→ 播放引导；有曲线 + 开关 OFF → 频谱已关闭
-                            //（柱区随开关隐藏，曲线仍显 → 仍提示）；有曲线 + 开关 ON + 桶数据
-                            // 空 → 暂无频谱数据。依赖在绑定表达式内直读 settings 属性 →
-                            // NOTIFY 自动刷新。
+                            // 活动档增益缺省（settings 未就绪）→ 播放引导兜底；增益就绪 + 开关
+                            // OFF → 频谱已关闭（柱区随开关隐藏，曲线仍显 → 仍提示）；增益就绪 +
+                            // 开关 ON + 桶数据空 → 暂无频谱数据。依赖在绑定表达式内直读 settings
+                            // 属性 → NOTIFY 自动刷新。
                             Text {
                                 id: graphEmptyHint
                                 objectName: "eqGraphEmptyHint"
@@ -575,12 +579,22 @@ Window {
                                          || !root.hasSpectrumData()
                             }
 
-                            // 拖动态（dragBandIndex/dragGainDb 任一变化）→ 浮层跟随手柄定位
-                            //（Q_INVOKABLE 无 NOTIFY，事件驱动；拖动态外无消耗）
+                            // 拖动态（dragBandIndex/dragGainDb 任一变化）→ 浮层跟随手柄定位；
+                            // R5 实时联动：拖动中把吸附值即时写回 settings 同键整表（50ms 去抖
+                            // 收口到后端，播放中实时生效）——SpectrumGraph 侧经自回环识别
+                            // 同步镜像而不中止拖动；释放仍由 dragReleased 再写（同值幂等）。
                             Connections {
                                 target: spectrumGraph
                                 function onDragInfoChanged() {
                                     root._positionDragOverlay();
+                                    var i = spectrumGraph.dragBandIndex;
+                                    if (i < 0 || !root.settings)
+                                        return;
+                                    var key = root._bandMode === 31 ? "bandGains31" : "bandGains10";
+                                    var list = root.settings[key].slice();
+                                    if (i < list.length)
+                                        list[i] = spectrumGraph.dragGainDb;
+                                    root.settings[key] = list;
                                 }
                             }
                         }
@@ -703,22 +717,32 @@ Window {
                         }
 
                         // —— band 竖条横向滚动区（内容不缩放，宽度不足滚动） ——
-                        ScrollView {
-                            id: bandScroll
+                        // R5：ScrollView/attached ScrollBar 在 Wayland 真机上把横向滚动条
+                        // 定位到视口顶外侧（clip 后不可见），故改 Flickable + 自绘滚动条，
+                        // 轨道显式锚在 Flickable 下方，句柄拖动/点击跳转，滚轮映射保留。
+                        Item {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
-                            clip: true
-                            contentWidth: bandRow.width
-                            contentHeight: bandRow.height
-                            ScrollBar.horizontal: StyledScrollBar {
-                                objectName: "eqHStyledScrollBar"
-                            }
-                            ScrollBar.vertical.policy: ScrollBar.AlwaysOff
 
-                            Row {
+                            ColumnLayout {
+                                anchors.fill: parent
+                                spacing: 0
+
+                                Flickable {
+                                    id: bandScroll
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    clip: true
+                                    contentWidth: bandRow.width
+                                    contentHeight: bandRow.height
+                                    boundsBehavior: Flickable.StopAtBounds
+
+                                    Row {
                                 id: bandRow
+                                x: 0
+                                y: 0
                                 width: root._bandCount * 66 + (root._bandCount - 1) * spacing
-                                height: bandScroll.availableHeight
+                                height: bandScroll.height
                                 spacing: Theme.spacing2
 
                                 // —— 横向浏览滚轮映射（R4 用户实测修正 C）——
@@ -791,6 +815,86 @@ Window {
                                     }
                                 }
                             }
+                        }
+                                    // —— 自绘横向滚动条（R5，见滚动区头注释）——
+                                    Item {
+                                        id: bandHScrollTrack
+                                        objectName: "eqHStyledScrollBar"
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: 10
+                                        visible: bandScroll.contentWidth > bandScroll.width + 1
+                                        clip: true
+
+                                        // 滚动换算（contentX 像素域 / 总跨度）
+                                        readonly property real _span: Math.max(1.0, bandScroll.contentWidth - bandScroll.width)
+                                        readonly property real _trackW: bandHScrollTrack.width
+                                        readonly property real _handleW: Math.max(24.0, bandHScrollTrack.width * bandScroll.width / Math.max(1.0, bandScroll.contentWidth))
+
+                                        // 轨道细线（中线）
+                                        Rectangle {
+                                            anchors.left: parent.left
+                                            anchors.right: parent.right
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            height: 2
+                                            radius: 1
+                                            color: Theme.borderColor
+                                        }
+
+                                        // 句柄（胶囊；宽度/位置 = 视口占内容比例）
+                                        Rectangle {
+                                            id: bandHScrollHandle
+                                            width: bandHScrollTrack._handleW
+                                            height: 6
+                                            radius: 3
+                                            y: (bandHScrollTrack.height - height) / 2
+                                            x: bandScroll.contentX / bandHScrollTrack._span
+                                               * Math.max(0.0, bandHScrollTrack._trackW - width)
+                                            color: bandHScrollMouse.pressed ? Theme.pressedColor
+                                                   : bandHScrollMouse.containsMouse ? Theme.scrollbarHoverColor
+                                                   : Theme.scrollbarColor
+                                            Behavior on color {
+                                                ColorAnimation { duration: Theme.animationFast }
+                                            }
+                                        }
+
+                                        MouseArea {
+                                            id: bandHScrollMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            // 抓取偏移 = 按下瞬间 (指针 − 句柄左缘)，拖动期恒定 →
+                                            // 句柄与指针 1:1 跟手（禁止 move 期重判/重设：重设会在指针
+                                            // 暂时越出句柄矩形时触发「中心对齐」半页跳格，即 R5 真机
+                                            // 反馈的「一页一页」）
+                                            property real grabOffsetPx: 0
+
+                                            // 句柄左缘目标 = 指针 − 锁定偏移 → contentX 线性换算
+                                            function moveHandleTo(mouseX) {
+                                                var handleW = bandHScrollHandle.width;
+                                                var track = Math.max(1.0, bandHScrollTrack._trackW - handleW);
+                                                var handleLeft = Math.max(0.0,
+                                                    Math.min(bandHScrollTrack._trackW - handleW,
+                                                             mouseX - bandHScrollMouse.grabOffsetPx));
+                                                bandScroll.contentX = handleLeft / track * bandHScrollTrack._span;
+                                            }
+
+                                            onPressed: (mouse) => {
+                                                var handleW = bandHScrollHandle.width;
+                                                // 按在句柄上 → 锁定真实偏移；按在轨道空白 → 句柄中心对齐
+                                                // 按下点后即进入同一拖动模式（主流进度条语义：按住任意处
+                                                // 拖动连续定位，单击轨道 = 直接跳转）
+                                                bandHScrollMouse.grabOffsetPx =
+                                                        (mouse.x >= bandHScrollHandle.x
+                                                         && mouse.x <= bandHScrollHandle.x + handleW)
+                                                        ? mouse.x - bandHScrollHandle.x : handleW / 2;
+                                                bandHScrollMouse.moveHandleTo(mouse.x);
+                                            }
+                                            onPositionChanged: (mouse) => {
+                                                if (bandHScrollMouse.pressed)
+                                                    bandHScrollMouse.moveHandleTo(mouse.x);
+                                            }
+                                        }
+                                    }
+                                    }
                         }
                     }
                 }
