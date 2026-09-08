@@ -17,6 +17,21 @@ Window {
     
     readonly property var settings: appFacade.settings
     
+    // 输出设备下拉的显示标签：系统默认设备附加"（默认）"标记，其余用原始设备名。
+    function outputDeviceLabel(option) {
+        return option.isDefault ? option.deviceName + qsTr("（默认）") : option.deviceName;
+    }
+    
+    // 当前选中项（currentIndex 对应）的显示标签；无可用列表时返回空。
+    function selectedOutputDeviceLabel() {
+        const options = settings.outputDeviceOptions;
+        const index = deviceCombo.currentIndex;
+        if (index < 0 || index >= options.length) {
+            return "";
+        }
+        return outputDeviceLabel(options[index]);
+    }
+    
     Rectangle {
         id: contentRect
         anchors.fill: parent
@@ -122,120 +137,20 @@ Window {
                             Layout.fillWidth: true
                         }
 
-                        // Row 1: Output Mode
-                        RowLayout {
-                            id: outputModeRow
-                            objectName: "outputModeGroup"
-                            Layout.fillWidth: true
-                            
-                            Text {
-                                text: qsTr("输出模式")
-                                color: Theme.textPrimary
-                                font.pixelSize: Theme.fontBody
-                                Layout.preferredWidth: 100
-                            }
-                            
-                            ButtonGroup {
-                                id: modeGroup
-                            }
-                            
-                            Rectangle {
-                                Layout.preferredWidth: 200
-                                Layout.preferredHeight: 32
-                                color: Theme.surfaceColor
-                                radius: Theme.radiusSmall
-                                border.color: Theme.borderSubtle
-                                border.width: 1
-                                
-                                Row {
-                                    anchors.fill: parent
-                                    spacing: 0
-                                    
-                                    Button {
-                                        id: directOutputBtn
-                                        width: parent.width / 2
-                                        height: parent.height
-                                        checkable: true
-                                        checked: settings.outputMode === 0
-                                        ButtonGroup.group: modeGroup
-                                        
-                                        background: Rectangle {
-                                            radius: Theme.radiusSmall
-                                            color: directOutputBtn.checked ? Theme.accentColor : "transparent"
-                                            
-                                            Behavior on color {
-                                                ColorAnimation { duration: Theme.animationFast }
-                                            }
-                                        }
-                                        
-                                        contentItem: Text {
-                                            text: qsTr("直接输出")
-                                            color: directOutputBtn.checked ? Theme.textOnAccent : Theme.textSecondary
-                                            font.pixelSize: Theme.fontBody
-                                            font.weight: directOutputBtn.checked ? Font.DemiBold : Font.Normal
-                                            horizontalAlignment: Text.AlignHCenter
-                                            verticalAlignment: Text.AlignVCenter
-                                        }
-                                        
-                                        onClicked: {
-                                            settings.outputMode = 0;
-                                        }
-                                    }
-                                    
-                                    Button {
-                                        id: mixedOutputBtn
-                                        width: parent.width / 2
-                                        height: parent.height
-                                        checkable: true
-                                        checked: settings.outputMode === 1
-                                        ButtonGroup.group: modeGroup
-                                        
-                                        background: Rectangle {
-                                            radius: Theme.radiusSmall
-                                            color: mixedOutputBtn.checked ? Theme.accentColor : "transparent"
-                                            
-                                            Behavior on color {
-                                                ColorAnimation { duration: Theme.animationFast }
-                                            }
-                                        }
-                                        
-                                        contentItem: Text {
-                                            text: qsTr("混合输出")
-                                            color: mixedOutputBtn.checked ? Theme.textOnAccent : Theme.textSecondary
-                                            font.pixelSize: Theme.fontBody
-                                            font.weight: mixedOutputBtn.checked ? Font.DemiBold : Font.Normal
-                                            horizontalAlignment: Text.AlignHCenter
-                                            verticalAlignment: Text.AlignVCenter
-                                        }
-                                        
-                                        onClicked: {
-                                            settings.outputMode = 1;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        
-                        // Output Parameters Group（灰化按行控制：仅采样率/位深两行在直接输出模式下禁用）
                         ColumnLayout {
                             id: outputParamsGroup
                             objectName: "outputParamsGroup"
                             Layout.fillWidth: true
                             spacing: Theme.spacing16
                             
-                            // Row 2: Sample Rate（直接输出模式下灰化）
+                            // Row 2: Sample Rate
                             RowLayout {
                                 Layout.fillWidth: true
-                                enabled: !settings.sampleParamsGreyed
-                                opacity: settings.sampleParamsGreyed ? 0.45 : 1.0
                                 
-                                Behavior on opacity {
-                                    NumberAnimation { duration: Theme.animationFast }
-                                }
                                 
                                 Text {
                                     text: qsTr("采样率")
-                                    color: settings.sampleParamsGreyed ? Theme.textDisabled : Theme.textPrimary
+                                    color: Theme.textPrimary
                                     font.pixelSize: Theme.fontBody
                                     Layout.preferredWidth: 100
                                 }
@@ -276,7 +191,7 @@ Window {
                                     
                                     contentItem: Text {
                                         text: sampleRateCombo.displayText
-                                        color: settings.sampleParamsGreyed ? Theme.textDisabled : Theme.textPrimary
+                                        color: Theme.textPrimary
                                         font.pixelSize: Theme.fontBody
                                         verticalAlignment: Text.AlignVCenter
                                         leftPadding: Theme.spacing8
@@ -343,19 +258,14 @@ Window {
                                 }
                             }
                             
-                            // Row 2.5: Bit Depth (sampleFormat)（直接输出模式下灰化）
+                            // Row 2.5: Bit Depth (sampleFormat)
                             RowLayout {
                                 Layout.fillWidth: true
-                                enabled: !settings.sampleParamsGreyed
-                                opacity: settings.sampleParamsGreyed ? 0.45 : 1.0
                                 
-                                Behavior on opacity {
-                                    NumberAnimation { duration: Theme.animationFast }
-                                }
                                 
                                 Text {
                                     text: qsTr("位深")
-                                    color: settings.sampleParamsGreyed ? Theme.textDisabled : Theme.textPrimary
+                                    color: Theme.textPrimary
                                     font.pixelSize: Theme.fontBody
                                     Layout.preferredWidth: 100
                                 }
@@ -396,7 +306,7 @@ Window {
                                     
                                     contentItem: Text {
                                         text: sampleFormatCombo.displayText
-                                        color: settings.sampleParamsGreyed ? Theme.textDisabled : Theme.textPrimary
+                                        color: Theme.textPrimary
                                         font.pixelSize: Theme.fontBody
                                         verticalAlignment: Text.AlignVCenter
                                         leftPadding: Theme.spacing8
@@ -532,8 +442,6 @@ Window {
 
                 // ==========================================
                 // Card 1.5: 播放过渡 (Playback Transition Card)
-                // 灰化行集 {1 自动档, 4 预加载, 5 交叉长度, 8 手动档, 9 手动短交叉}
-                // 绑定 settings.advanceTransitionsGreyed（Direct 输出=灰化）；{2,3,6,7} 恒可用。
                 // ==========================================
                 Rectangle {
                     objectName: "transitionCard"
@@ -558,7 +466,7 @@ Window {
                             Layout.fillWidth: true
                         }
 
-                        // 设置 1：自动前进淡入淡出（3 档；仅 Mixed 生效 → Direct 灰化）
+                        // 设置 1：自动前进淡入淡出（3 档）
                         ColumnLayout {
                             id: autoModeGroup
                             Layout.fillWidth: true
@@ -567,16 +475,11 @@ Window {
                             RowLayout {
                                 id: autoModeRow
                                 Layout.fillWidth: true
-                                enabled: !settings.advanceTransitionsGreyed
-                                opacity: settings.advanceTransitionsGreyed ? 0.45 : 1.0
 
-                                Behavior on opacity {
-                                    NumberAnimation { duration: Theme.animationFast }
-                                }
 
                                 Text {
                                     text: qsTr("自动前进淡变")
-                                    color: settings.advanceTransitionsGreyed ? Theme.textDisabled : Theme.textPrimary
+                                    color: Theme.textPrimary
                                     font.pixelSize: Theme.fontBody
                                     Layout.preferredWidth: 100
                                 }
@@ -697,16 +600,14 @@ Window {
                             Text {
                                 id: autoModeHint
                                 Layout.fillWidth: true
-                                text: settings.advanceTransitionsGreyed
-                                      ? qsTr("仅混合输出可用")
-                                      : qsTr("当前曲自然播完自动前进时生效；「常规交叉」对同一 CUE 相邻轨保持无缝（不交叉），「全交叉」对全部邻曲交叉。")
+                                text: qsTr("当前曲自然播完自动前进时生效；「常规交叉」对同一 CUE 相邻轨保持无缝（不交叉），「全交叉」对全部邻曲交叉。")
                                 color: Theme.textSecondary
                                 font.pixelSize: Theme.fontCaption
                                 wrapMode: Text.Wrap
                             }
                         }
 
-                        // 设置 8：手动改变音轨淡入淡出（3 档；仅 Mixed 生效 → Direct 灰化）
+                        // 设置 8：手动改变音轨淡入淡出（3 档）
                         ColumnLayout {
                             id: manualModeGroup
                             Layout.fillWidth: true
@@ -715,16 +616,11 @@ Window {
                             RowLayout {
                                 id: manualModeRow
                                 Layout.fillWidth: true
-                                enabled: !settings.advanceTransitionsGreyed
-                                opacity: settings.advanceTransitionsGreyed ? 0.45 : 1.0
 
-                                Behavior on opacity {
-                                    NumberAnimation { duration: Theme.animationFast }
-                                }
 
                                 Text {
                                     text: qsTr("手动切歌淡变")
-                                    color: settings.advanceTransitionsGreyed ? Theme.textDisabled : Theme.textPrimary
+                                    color: Theme.textPrimary
                                     font.pixelSize: Theme.fontBody
                                     Layout.preferredWidth: 100
                                 }
@@ -845,9 +741,7 @@ Window {
                             Text {
                                 id: manualModeHint
                                 Layout.fillWidth: true
-                                text: settings.advanceTransitionsGreyed
-                                      ? qsTr("仅混合输出可用")
-                                      : qsTr("手动切歌（上一首/下一首）时生效；「短时渐隐」为短暂压音（dip），「交叉淡入淡出」与下方交叉长度联动。")
+                                text: qsTr("手动切歌（上一首/下一首）时生效；「短时渐隐」为短暂压音（dip），「交叉淡入淡出」与下方交叉长度联动。")
                                 color: Theme.textSecondary
                                 font.pixelSize: Theme.fontCaption
                                 wrapMode: Text.Wrap
@@ -924,7 +818,7 @@ Window {
                             Text {
                                 id: transportSwitchHint
                                 Layout.fillWidth: true
-                                text: qsTr("作用于播放、暂停、停止操作（全局生效，Direct 输出同样可用）")
+                                text: qsTr("作用于播放、暂停、停止操作（全局生效）")
                                 color: Theme.textSecondary
                                 font.pixelSize: Theme.fontCaption
                                 wrapMode: Text.Wrap
@@ -1001,14 +895,14 @@ Window {
                             Text {
                                 id: seekSwitchHint
                                 Layout.fillWidth: true
-                                text: qsTr("作用于拖动进度 / seek（全局生效，Direct 输出同样可用）")
+                                text: qsTr("作用于拖动进度 / seek（全局生效）")
                                 color: Theme.textSecondary
                                 font.pixelSize: Theme.fontCaption
                                 wrapMode: Text.Wrap
                             }
                         }
 
-                        // 设置 5：交叉淡入淡出长度（仅 Mixed 生效 → Direct 灰化）
+                        // 设置 5：交叉淡入淡出长度
                         ColumnLayout {
                             id: crossfadeGroup
                             Layout.fillWidth: true
@@ -1017,16 +911,11 @@ Window {
                             RowLayout {
                                 id: crossfadeRow
                                 Layout.fillWidth: true
-                                enabled: !settings.advanceTransitionsGreyed
-                                opacity: settings.advanceTransitionsGreyed ? 0.45 : 1.0
 
-                                Behavior on opacity {
-                                    NumberAnimation { duration: Theme.animationFast }
-                                }
 
                                 Text {
                                     text: qsTr("交叉长度")
-                                    color: settings.advanceTransitionsGreyed ? Theme.textDisabled : Theme.textPrimary
+                                    color: Theme.textPrimary
                                     font.pixelSize: Theme.fontBody
                                     Layout.preferredWidth: 100
                                 }
@@ -1087,9 +976,7 @@ Window {
                             Text {
                                 id: crossfadeHint
                                 Layout.fillWidth: true
-                                text: settings.advanceTransitionsGreyed
-                                      ? qsTr("仅混合输出可用")
-                                      : qsTr("自动前进「全交叉」档与手动切歌「交叉淡入淡出」档共用的长度")
+                                text: qsTr("自动前进「全交叉」档与手动切歌「交叉淡入淡出」档共用的长度")
                                 color: Theme.textSecondary
                                 font.pixelSize: Theme.fontCaption
                                 wrapMode: Text.Wrap
@@ -1169,7 +1056,7 @@ Window {
                             Text {
                                 id: transportFadeHint
                                 Layout.fillWidth: true
-                                text: qsTr("播放 / 暂停 / 停止操作淡变时长（全局，含 Direct 输出）")
+                                text: qsTr("播放 / 暂停 / 停止操作淡变时长（全局）")
                                 color: Theme.textSecondary
                                 font.pixelSize: Theme.fontCaption
                                 wrapMode: Text.Wrap
@@ -1249,14 +1136,14 @@ Window {
                             Text {
                                 id: seekFadeHint
                                 Layout.fillWidth: true
-                                text: qsTr("拖动进度（seek）操作淡变时长（全局，含 Direct 输出）")
+                                text: qsTr("拖动进度（seek）操作淡变时长（全局）")
                                 color: Theme.textSecondary
                                 font.pixelSize: Theme.fontCaption
                                 wrapMode: Text.Wrap
                             }
                         }
 
-                        // 设置 4：预先加载无间隙音轨（预解码提前量；仅 Mixed 生效 → Direct 灰化）
+                        // 设置 4：预先加载无间隙音轨（预解码提前量）
                         ColumnLayout {
                             id: preloadGroup
                             Layout.fillWidth: true
@@ -1265,16 +1152,11 @@ Window {
                             RowLayout {
                                 id: preloadRow
                                 Layout.fillWidth: true
-                                enabled: !settings.advanceTransitionsGreyed
-                                opacity: settings.advanceTransitionsGreyed ? 0.45 : 1.0
 
-                                Behavior on opacity {
-                                    NumberAnimation { duration: Theme.animationFast }
-                                }
 
                                 Text {
                                     text: qsTr("预加载")
-                                    color: settings.advanceTransitionsGreyed ? Theme.textDisabled : Theme.textPrimary
+                                    color: Theme.textPrimary
                                     font.pixelSize: Theme.fontBody
                                     Layout.preferredWidth: 100
                                 }
@@ -1335,16 +1217,14 @@ Window {
                             Text {
                                 id: preloadHint
                                 Layout.fillWidth: true
-                                text: settings.advanceTransitionsGreyed
-                                      ? qsTr("仅混合输出可用")
-                                      : qsTr("无间隙音轨预先解码的触发提前量")
+                                text: qsTr("无间隙音轨预先解码的触发提前量")
                                 color: Theme.textSecondary
                                 font.pixelSize: Theme.fontCaption
                                 wrapMode: Text.Wrap
                             }
                         }
 
-                        // 设置 9：手动短交叉长度（仅 Mixed 生效 → Direct 灰化）
+                        // 设置 9：手动短交叉长度
                         ColumnLayout {
                             id: manualShortGroup
                             Layout.fillWidth: true
@@ -1353,16 +1233,11 @@ Window {
                             RowLayout {
                                 id: manualShortRow
                                 Layout.fillWidth: true
-                                enabled: !settings.advanceTransitionsGreyed
-                                opacity: settings.advanceTransitionsGreyed ? 0.45 : 1.0
 
-                                Behavior on opacity {
-                                    NumberAnimation { duration: Theme.animationFast }
-                                }
 
                                 Text {
                                     text: qsTr("手动短交叉长度")
-                                    color: settings.advanceTransitionsGreyed ? Theme.textDisabled : Theme.textPrimary
+                                    color: Theme.textPrimary
                                     font.pixelSize: Theme.fontBody
                                     Layout.preferredWidth: 100
                                 }
@@ -1423,9 +1298,7 @@ Window {
                             Text {
                                 id: manualShortHint
                                 Layout.fillWidth: true
-                                text: settings.advanceTransitionsGreyed
-                                      ? qsTr("仅混合输出可用")
-                                      : qsTr("手动切歌「短时渐隐」档的淡变长度")
+                                text: qsTr("手动切歌「短时渐隐」档的淡变长度")
                                 color: Theme.textSecondary
                                 font.pixelSize: Theme.fontCaption
                                 wrapMode: Text.Wrap
@@ -1477,25 +1350,57 @@ Window {
                                 Layout.minimumWidth: 120
                                 Layout.preferredHeight: 32
                                 
-                                model: settings.playbackDeviceNames
-                                enabled: settings.playbackDevices.length > 0
+                                model: settings.outputDeviceOptions
+                                textRole: "deviceName"
+                                valueRole: "deviceId"
+                                enabled: settings.outputDeviceOptions.length > 0
                                 
-                                displayText: enabled ? currentText : qsTr("无可用输出设备")
+                                displayText: enabled ? selectedOutputDeviceLabel() : qsTr("无可用输出设备")
                                 
+                                // 高亮"当前生效设备"（C++ 单一解析：显式选择 → 系统默认
+                                // isDefault → 列表首台），与采样率/位深过滤共用同一基准，
+                                // 保证"跟随系统默认"时能力候选与高亮一致。
                                 Binding {
                                     target: deviceCombo
                                     property: "currentIndex"
                                     value: {
                                         if (!deviceCombo.enabled) return -1;
-                                        var idx = settings.playbackDevices.indexOf(settings.preferredDeviceId);
-                                        return idx >= 0 ? idx : 0;
+                                        const options = settings.outputDeviceOptions;
+                                        const effective = settings.effectiveDeviceId;
+                                        for (let i = 0; i < options.length; ++i) {
+                                            if (options[i].deviceId === effective) return i;
+                                        }
+                                        return 0;
                                     }
                                     restoreMode: Binding.RestoreBindingOrValue
                                 }
                                 
                                 onActivated: function(index) {
-                                    if (index >= 0 && index < settings.playbackDevices.length) {
-                                        settings.preferredDeviceId = settings.playbackDevices[index];
+                                    const options = settings.outputDeviceOptions;
+                                    if (index >= 0 && index < options.length) {
+                                        settings.preferredDeviceId = options[index].deviceId;
+                                    }
+                                }
+                                
+                                // 收起态悬停显示当前输出设备全称（内容区 elide 截断后的完整名）。
+                                ToolTip {
+                                    id: deviceComboToolTip
+                                    visible: deviceCombo.hovered && deviceCombo.enabled
+                                             && selectedOutputDeviceLabel().length > 0
+                                    text: selectedOutputDeviceLabel()
+                                    delay: Theme.tooltipDelay
+                                    
+                                    contentItem: Text {
+                                        text: deviceComboToolTip.text
+                                        color: Theme.tooltipTextColor
+                                        font.pixelSize: Theme.tooltipFontSize
+                                    }
+                                    
+                                    background: Rectangle {
+                                        color: Theme.tooltipBackgroundColor
+                                        radius: Theme.tooltipRadius
+                                        border.color: Theme.tooltipBorderColor
+                                        border.width: 1
                                     }
                                 }
                                 
@@ -1533,7 +1438,7 @@ Window {
                                     required property int index
                                     
                                     contentItem: Text {
-                                        text: modelData
+                                        text: root.outputDeviceLabel(modelData)
                                         color: Theme.textPrimary
                                         font.pixelSize: Theme.fontBody
                                         verticalAlignment: Text.AlignVCenter
@@ -1544,6 +1449,11 @@ Window {
                                     
                                     background: Rectangle {
                                         color: parent.hovered ? Theme.hoverColor : Theme.raisedSurfaceColor
+                                    }
+                                    
+                                    // 悬停整行显示该设备全称（行内文本 elide 截断后的完整名）。
+                                    SharedToolTip {
+                                        text: root.outputDeviceLabel(modelData)
                                     }
                                 }
                                 

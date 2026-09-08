@@ -8,11 +8,23 @@ import Seriona
 ScrollBar {
     id: control
     policy: ScrollBar.AsNeeded
-    width: isHoveredOrPressed ? 10 : Theme.scrollbarWidth
 
     readonly property bool isHoveredOrPressed: control.hovered || control.pressed
+    readonly property bool verticalBar: orientation === Qt.Vertical
+
+    // 厚轴随 hover/pressed 6→10 加宽；长轴交由 ScrollBar 附挂机制管理
+    // （ScrollView/Flickable 自动贴合视口），故仅按方向设置厚轴：
+    // 竖向默认语义厚轴 = width，横向（GEQ 波段区等）厚轴 = height。
+    width: verticalBar ? (isHoveredOrPressed ? 10 : Theme.scrollbarWidth) : undefined
+    height: verticalBar ? undefined : (isHoveredOrPressed ? 10 : Theme.scrollbarWidth)
 
     Behavior on width {
+        enabled: control.verticalBar
+        NumberAnimation { duration: Theme.animationFast; easing.type: Easing.OutQuad }
+    }
+
+    Behavior on height {
+        enabled: !control.verticalBar
         NumberAnimation { duration: Theme.animationFast; easing.type: Easing.OutQuad }
     }
 

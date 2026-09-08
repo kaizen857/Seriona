@@ -11,7 +11,9 @@
 #include <QCoreApplication>
 #include <QUrl>
 #include <QVariant>
+#include <QVariantList>
 
+#include <array>
 #include <string>
 
 namespace Seriona::App {
@@ -44,6 +46,21 @@ bool isConfigureOutputRejection(const std::string &message)
 }
 
 #if SERIONA_HAS_BACKEND
+namespace {
+// 后端快照 float 数组 → QML 消费面 QVariantList（double）：EQ 曲线 181 点 / 频谱
+// 120 桶走统一转换；长度由 std::array 模板形参编译期携带，double 与 QML number 直配。
+template <std::size_t N>
+QVariantList floatArrayToVariantList(const std::array<float, N> &values)
+{
+    QVariantList list;
+    list.reserve(static_cast<qsizetype>(N));
+    for (const float value : values) {
+        list.append(static_cast<double>(value));
+    }
+    return list;
+}
+}
+
 void AppFacade::handlePlayerSnapshotChanged(
     const seriona::control::PlayerStateSnapshot &player,
     const seriona::control::LibraryStateSnapshot &library)
@@ -63,6 +80,25 @@ void AppFacade::handleLibrarySnapshotChanged(
     m_lyrics.applyPlayerStateSnapshot(player, &library);
     m_library.applyPlayerStateSnapshot(player, true);
     m_waveformProvider->requestForSnapshots(player, library);
+}
+
+void AppFacade::handleEqualizerStateChanged()
+{
+    const seriona::audio::EqualizerStateSnapshot &snapshot = m_backendBridge->equalizerStateSnapshot();
+    // 快照 → 镜像属性：curvePoints/curveFrequencies 各 181 点（double）。快照 sampleRate
+    // 无前端镜像面——settings.sampleRate 是输出目标采样率（有持久化/推送语义），不能
+    // 承载快照回读值，不映射（后端 reducer 快照回填实际输出率属后端 B2.6 后续）。
+    m_settings.mirrorEqualizerCurve(floatArrayToVariantList(snapshot.curvePointsDb),
+                                    floatArrayToVariantList(snapshot.curveFrequenciesHz));
+}
+
+void AppFacade::handleSpectrumChanged()
+{
+    const seriona::audio::SpectrumSnapshot &snapshot = m_backendBridge->spectrumSnapshot();
+    // 频谱推送面 R2 已接线（后端 SpectrumUpdated 事件 → 控制器驻留槽 → 订阅回调）；
+    // 快照按契约 120 桶落地（generation=0 的默认空快照同样按契约镜像，UI 空态由
+    // EqualizerWindow 呈现）。更新频率 = 后端发布频率，此处不节流不放大。
+    m_settings.mirrorSpectrumBins(floatArrayToVariantList(snapshot.binsDb));
 }
 #endif
 
@@ -112,6 +148,20 @@ AppFacade::AppFacade(QObject *parent)
         const seriona::control::LibraryStateSnapshot &library = m_backendBridge->librarySnapshot();
         handleLibrarySnapshotChanged(player, library);
     });
+    // F1.3：均衡器/频谱订阅 → SettingsController 镜像属性（curvePoints/curveFrequencies/
+    // spectrumBins）。shutdown 竞态守卫同 waveform 先例（bridge 自身 shutdown 守卫外再兜底）。
+    connect(m_backendBridge.get(), &BackendBridge::equalizerStateChanged, this, [this] {
+        if (m_shuttingDown) {
+            return;
+        }
+        handleEqualizerStateChanged();
+    });
+    connect(m_backendBridge.get(), &BackendBridge::spectrumChanged, this, [this] {
+        if (m_shuttingDown) {
+            return;
+        }
+        handleSpectrumChanged();
+    });
     connect(m_backendBridge.get(), &BackendBridge::domainNotificationQueued, this, [this] {
         const auto &notifications = m_backendBridge->notifications();
         if (notifications.empty()) {
@@ -139,6 +189,21 @@ AppFacade::AppFacade(QObject *parent)
         return m_backendBridge->submitTransitionConfig(autoAdvanceFadeMode, fadeOnTransport, fadeOnSeek, gaplessPreloadMs,
                                                        crossfadeMs, transportFadeMs, seekFadeMs, manualAdvanceFadeMode,
                                                        manualShortCrossfadeMs);
+    });
+    // 均衡器组推送（F1.3）：SettingsController 内部完成 50ms 去抖（连续控件）与立即
+    // 推送（离散控件/预设/复位），此处仅透传 BackendBridge 的 SetEqualizerConfig
+    // 组包/校验（6 参全量，spectrum 拆分与真命令落点见 backend_bridge.h
+    // submitEqualizerConfig 注释——EQ 走 SetEqualizerConfig，spectrum 位变化
+    // 独立外发 SetSpectrumEnabled）。
+    // apply() 耦合评估（F1.2 review 观察 ②）：output 离散 setter/去抖到期均经 apply()
+    // → EQ executor 绑定后这些路径附带重推一次相同 EQ 载荷；后端 reducer 收等值命令
+    // 仅 generation++，无听感影响；EQ 段放 apply() 系计划裁定（启动同步一次），与
+    // transition 注入点同为独立通道透传同构——接受此耦合，不引入第三通道。
+    m_settings.setApplyEqualizerConfigExecutor([this](bool enabled, int bandMode, double preGainDb,
+                                                       const QVariantList &bandGains, bool limiterEnabled,
+                                                       bool spectrumEnabled) {
+        return m_backendBridge->submitEqualizerConfig(enabled, bandMode, preGainDb, bandGains,
+                                                       limiterEnabled, spectrumEnabled);
     });
     m_settings.setEnumerateDevicesExecutor([this] {
         return m_backendBridge->enumeratePlaybackDeviceCapabilities();

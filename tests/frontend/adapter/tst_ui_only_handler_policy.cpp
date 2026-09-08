@@ -115,6 +115,7 @@ private slots:
     void uiOnlyHandlersDoNotUseBackendCommands();
     void qmlStartupDoesNotCallQtApplicationPropertyFunction();
     void qmlLayoutSourceContractsStayStable();
+    void equalizerWindowSourceContractsStayStable();
 };
 
 void UiOnlyHandlerPolicyTest::uiOnlyHandlersDoNotUseBackendCommands()
@@ -284,13 +285,17 @@ void UiOnlyHandlerPolicyTest::qmlLayoutSourceContractsStayStable()
     });
 
     // 三态滚动条规格已收敛到共享组件 StyledScrollBar（唯一真源）；
-    // 结构断言跟随规格转移，防止组件内规格回退/删除
+    // 结构断言跟随规格转移，防止组件内规格回退/删除。竖/横两向共用：厚轴按
+    // orientation 取 width（竖向默认语义）/ height（横向），hover/pressed 6→10
+    // 加宽表达式与 AsNeeded 隐藏语义为两向共享规格，均须保持锁定。
     const QString styledScrollBarQml = sourceFile(QStringLiteral("qml/components/StyledScrollBar.qml"));
     expectContainsAll(styledScrollBarQml, {
         "ScrollBar {",
         "policy: ScrollBar.AsNeeded",
-        "width: isHoveredOrPressed ? 10 : Theme.scrollbarWidth",
         "readonly property bool isHoveredOrPressed: control.hovered || control.pressed",
+        "readonly property bool verticalBar: orientation === Qt.Vertical",
+        "width: verticalBar ? (isHoveredOrPressed ? 10 : Theme.scrollbarWidth) : undefined",
+        "height: verticalBar ? undefined : (isHoveredOrPressed ? 10 : Theme.scrollbarWidth)",
         "visible: control.size < 1.0",
         "radius: width / 2",
         "color: control.pressed ? Theme.pressedColor"
@@ -344,6 +349,115 @@ void UiOnlyHandlerPolicyTest::qmlLayoutSourceContractsStayStable()
         "id: restoreButton",
         "id: addFolderButton"
     });
+}
+
+// F2.6 实况契约：EqualizerWindow.qml（图谱区 T10 由 Canvas 重构为 SpectrumGraph +
+// QML 静态刻度覆盖层后）不再是占位窗口。
+// 本函数以源文本静态断言锁住 EQ 窗口 objectName 面 + 关键行为接线 + 防回归项。
+// 文件机制边界：本测试无法实例化 QML/访问 settings（GUILESS + 纯文本契约），
+// 运行时行为（点击 → settings 翻转 → Repeater 重建、图谱状态机序列）由 settings-menu
+// smoke 的窗内交互步骤动态覆盖（见 Main.qml smokeTimer step3-8）。
+void UiOnlyHandlerPolicyTest::equalizerWindowSourceContractsStayStable()
+{
+    const QString eqWindowQml = sourceFile(QStringLiteral("qml/windows/EqualizerWindow.qml"));
+    const QString bandSliderQml = sourceFile(QStringLiteral("qml/components/EqBandSlider.qml"));
+    const QString presetDialogQml = sourceFile(QStringLiteral("qml/windows/EqualizerPresetDialog.qml"));
+
+    // —— objectName 契约面（实测全部存在，供 smoke/无障碍/自动化按名定位）——
+    // 工具行 / 图谱区 / 控制条 / GEQ 竖条区 / 弹层：eqBandSliderN 为 Repeater 随档重建
+    expectContainsAll(eqWindowQml, {
+        "objectName: \"equalizerWindow\"",
+        "objectName: \"eqMode10Button\"",
+        "objectName: \"eqMode31Button\"",
+        "objectName: \"eqMasterSwitch\"",
+        "objectName: \"eqResetButton\"",
+        "objectName: \"eqSpectrumSwitch\"",
+        "objectName: \"eqGraphCanvas\"",
+        "objectName: \"eqGraphEmptyHint\"",
+        "objectName: \"eqLimiterSwitch\"",
+        "objectName: \"eqPresetApplyButton\"",
+        "objectName: \"eqSavePresetButton\"",
+        "objectName: \"eqManagePresetsButton\"",
+        "objectName: \"eqPreGainSlider\"",
+        "objectName: \"eqPresetPickerMenu\"",
+        "objectName: \"eqSavePresetPopup\"",
+        "objectName: \"eqSaveNameInput\"",
+        "objectName: \"eqBandSlider\" + index"
+    });
+
+    // —— settings 解析契约（动态上下文解析 Main 的 appFacade；无则 null 只读降级）——
+    expectContainsAll(eqWindowQml, {
+        "readonly property var settings: _resolveSettings()",
+        "function _resolveSettings()",
+        "typeof appFacade",
+        "return appFacade.settings;",
+        "return null;"
+    });
+
+    // —— 行为接线：总开关/10/31 切档写 settings 离散项；Repeater 竖条数随档位重建 ——
+    expectContainsAll(eqWindowQml, {
+        "if (root.settings)",
+        "root.settings.enabled = checked",
+        "root.settings.bandMode = 10;",
+        "root.settings.bandMode = 31;",
+        "readonly property int _bandMode: (settings && settings.bandMode === 31) ? 31 : 10",
+        "readonly property int _bandCount: _bandMode === 31 ? 31 : 10",
+        "model: root._bandCount",
+        "width: root._bandCount * 66 + (root._bandCount - 1) * spacing",
+        "root.settings[key] = list;"
+    });
+
+    // —— T10 图谱区接线契约（Canvas → SpectrumGraph；objectName eqGraphCanvas 保留在
+    // 新 item 上 → 既有锁定零改）：数据/颜色注入 + 频谱开关联动柱区 + 拖动写回胶水 +
+    // 空态三态状态机文案；旧 Canvas 绘制链（Canvas 类型/requestPaint/drawGraph）零残留
+    expectContainsAll(eqWindowQml, {
+        "SpectrumGraph {",
+        "spectrumBins: root.settings ? root.settings.spectrumBins : []",
+        "spectrumBarsVisible: root.settings ? root.settings.spectrumEnabled : true",
+        "preGainDb: root.settings ? root.settings.preGainDb : 0",
+        "onDragReleased: (bandMode, bandIndex, gainDb) => {",
+        "var key = bandMode === 31 ? \"bandGains31\" : \"bandGains10\";",
+        "visible: spectrumGraph.dragBandIndex >= 0",
+        "qsTr(\"播放音频后显示实时频响\")",
+        "qsTr(\"频谱已关闭\")",
+        "qsTr(\"暂无频谱数据\")"
+    });
+    expectAbsent(eqWindowQml, QStringLiteral("requestPaint"));
+    expectAbsent(eqWindowQml, QStringLiteral("Canvas {"));
+    expectAbsent(eqWindowQml, QStringLiteral("drawGraph"));
+
+    // —— Esc 关闭路径（contentRect 焦点链）——
+    expectContainsAll(eqWindowQml, {
+        "Keys.onEscapePressed",
+        "root.close()"
+    });
+
+    // —— 预设管理：Loader 惰性激活 + 显式 settings 注入 + 弹层对象契约 ——
+    expectContainsAll(eqWindowQml, {
+        "id: presetDialogLoader",
+        "active: false",
+        "sourceComponent: Component {",
+        "EqualizerPresetDialog {",
+        "settings: root.settings",
+        "function openManagePresets()"
+    });
+    expectContainsAll(presetDialogQml, {
+        "objectName: \"equalizerPresetDialog\"",
+        "objectName: \"equalizerPresetDialogClose\"",
+        "closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside"
+    });
+
+    // —— 防回归：EQ 域无占位反馈/无后端命令直发；竖条根 value 纯外部可写（B1）——
+    expectAbsent(eqWindowQml, QStringLiteral("submitCommand"));
+    expectAbsent(eqWindowQml, QStringLiteral("showUnsupportedFeedback"));
+    expectContainsAll(bandSliderQml, {
+        "signal userEdited(real newValue)",
+        "target: bandSlider",
+        "Math.max(root._gainMin, Math.min(root._gainMax, root.value))",
+        "root.userEdited(bandSlider.value)",
+        "root.userEdited(grid)"
+    });
+    expectAbsent(bandSliderQml, QStringLiteral("root.value ="));
 }
 
 QTEST_GUILESS_MAIN(UiOnlyHandlerPolicyTest)

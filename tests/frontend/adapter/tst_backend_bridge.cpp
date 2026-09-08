@@ -20,6 +20,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -54,6 +55,26 @@ public:
         std::scoped_lock lock(m_mutex);
         ++m_configureTransitionCalls;
         m_lastTransitionConfig = config;
+    }
+
+    void setEqualizer(const seriona::audio::EqualizerConfig &config) override
+    {
+        std::scoped_lock lock(m_mutex);
+        ++m_setEqualizerCalls;
+        m_lastEqualizerConfig = config;
+    }
+
+    void setSpectrumEnabled(bool enabled) override
+    {
+        std::scoped_lock lock(m_mutex);
+        ++m_setSpectrumEnabledCalls;
+        m_lastSpectrumEnabled = enabled;
+    }
+
+    bool spectrumEnabled() const override
+    {
+        std::scoped_lock lock(m_mutex);
+        return m_lastSpectrumEnabled;
     }
 
     void loadTrack(const seriona::audio::TrackPlaybackRequest &) override
@@ -106,6 +127,30 @@ public:
         return m_configureTransitionCalls;
     }
 
+    seriona::audio::EqualizerConfig lastEqualizerConfig() const
+    {
+        std::scoped_lock lock(m_mutex);
+        return m_lastEqualizerConfig;
+    }
+
+    int setEqualizerCalls() const
+    {
+        std::scoped_lock lock(m_mutex);
+        return m_setEqualizerCalls;
+    }
+
+    int setSpectrumEnabledCalls() const
+    {
+        std::scoped_lock lock(m_mutex);
+        return m_setSpectrumEnabledCalls;
+    }
+
+    bool lastSpectrumEnabled() const
+    {
+        std::scoped_lock lock(m_mutex);
+        return m_lastSpectrumEnabled;
+    }
+
     int loadTrackCalls() const
     {
         std::scoped_lock lock(m_mutex);
@@ -155,10 +200,14 @@ private:
     seriona::audio::BackendEventSink m_eventSink;
     seriona::audio::AudioOutputConfig m_lastOutputConfig;
     seriona::audio::TransitionConfig m_lastTransitionConfig;
+    seriona::audio::EqualizerConfig m_lastEqualizerConfig;
+    bool m_lastSpectrumEnabled = false;
     int m_stopCalls = 0;
     int m_eventSinkClearCalls = 0;
     int m_configureOutputCalls = 0;
     int m_configureTransitionCalls = 0;
+    int m_setEqualizerCalls = 0;
+    int m_setSpectrumEnabledCalls = 0;
     int m_loadTrackCalls = 0;
 };
 
@@ -500,6 +549,10 @@ private slots:
     void submitTransitionConfigBuildsTypedBackendCommand();
     void submitTransitionConfigRejectsInvalidPayloadWithoutDispatch();
     void transitionConfigWhilePlayingDoesNotReloadOrInterrupt();
+    void submitEqualizerConfigBuildsTypedBackendCommand();
+    void submitEqualizerConfigRejectsInvalidPayloadWithoutDispatch();
+    void submitEqualizerConfigForwardsSpectrumEnabledCommand();
+    void spectrumToggleDiscreteImmediateWithEqDebounceNotDuplicated();
 };
 
 void BackendBridgeTest::threading()
@@ -1193,6 +1246,257 @@ void BackendBridgeTest::transitionConfigWhilePlayingDoesNotReloadOrInterrupt()
 
     // 播放状态不被打断（仍 Playing，无 Loading/Stopped 事件泄漏到快照）
     QTRY_COMPARE(bridge.playerSnapshot().playback.state, seriona::control::PlaybackStatus::Playing);
+
+    bridge.shutdown();
+}
+
+void BackendBridgeTest::submitEqualizerConfigBuildsTypedBackendCommand()
+{
+    ControllerHarness harness;
+    Seriona::App::BackendBridge bridge(harness.factory(true));
+    waitForInitialPlayerSnapshot(bridge);
+
+    // 31 档全量：6 参按 EqualizerConfig 字段声明序组包 → SetEqualizerConfig 到达音频服务
+    QVariantList gains31;
+    gains31.reserve(31);
+    for (int i = 0; i < 31; ++i) {
+        gains31.append((i - 15) * 0.5);
+    }
+    const seriona::control::MediaControllerCommandResult full = bridge.submitEqualizerConfig(
+        true, 31, -3.5, gains31, true, false);
+    QVERIFY(full.accepted);
+    QCOMPARE(full.code, seriona::control::MediaControllerErrorCode::None);
+    QCOMPARE(harness.audio->setEqualizerCalls(), 1);
+    const seriona::audio::EqualizerConfig fullConfig = harness.audio->lastEqualizerConfig();
+    QCOMPARE(fullConfig.enabled, true);
+    QCOMPARE(fullConfig.mode, seriona::audio::EqualizerBandMode::Band31);
+    QCOMPARE(fullConfig.preGainDb, -3.5f);
+    for (int i = 0; i < 31; ++i) {
+        QCOMPARE(fullConfig.bandGainsDb[static_cast<std::size_t>(i)], static_cast<float>((i - 15) * 0.5));
+    }
+    QCOMPARE(fullConfig.limiterEnabled, true);
+
+    // 10 档：mode=Band10；bandGainsDb 恒 31 定长，仅前 10 项拷贝生效，余 21 项零填充
+    QVariantList gains10;
+    gains10.reserve(10);
+    for (int i = 0; i < 10; ++i) {
+        gains10.append(2.5 + i * 0.5);
+    }
+    const seriona::control::MediaControllerCommandResult ten = bridge.submitEqualizerConfig(
+        false, 10, 2.5, gains10, false, true);
+    QVERIFY(ten.accepted);
+    QCOMPARE(ten.code, seriona::control::MediaControllerErrorCode::None);
+    QCOMPARE(harness.audio->setEqualizerCalls(), 2);
+    const seriona::audio::EqualizerConfig tenConfig = harness.audio->lastEqualizerConfig();
+    QCOMPARE(tenConfig.enabled, false);
+    QCOMPARE(tenConfig.mode, seriona::audio::EqualizerBandMode::Band10);
+    QCOMPARE(tenConfig.preGainDb, 2.5f);
+    QCOMPARE(tenConfig.limiterEnabled, false);
+    for (int i = 0; i < 10; ++i) {
+        QCOMPARE(tenConfig.bandGainsDb[static_cast<std::size_t>(i)], static_cast<float>(2.5 + i * 0.5));
+    }
+    for (int i = 10; i < 31; ++i) {
+        QCOMPARE(tenConfig.bandGainsDb[static_cast<std::size_t>(i)], 0.0f);
+    }
+
+    // R3：spectrum 位首次（false）同步一次、再变化 true 补发一次——payload bool 直抵
+    // 音频服务（经内嵌后端 SetSpectrumEnabled 命令链），EQ 组包不受拆分影响
+    QCOMPARE(harness.audio->setSpectrumEnabledCalls(), 2);
+    QCOMPARE(harness.audio->lastSpectrumEnabled(), true);
+
+    // 语义隔离：EQ 命令不触发 ConfigureOutput/SetTransitionConfig/LoadTrack/stop
+    QCOMPARE(harness.audio->configureOutputCalls(), 0);
+    QCOMPARE(harness.audio->configureTransitionCalls(), 0);
+    QCOMPARE(harness.audio->loadTrackCalls(), 0);
+    QCOMPARE(harness.audio->stopCalls(), 0);
+
+    bridge.shutdown();
+}
+
+void BackendBridgeTest::submitEqualizerConfigRejectsInvalidPayloadWithoutDispatch()
+{
+    ControllerHarness harness;
+    Seriona::App::BackendBridge bridge(harness.factory(true));
+    waitForInitialPlayerSnapshot(bridge);
+
+    QSignalSpy notifySpy(&bridge, &Seriona::App::BackendBridge::domainNotificationQueued);
+    const std::size_t baselineNotifications = bridge.notifications().size();
+
+    QVariantList valid10;
+    valid10.reserve(10);
+    for (int i = 0; i < 10; ++i) {
+        valid10.append(0.5);
+    }
+
+    // bandMode 越界（仅 10/31）
+    const seriona::control::MediaControllerCommandResult badMode = bridge.submitEqualizerConfig(
+        false, 7, 0.0, valid10, false, false);
+    QVERIFY(!badMode.accepted);
+    QCOMPARE(badMode.code, seriona::control::MediaControllerErrorCode::InvalidCommand);
+
+    // preGain 越界（±15）与 NaN
+    QVariantList valid31;
+    valid31.reserve(31);
+    for (int i = 0; i < 31; ++i) {
+        valid31.append(0.0);
+    }
+    const seriona::control::MediaControllerCommandResult highGain = bridge.submitEqualizerConfig(
+        false, 31, 16.0, valid31, false, false);
+    QVERIFY(!highGain.accepted);
+    QCOMPARE(highGain.code, seriona::control::MediaControllerErrorCode::InvalidCommand);
+    const seriona::control::MediaControllerCommandResult lowGain = bridge.submitEqualizerConfig(
+        false, 31, -16.0, valid31, false, false);
+    QVERIFY(!lowGain.accepted);
+    const seriona::control::MediaControllerCommandResult nanGain = bridge.submitEqualizerConfig(
+        false, 31, std::numeric_limits<double>::quiet_NaN(), valid31, false, false);
+    QVERIFY(!nanGain.accepted);
+    QCOMPARE(nanGain.code, seriona::control::MediaControllerErrorCode::InvalidCommand);
+
+    // 增益长度与档位错配（10 档 9 项 / 31 档 10 项）
+    const QVariantList short10 = valid10.mid(0, 9);
+    const seriona::control::MediaControllerCommandResult shortGains = bridge.submitEqualizerConfig(
+        false, 10, 0.0, short10, false, false);
+    QVERIFY(!shortGains.accepted);
+    QCOMPARE(shortGains.code, seriona::control::MediaControllerErrorCode::InvalidCommand);
+    const seriona::control::MediaControllerCommandResult wrongModeLength = bridge.submitEqualizerConfig(
+        false, 31, 0.0, valid10, false, false);
+    QVERIFY(!wrongModeLength.accepted);
+    QCOMPARE(wrongModeLength.code, seriona::control::MediaControllerErrorCode::InvalidCommand);
+
+    // 逐项越界（15.5 / -15.5 / NaN）
+    QVariantList over = valid10;
+    over[3] = 15.5;
+    const seriona::control::MediaControllerCommandResult itemOver = bridge.submitEqualizerConfig(
+        false, 10, 0.0, over, false, false);
+    QVERIFY(!itemOver.accepted);
+    QCOMPARE(itemOver.code, seriona::control::MediaControllerErrorCode::InvalidCommand);
+    QVariantList under = valid10;
+    under[0] = -15.5;
+    const seriona::control::MediaControllerCommandResult itemUnder = bridge.submitEqualizerConfig(
+        false, 10, 0.0, under, false, false);
+    QVERIFY(!itemUnder.accepted);
+    QVariantList nanItem = valid10;
+    nanItem[1] = std::numeric_limits<double>::quiet_NaN();
+    const seriona::control::MediaControllerCommandResult itemNan = bridge.submitEqualizerConfig(
+        false, 10, 0.0, nanItem, false, false);
+    QVERIFY(!itemNan.accepted);
+
+    // 全部本地拒绝：零外发 + 每次拒绝入队一条 CommandRejected 通知
+    // （R3：频谱命令与 EQ 同函数同弃——本地 reject 早退于 spectrum 段之前，
+    // 非法载荷不产生 SetSpectrumEnabled 外发）
+    QCOMPARE(harness.audio->setEqualizerCalls(), 0);
+    QCOMPARE(harness.audio->setSpectrumEnabledCalls(), 0);
+    QCOMPARE(harness.audio->configureTransitionCalls(), 0);
+    QCOMPARE(notifySpy.count(), 9);
+    QCOMPARE(bridge.notifications().size(), baselineNotifications + 9);
+    QCOMPARE(bridge.notifications().back().kind, seriona::control::ControlDomainNotificationKind::CommandRejected);
+    QCOMPARE(bridge.notifications().back().errorCode, seriona::control::MediaControllerErrorCode::InvalidCommand);
+
+    bridge.shutdown();
+}
+
+void BackendBridgeTest::submitEqualizerConfigForwardsSpectrumEnabledCommand()
+{
+    ControllerHarness harness;
+    Seriona::App::BackendBridge bridge(harness.factory(true));
+    waitForInitialPlayerSnapshot(bridge);
+
+    QVariantList gains31;
+    gains31.reserve(31);
+    for (int i = 0; i < 31; ++i) {
+        gains31.append((i - 15) * 0.5);
+    }
+
+    // 首次提交（spectrum=true）：EQ 命令照发 + SetSpectrumEnabled(true) 独立外发
+    // （R3 真命令化：经内嵌后端 reducer 直转 → 音频服务 setSpectrumEnabled 记账）
+    const seriona::control::MediaControllerCommandResult first = bridge.submitEqualizerConfig(
+        true, 31, -3.5, gains31, true, true);
+    QVERIFY(first.accepted);
+    QCOMPARE(first.code, seriona::control::MediaControllerErrorCode::None);
+    QCOMPARE(harness.audio->setEqualizerCalls(), 1);
+    QCOMPARE(harness.audio->setSpectrumEnabledCalls(), 1);
+    QCOMPARE(harness.audio->lastSpectrumEnabled(), true);
+
+    // spectrum 位未变（如 EQ 去抖到期重复提交全量现值）：EQ 照发、频谱不重发
+    const seriona::control::MediaControllerCommandResult repeat = bridge.submitEqualizerConfig(
+        true, 31, -2.0, gains31, true, true);
+    QVERIFY(repeat.accepted);
+    QCOMPARE(harness.audio->setEqualizerCalls(), 2);
+    QCOMPARE(harness.audio->setSpectrumEnabledCalls(), 1);
+    QCOMPARE(harness.audio->lastSpectrumEnabled(), true);
+
+    // 位变化 true→false：SetSpectrumEnabled(false) 再发一次，EQ 同步照发
+    const seriona::control::MediaControllerCommandResult off = bridge.submitEqualizerConfig(
+        true, 31, -2.0, gains31, true, false);
+    QVERIFY(off.accepted);
+    QCOMPARE(harness.audio->setEqualizerCalls(), 3);
+    QCOMPARE(harness.audio->setSpectrumEnabledCalls(), 2);
+    QCOMPARE(harness.audio->lastSpectrumEnabled(), false);
+    QCOMPARE(harness.audio->lastEqualizerConfig().preGainDb, -2.0f);
+
+    // 语义隔离：EQ/频谱命令均不触发输出重载/过渡/整轨加载/停止
+    QCOMPARE(harness.audio->configureOutputCalls(), 0);
+    QCOMPARE(harness.audio->configureTransitionCalls(), 0);
+    QCOMPARE(harness.audio->loadTrackCalls(), 0);
+    QCOMPARE(harness.audio->stopCalls(), 0);
+
+    bridge.shutdown();
+}
+
+void BackendBridgeTest::spectrumToggleDiscreteImmediateWithEqDebounceNotDuplicated()
+{
+    ControllerHarness harness;
+    Seriona::App::BackendBridge bridge(harness.factory(true));
+    waitForInitialPlayerSnapshot(bridge);
+
+    // 仿真 AppFacade 注入：SettingsController 全量 EQ executor 透传桥层
+    Seriona::App::SettingsController settings;
+    settings.setApplyEqualizerConfigExecutor([&](bool enabled, int bandMode, double preGainDb,
+                                                 const QVariantList &bandGains, bool limiterEnabled,
+                                                 bool spectrumEnabled) {
+        return bridge.submitEqualizerConfig(enabled, bandMode, preGainDb, bandGains, limiterEnabled,
+                                            spectrumEnabled);
+    });
+
+    QVariantList gains31;
+    gains31.reserve(31);
+    for (int i = 0; i < 31; ++i) {
+        gains31.append((i - 15) * 0.5);
+    }
+    // 基线默认：enabled=false/bandMode=10/频谱 false。enabled 打开 = 立即项 → 首个
+    // 全量推送（EQ 1 次 + 频谱首次同步 false 1 次——缓存 nullopt → 首次即发）。
+    settings.setEnabled(true);
+    QCOMPARE(harness.audio->setEqualizerCalls(), 1);
+    QCOMPARE(harness.audio->setSpectrumEnabledCalls(), 1);
+    QCOMPARE(harness.audio->lastSpectrumEnabled(), false);
+    // 档位 10→31 = 立即项 → EQ 再推，spectrum 位未变 → 频谱零新增
+    settings.setBandMode(31);
+    QCOMPARE(harness.audio->setEqualizerCalls(), 2);
+    QCOMPARE(harness.audio->setSpectrumEnabledCalls(), 1);
+
+    // 频谱开关点击（离散立即项，不经 50ms 去抖）→ SetSpectrumEnabled(true) 单发，
+    // EQ 全量载荷同步即时推送
+    settings.setBandGains31(gains31);
+    settings.setSpectrumEnabled(true);
+    QCOMPARE(harness.audio->setEqualizerCalls(), 3);
+    QCOMPARE(harness.audio->setSpectrumEnabledCalls(), 2);
+    QCOMPARE(harness.audio->lastSpectrumEnabled(), true);
+
+    // 增益拖动（50ms 去抖项）到期 → EQ 全量现值重推：spectrum 位未变 → 频谱零重复
+    QTRY_COMPARE_WITH_TIMEOUT(harness.audio->setEqualizerCalls(), 4, 2000);
+    QCOMPARE(harness.audio->setSpectrumEnabledCalls(), 2);
+
+    // 开关再点击关闭 → SetSpectrumEnabled(false) 立即单发
+    settings.setSpectrumEnabled(false);
+    QCOMPARE(harness.audio->setEqualizerCalls(), 5);
+    QCOMPARE(harness.audio->setSpectrumEnabledCalls(), 3);
+    QCOMPARE(harness.audio->lastSpectrumEnabled(), false);
+
+    // 语义隔离：无输出重载/过渡/整轨加载/停止副作用
+    QCOMPARE(harness.audio->configureOutputCalls(), 0);
+    QCOMPARE(harness.audio->configureTransitionCalls(), 0);
+    QCOMPARE(harness.audio->loadTrackCalls(), 0);
+    QCOMPARE(harness.audio->stopCalls(), 0);
 
     bridge.shutdown();
 }
