@@ -317,7 +317,7 @@ void WaveformWorkerTest::staleWorkerResultIsIgnored()
     QSignalSpy readySpy(&provider, &WaveformProvider::waveformReady);
 
     static_cast<void>(provider.requestWaveform(testRequest(QStringLiteral("slow-track"))));
-    QVERIFY(slowEntered.tryAcquire(1, 3000));
+    QVERIFY(slowEntered.tryAcquire(1, 8000));
     static_cast<void>(provider.requestWaveform(testRequest(QStringLiteral("fast-track"))));
 
     QTRY_COMPARE(readySpy.count(), 1);
@@ -331,7 +331,8 @@ void WaveformWorkerTest::staleWorkerResultIsIgnored()
     QCOMPARE(controller.waveformBarWidth(), 4);
 
     releaseSlow.release();
-    QTest::qWait(150);
+    // 负向窗：旧结果若泄漏应在该窗口内到达（慢机上放宽到 500ms）
+    QTest::qWait(500);
     QCOMPARE(readySpy.count(), 1);
     QCOMPARE(controller.waveformHeights(), QVariantList({9, 8, 7, 6}));
     QCOMPARE(controller.waveformBarWidth(), 4);

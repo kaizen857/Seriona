@@ -306,20 +306,18 @@ void FolderPageTest::animationIdempotency()
     folderPage->setProperty("isActive", false);
     folderPage->setProperty("isActive", true);
 
-    // 动画 220ms + stagger 最大 180ms，等待完成
-    QTest::qWait(500);
-
     // 检查视口内第一个 delegate 的 opacity 和 translate.x 终值
+    // （动画 220ms + stagger 最大 180ms；慢机上轮询等待终值收敛，不用固定睡窗）
     QQuickItem *firstDelegate = nullptr;
     QMetaObject::invokeMethod(listView, "itemAtIndex", Q_RETURN_ARG(QQuickItem *, firstDelegate), Q_ARG(int, 0));
     QVERIFY2(firstDelegate != nullptr, "firstDelegate not found at index 0");
-    QCOMPARE(firstDelegate->property("opacity").toReal(), 1.0);
+    QTRY_COMPARE_WITH_TIMEOUT(firstDelegate->property("opacity").toReal(), 1.0, 8000);
 
     auto transformList = firstDelegate->transform();
     QVERIFY2(transformList.count(&transformList) > 0, "firstDelegate transform list is empty");
     auto *tr = transformList.at(&transformList, 0);
     QVERIFY2(tr != nullptr, "transform element is null");
-    QCOMPARE(tr->property("x").toReal(), 0.0);
+    QTRY_COMPARE_WITH_TIMEOUT(tr->property("x").toReal(), 0.0, 8000);
 }
 
 void FolderPageTest::yRaceRegressionLock()

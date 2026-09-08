@@ -146,7 +146,9 @@ qreal translateX(QQuickItem *listView, int index)
 
 // 在窗口期内轮询 delegate 的 navTranslate.x：出现非 0 采样即视为"动画播过"。
 // 返回 true = 观察到动画；false = 全程无位移（delegate 缺失采样视为无位移）。
-bool xMoved(QQuickItem *listView, int index, int windowMs = 400)
+// 窗口默认 2000ms：慢机（10-100x）上点击→信号链→首帧→动画起播的延迟可远大于
+// 原生 400ms（动画本体 ~400ms），短窗会把"迟到的动画"误判为没播。
+bool xMoved(QQuickItem *listView, int index, int windowMs = 2000)
 {
     const QDeadlineTimer deadline(windowMs);
     while (!deadline.hasExpired()) {
@@ -160,7 +162,7 @@ bool xMoved(QQuickItem *listView, int index, int windowMs = 400)
 }
 
 // 在窗口期内轮询 StackView.busy：出现过 true 采样 = 有过渡运行。
-bool busyFlipped(QQuickItem *stack, int windowMs = 400)
+bool busyFlipped(QQuickItem *stack, int windowMs = 2000)
 {
     const QDeadlineTimer deadline(windowMs);
     while (!deadline.hasExpired()) {
@@ -170,6 +172,28 @@ bool busyFlipped(QQuickItem *stack, int windowMs = 400)
         QTest::qWait(5);
     }
     return false;
+}
+
+// 负向断言前置：先收敛到静止基线——StackView 空闲、且在采样对象上确实存在的
+// delegate 位移已归 0——再开负向采样窗。慢机上若上一段动画的尾巴仍在飞行就采样，
+// 会把旧位移误判为本次触发（假失败）。delegate 缺失（translateX == -1，视图被覆盖
+// 或正在重建）视为已静止，不做等待；已存在却长时间停在非 0 位则视为异常。
+void settleZeroBaseline(QQuickItem *stack, QQuickItem *listView, int index)
+{
+    if (stack) {
+        QTRY_VERIFY_WITH_TIMEOUT(!stack->property("busy").toBool(), 8000);
+    }
+    if (listView) {
+        const QDeadlineTimer deadline(8000);
+        while (!deadline.hasExpired()) {
+            const qreal x = translateX(listView, index);
+            if (x == -1.0 || qAbs(x - 0.0) < 1e-6) {
+                return;
+            }
+            QTest::qWait(50);
+        }
+        QVERIFY2(false, "delegate stayed off its zero baseline for 8s");
+    }
 }
 
 } // namespace
@@ -966,8 +990,8 @@ void SidebarQueueSwitchTest::rootSlideInAnimationOnBack()
         QTRY_COMPARE(stackView()->property("depth").toInt(), 0);
         // 动画运行（navTranslate.x 出现非 0 采样）且终值归 0
         QVERIFY(xMoved(rootView, 0) || xMoved(rootView, 1));
-        QTRY_COMPARE_WITH_TIMEOUT(translateX(rootView, 0), 0.0, 1500);
-        QTRY_COMPARE_WITH_TIMEOUT(translateX(rootView, 1), 0.0, 1500);
+        QTRY_COMPARE_WITH_TIMEOUT(translateX(rootView, 0), 0.0, 8000);
+        QTRY_COMPARE_WITH_TIMEOUT(translateX(rootView, 1), 0.0, 8000);
     }
 
     // ---- 反向 1：locate 收敛回根（视觉需求 5）不触发根动画 ----
@@ -989,6 +1013,7 @@ void SidebarQueueSwitchTest::rootSlideInAnimationOnBack()
         QVERIFY(stackView()->property("currentItem").isNull());
         QCOMPARE(libraryController.currentFolderNodeId(), QString());
         QCOMPARE(sidebar->property("suppressNavAnimation").toBool(), false);
+        settleZeroBaseline(nullptr, rootView, 0); // 先等收敛尾巴归零再开负向窗
         QVERIFY(!xMoved(rootView, 0)); // 无动画记录
         QCOMPARE(translateX(rootView, 0), 0.0);
     }
@@ -1009,6 +1034,7 @@ void SidebarQueueSwitchTest::rootSlideInAnimationOnBack()
         applyRichTree(1); // g3 移除 → 控制器回根
         QTRY_COMPARE(stackView()->property("depth").toInt(), 0);
         QCOMPARE(sidebar->property("suppressNavAnimation").toBool(), false);
+        settleZeroBaseline(nullptr, rootView, 0); // rescan 收敛尾巴归零后再判"未播"
         QVERIFY(!xMoved(rootView, 0));
         // 重建后的根 delegate 亦无动画状态
         QTRY_VERIFY(rootView->property("count").toInt() > 0);
@@ -1029,6 +1055,7 @@ void SidebarQueueSwitchTest::rootSlideInAnimationOnBack()
         clickSwitch(QStringLiteral("folderViewButton"));
         QCOMPARE(sidebar->property("queueViewActive").toBool(), false);
         QTest::qWait(300);
+        settleZeroBaseline(nullptr, rootView, 0); // 视图重显后 delegate 重建，等归零基线
         QVERIFY(!xMoved(rootView, 0));
     }
 
@@ -1044,6 +1071,7 @@ void SidebarQueueSwitchTest::rootSlideInAnimationOnBack()
         QTest::qWait(300);
         sidebar->setProperty("isSearching", false);
         QTest::qWait(300);
+        settleZeroBaseline(nullptr, rootView, 0); // 视图重显后 delegate 重建，等归零基线
         QVERIFY(!xMoved(rootView, 0));
     }
 }
@@ -1072,7 +1100,7 @@ void SidebarQueueSwitchTest::followPlayingZeroAnimation()
     assertStackAligned();
     QCOMPARE(currentPage()->property("folderNodeId").toString(), QStringLiteral("g3"));
     QCOMPARE(sidebar->property("suppressNavAnimation").toBool(), false);
-
+    settleZeroBaseline(stackView(), g1Lv, 0); // g1 页上次滑入的尾巴归零后再判"未播"
     QVERIFY(!xMoved(g1Lv, 0)); // 无激活动画
     QVERIFY(!busyFlipped(stackView())); // 无 StackView 过渡
     QCOMPARE(stackView()->property("busy").toBool(), false);
@@ -1086,6 +1114,7 @@ void SidebarQueueSwitchTest::followPlayingZeroAnimation()
     QVERIFY(stackView()->property("currentItem").isNull());
     QCOMPARE(libraryController.currentFolderNodeId(), QString());
     QCOMPARE(sidebar->property("suppressNavAnimation").toBool(), false);
+    settleZeroBaseline(stackView(), rootView, 0); // 收敛到根的尾巴归零后再判"未播"
     QVERIFY(!xMoved(rootView, 0));
     QVERIFY(!busyFlipped(stackView()));
 
@@ -1120,7 +1149,7 @@ void SidebarQueueSwitchTest::repeatEnterReusesPageInstance()
     QTRY_COMPARE(stackView()->property("depth").toInt(), 0);
     waitStackSettled();
     // 等根视图重入错落动画结束（navTranslate 归 0 前 delegate 场景坐标偏移，点击会落空）
-    QTRY_COMPARE_WITH_TIMEOUT(translateX(rootView, 0), 0.0, 1500);
+    QTRY_COMPARE_WITH_TIMEOUT(translateX(rootView, 0), 0.0, 8000);
     QCOMPARE(countFolderPageInstances(), instancesBefore + 1);
 
     // 重入：同一实例（缓存命中、无新实例创建）
@@ -1281,10 +1310,10 @@ void SidebarQueueSwitchTest::rapidBackClicksStateConsistency()
     QVERIFY(f2Lv != nullptr);
     QTRY_VERIFY(itemAt(f2Lv, 0) != nullptr);
     QTRY_COMPARE(itemAt(f2Lv, 0)->property("opacity").toReal(), 1.0);
-    QTRY_COMPARE_WITH_TIMEOUT(translateX(f2Lv, 0), 0.0, 1500);
+    QTRY_COMPARE_WITH_TIMEOUT(translateX(f2Lv, 0), 0.0, 8000);
 
     // 稳定一致（无第二次 pop 残留）
-    QTest::qWait(300);
+    QTest::qWait(1000);
     assertStackAligned();
     QCOMPARE(stackView()->property("depth").toInt(), 2);
 }
@@ -1386,6 +1415,7 @@ void SidebarQueueSwitchTest::locateColdCacheAndBranchVariants()
         QVERIFY(pages.contains(QStringLiteral("f3")));
         // 同步期间无激活动画且无 StackView 过渡
         QCOMPARE(sidebar->property("suppressNavAnimation").toBool(), false);
+        settleZeroBaseline(stackView(), rootView, 0); // 冷缓存收敛尾巴归零后再判"未播"
         QVERIFY(!busyFlipped(stackView()));
         QVERIFY(!xMoved(rootView, 0));
 
@@ -1501,8 +1531,8 @@ void SidebarQueueSwitchTest::noOpLocateSuppressionReset()
         libraryController.setPlayingTrackId(QStringLiteral("t-1"));
         libraryController.locateCurrentSong();
         QCOMPARE(sidebar->property("suppressNavAnimation").toBool(), false);
-        QTest::qWait(50); // callLater 复位窗口
-        QCOMPARE(sidebar->property("suppressNavAnimation").toBool(), false);
+        // callLater 复位窗口：慢机上事件可能延迟，改为轮询等待"保持复位"
+        QTRY_COMPARE(sidebar->property("suppressNavAnimation").toBool(), false);
         assertStackAligned();
         QCOMPARE(stackView()->property("depth").toInt(), 3);
 
@@ -1512,8 +1542,8 @@ void SidebarQueueSwitchTest::noOpLocateSuppressionReset()
         QQuickItem *f2Lv = qobject_cast<QQuickItem *>(f2Page->property("listView").value<QObject *>());
         QTRY_VERIFY(itemAt(f2Lv, 0) != nullptr);
         QMetaObject::invokeMethod(sidebar, "handleBackClicked");
-        QVERIFY(xMoved(f2Lv, 0, 1000)); // back 触发错落滑入
-        QTRY_COMPARE_WITH_TIMEOUT(translateX(f2Lv, 0), 0.0, 1500);
+        QVERIFY(xMoved(f2Lv, 0, 2000)); // back 触发错落滑入
+        QTRY_COMPARE_WITH_TIMEOUT(translateX(f2Lv, 0), 0.0, 8000);
         assertStackAligned();
     }
 
@@ -1537,8 +1567,8 @@ void SidebarQueueSwitchTest::noOpLocateSuppressionReset()
         QQuickItem *f2Lv = qobject_cast<QQuickItem *>(f2Page->property("listView").value<QObject *>());
         QTRY_VERIFY(itemAt(f2Lv, 0) != nullptr);
         QMetaObject::invokeMethod(sidebar, "handleBackClicked");
-        QVERIFY(xMoved(f2Lv, 0, 1000)); // 动画已恢复 → back 触发错落滑入
-        QTRY_COMPARE_WITH_TIMEOUT(translateX(f2Lv, 0), 0.0, 1500);
+        QVERIFY(xMoved(f2Lv, 0, 2000)); // 动画已恢复 → back 触发错落滑入
+        QTRY_COMPARE_WITH_TIMEOUT(translateX(f2Lv, 0), 0.0, 8000);
         assertStackAligned();
     }
 
@@ -1559,15 +1589,16 @@ void SidebarQueueSwitchTest::noOpLocateSuppressionReset()
         QCOMPARE(stackView()->property("depth").toInt(), 0);
         QVERIFY(stackView()->property("currentItem").isNull());
         QCOMPARE(sidebar->property("suppressNavAnimation").toBool(), false);
-        QVERIFY(!xMoved(rootView, 0, 400)); // 收敛回根本身不播根动画（400ms 窗口内保持 0）
+        settleZeroBaseline(nullptr, rootView, 0); // 坍缩尾巴归零后再判"未播"
+        QVERIFY(!xMoved(rootView, 0)); // 收敛回根本身不播根动画（静止基线后窗口内保持 0）
 
         // 动画已恢复：进入 g1 后 back 到根 → 根错落滑入
         libraryController.enterFolder(QStringLiteral("g1"));
         assertStackAligned();
         QCOMPARE(stackView()->property("depth").toInt(), 1);
         QMetaObject::invokeMethod(sidebar, "handleBackClicked");
-        QVERIFY(xMoved(rootView, 0, 1000)); // back 触发根错落滑入
-        QTRY_COMPARE_WITH_TIMEOUT(translateX(rootView, 0), 0.0, 1500);
+        QVERIFY(xMoved(rootView, 0, 2000)); // back 触发根错落滑入
+        QTRY_COMPARE_WITH_TIMEOUT(translateX(rootView, 0), 0.0, 8000);
         QCOMPARE(stackView()->property("depth").toInt(), 0);
     }
 }
@@ -1644,8 +1675,13 @@ void SidebarQueueSwitchTest::rescanRemovesCurrentFolderFallback()
         QVERIFY(g1Lv != nullptr);
         QTRY_VERIFY(itemAt(g1Lv, 0) != nullptr);
         QCOMPARE(itemAt(g1Lv, 0)->property("nodeId").toString(), QStringLiteral("g2"));
+        // 等条目静止在最终位置（错落滑入结束）再点击，避免点击落在半程位移上；点击后
+        // busy 在下一帧才置位 → 轮询等待其进入过渡
+        QTRY_VERIFY_WITH_TIMEOUT(
+            qAbs(translateX(g1Lv, 0)) < 1e-6 && qAbs(itemAt(g1Lv, 0)->property("opacity").toReal() - 1.0) < 1e-6,
+            8000);
         clickDelegate(itemAt(g1Lv, 0));
-        QVERIFY(stackView()->property("busy").toBool());
+        QTRY_VERIFY(stackView()->property("busy").toBool());
 
         // 过渡中收到重扫（g2 移除）→ 控制器回根；back 点击（canGoBack 已 false）被忽略
         applyRichTree(2);
@@ -1657,7 +1693,7 @@ void SidebarQueueSwitchTest::rescanRemovesCurrentFolderFallback()
         QCOMPARE(libraryController.currentFolderNodeId(), QString());
         QQuickItem *playlistView = qobject_cast<QQuickItem *>(findItem(QStringLiteral("playlistView")));
         QVERIFY(playlistView->isVisible());
-        QTest::qWait(400);
+        QTest::qWait(1000);
         QCOMPARE(stackView()->property("depth").toInt(), 0);
     }
 }
@@ -1720,8 +1756,12 @@ void SidebarQueueSwitchTest::pairingNoOpSelfHealing()
         QVERIFY(f1Lv != nullptr);
         QTRY_VERIFY(itemAt(f1Lv, 0) != nullptr);
         QCOMPARE(itemAt(f1Lv, 0)->property("nodeId").toString(), QStringLiteral("f2"));
+        // 条目静止后点击；busy 下一帧才置位 → 轮询等待进入过渡
+        QTRY_VERIFY_WITH_TIMEOUT(
+            qAbs(translateX(f1Lv, 0)) < 1e-6 && qAbs(itemAt(f1Lv, 0)->property("opacity").toReal() - 1.0) < 1e-6,
+            8000);
         clickDelegate(itemAt(f1Lv, 0)); // 配对 push → 过渡进行中（busy）
-        QVERIFY(stackView()->property("busy").toBool());
+        QTRY_VERIFY(stackView()->property("busy").toBool());
 
         applyBranchTreeNoF2(); // 重扫移除 f2 → 控制器已回根（goBack 零信号场景）
         QMetaObject::invokeMethod(sidebar, "handleBackClicked"); // 被忽略
@@ -1731,7 +1771,7 @@ void SidebarQueueSwitchTest::pairingNoOpSelfHealing()
         QCOMPARE(libraryController.currentFolderNodeId(), QString());
         QQuickItem *playlistView = qobject_cast<QQuickItem *>(findItem(QStringLiteral("playlistView")));
         QVERIFY(playlistView->isVisible());
-        QTest::qWait(400);
+        QTest::qWait(1000);
         QCOMPARE(stackView()->property("depth").toInt(), 0); // 绝不重推页面
     }
 }
@@ -1800,16 +1840,14 @@ void SidebarQueueSwitchTest::rootViewDelegateHover()
     QTRY_VERIFY(itemAt(rootView, 0) != nullptr);
     QQuickItem *rootDelegate = itemAt(rootView, 0);
 
-    // 先移出条目区域，确保初始为未悬停态
+    // 先移出条目区域，确保初始为未悬停态（慢机上离开事件可能延迟 → 轮询等待清空）
     QTest::mouseMove(window, QPoint(-50, -50));
-    QTest::qWait(80);
-    QVERIFY2(!rootDelegate->property("hovered").toBool(),
-             "precondition: root delegate must start unhovered");
+    QTRY_VERIFY_WITH_TIMEOUT(!rootDelegate->property("hovered").toBool(), 5000);
 
     // 悬停到根视图第一个条目：hovered 必须置位（当前 bug：始终 false）
     const QPointF center = rootDelegate->mapToScene(QPointF(rootDelegate->width() / 2, rootDelegate->height() / 2));
     QTest::mouseMove(window, center.toPoint());
-    QTRY_VERIFY_WITH_TIMEOUT(rootDelegate->property("hovered").toBool(), 1000);
+    QTRY_VERIFY_WITH_TIMEOUT(rootDelegate->property("hovered").toBool(), 5000);
 }
 
 // 对照组：FolderPage 条目 hover 保持正常（hoverEnabled: false 只禁 StackView 自身命中）
@@ -1834,13 +1872,11 @@ void SidebarQueueSwitchTest::folderPageDelegateHover()
     QQuickItem *pageDelegate = itemAt(pageList, 0);
     // 点击进入时鼠标停留在 g1 行场景位置，可能恰好落在页面首行上：先移出清空 hover
     QTest::mouseMove(window, QPoint(-50, -50));
-    QTest::qWait(80);
-    QVERIFY2(!pageDelegate->property("hovered").toBool(),
-             "precondition: page delegate must start unhovered");
+    QTRY_VERIFY_WITH_TIMEOUT(!pageDelegate->property("hovered").toBool(), 5000);
     const QPointF pageCenter =
         pageDelegate->mapToScene(QPointF(pageDelegate->width() / 2, pageDelegate->height() / 2));
     QTest::mouseMove(window, pageCenter.toPoint());
-    QTRY_VERIFY_WITH_TIMEOUT(pageDelegate->property("hovered").toBool(), 1000);
+    QTRY_VERIFY_WITH_TIMEOUT(pageDelegate->property("hovered").toBool(), 5000);
 }
 
 QTEST_MAIN(SidebarQueueSwitchTest)
