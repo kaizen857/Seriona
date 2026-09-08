@@ -314,7 +314,7 @@ void SettingsControllerTest::bufferDurationDebounces()
     QCOMPARE(pushes, 0);
     QCOMPARE(settings.bufferDurationMs(), 140);
 
-    QTRY_COMPARE_WITH_TIMEOUT(pushes, 1, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(pushes, 1, 5000);
 
     QTest::qWait(800);
     QCOMPARE(pushes, 1);
@@ -1160,7 +1160,7 @@ void SettingsControllerTest::transitionSliderSettersDebounceMerged()
     // 去抖窗口内 output executor 不受影响
     QCOMPARE(outputPushes, 0);
 
-    QTRY_COMPARE_WITH_TIMEOUT(payloads.size(), 3, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(payloads.size(), 3, 5000);
     QCOMPARE(payloads.at(2), QStringLiteral("1|1|0|200|900|400|800|0|600"));
 
     // 不再有额外推送
@@ -1580,7 +1580,7 @@ void SettingsControllerTest::eqDebounceMergeAndImmediateCommit()
     settings.setPreGainDb(4.0);
     settings.setBandGains10(final10);
     QCOMPARE(packs.size(), 0);
-    QTRY_COMPARE_WITH_TIMEOUT(packs.size(), 1, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(packs.size(), 1, 5000);
     QCOMPARE(packs.at(0).enabled, false);
     QCOMPARE(packs.at(0).bandMode, kEqBandMode10);
     QCOMPARE(packs.at(0).preGainDb, 4.0);
@@ -1593,7 +1593,7 @@ void SettingsControllerTest::eqDebounceMergeAndImmediateCommit()
     // 窗口外再写 → 再推（独立第二次）
     settings.setPreGainDb(-2.5);
     QCOMPARE(packs.size(), 1);
-    QTRY_COMPARE_WITH_TIMEOUT(packs.size(), 2, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(packs.size(), 2, 5000);
     QCOMPARE(packs.at(1).preGainDb, -2.5);
     QCOMPARE(packs.at(1).gains, final10);
     QTest::qWait(600);

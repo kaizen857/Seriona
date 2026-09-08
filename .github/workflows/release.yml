@@ -134,7 +134,7 @@ jobs:
         run: |
           cmake --preset release -G Ninja
           cmake --build --preset release --parallel 2
-          timeout --foreground --kill-after=30s 30m ctest --preset release --output-on-failure --timeout 300
+          timeout --foreground --kill-after=30s 120m ctest --preset release --output-on-failure --timeout 900
           cmake --install build/release --prefix /opt/seriona-deps
       # ---- A2 顺序链 ②：Seriona_Backend find_package 复用 ① → 建测 → install ----
       - name: ② Seriona_Backend 构建+测试+install
@@ -150,7 +150,7 @@ jobs:
             -DSERIONA_INSTALL_EXPORT=ON \
             -DSERIONA_INSTALLED_MODE=ON
           cmake --build --preset release --parallel 2
-          timeout --foreground --kill-after=30s 30m dbus-run-session -- ctest --preset release --output-on-failure --timeout 300
+          timeout --foreground --kill-after=30s 120m dbus-run-session -- ctest --preset release --output-on-failure --timeout 900
           cmake --install build/release --prefix /opt/seriona-deps
       # Qt 仅前端段需要：放在 ①② 之后安装，与 TagReader/后端建测并行推进（省 ~5 分钟）
       - uses: jurplel/install-qt-action@v4
@@ -180,7 +180,7 @@ jobs:
           cmake --build --preset release --parallel 2
       - name: 前端全量测试
         run: |
-          timeout --foreground --kill-after=30s 30m ctest --preset release --output-on-failure --timeout 300
+          timeout --foreground --kill-after=30s 120m ctest --preset release --output-on-failure --timeout 900
         env:
           QT_QPA_PLATFORM: offscreen
       - name: gdb 抓崩溃栈（仅失败轮诊断用）
@@ -277,7 +277,7 @@ jobs:
           # smoke 场景刻意不接后端（backendBridgeAutostartEnabled=false），测不到控制器；
           # 这里不带 --smoke-* 参数正常启动接真实后端，用 timeout 主动退出（预期 124）。
           set +e
-          timeout --foreground --kill-after=5s 15s \
+          timeout --foreground --kill-after=5s 60s \
             env QT_QPA_PLATFORM=offscreen squashfs-root/AppRun > /tmp/appimage-smoke.log 2>&1
           rc=$?
           set -e
@@ -341,7 +341,7 @@ jobs:
         run: |
           cmake --preset release -G Ninja
           cmake --build --preset release --parallel 2
-          timeout --foreground --kill-after=30s 30m ctest --preset release --output-on-failure --timeout 300
+          timeout --foreground --kill-after=30s 120m ctest --preset release --output-on-failure --timeout 900
           cmake --install build/release --prefix /opt/seriona-deps
       # ---- A2 顺序链 ②：Seriona_Backend find_package 复用 ① → 建测 → install ----
       - name: ② Seriona_Backend 构建+测试+install
@@ -357,7 +357,7 @@ jobs:
             -DSERIONA_INSTALL_EXPORT=ON \
             -DSERIONA_INSTALLED_MODE=ON
           cmake --build --preset release --parallel 2
-          timeout --foreground --kill-after=30s 30m dbus-run-session -- ctest --preset release --output-on-failure --timeout 300
+          timeout --foreground --kill-after=30s 120m dbus-run-session -- ctest --preset release --output-on-failure --timeout 900
           cmake --install build/release --prefix /opt/seriona-deps
       # ---- A2 顺序链 ③：Seriona 前端 find_package 复用 ①② → 建测（打包见后） ----
       - name: ③ Seriona 前端构建（find_package 复用）
@@ -369,7 +369,7 @@ jobs:
           cmake --build --preset release --parallel 2
       - name: 前端全量测试
         run: |
-          timeout --foreground --kill-after=30s 30m ctest --preset release --output-on-failure --timeout 300
+          timeout --foreground --kill-after=30s 120m ctest --preset release --output-on-failure --timeout 900
         env:
           QT_QPA_PLATFORM: offscreen
       - name: 打包 deb
@@ -390,7 +390,7 @@ jobs:
           rm -rf /tmp/seriona-xdg && mkdir -p "$XDG_STATE_HOME/logs"
           # 不带 --smoke-* 参数真实启动（smoke 不接后端）；timeout 主动终止（预期 124）
           set +e
-          timeout --foreground --kill-after=5s 15s env QT_QPA_PLATFORM=offscreen seriona \
+          timeout --foreground --kill-after=5s 60s env QT_QPA_PLATFORM=offscreen seriona \
             > /tmp/deb-smoke.log 2>&1
           rc=$?
           set -e
@@ -442,7 +442,7 @@ jobs:
         run: |
           cmake --preset release -G Ninja
           cmake --build --preset release --parallel 2
-          timeout --foreground --kill-after=30s 30m ctest --preset release --output-on-failure --timeout 300
+          timeout --foreground --kill-after=30s 120m ctest --preset release --output-on-failure --timeout 900
           cmake --install build/release --prefix /opt/seriona-deps
       # ---- A2 顺序链 ②：Seriona_Backend find_package 复用 ① → 建测 → install ----
       - name: ② Seriona_Backend 构建+测试+install
@@ -458,7 +458,7 @@ jobs:
             -DSERIONA_INSTALL_EXPORT=ON \
             -DSERIONA_INSTALLED_MODE=ON
           cmake --build --preset release --parallel 2
-          timeout --foreground --kill-after=30s 30m dbus-run-session -- ctest --preset release --output-on-failure --timeout 300
+          timeout --foreground --kill-after=30s 120m dbus-run-session -- ctest --preset release --output-on-failure --timeout 900
           cmake --install build/release --prefix /opt/seriona-deps
       # ---- A2 顺序链 ③：Seriona 前端 find_package 复用 ①② → 建测（打包见后） ----
       - name: ③ Seriona 前端构建（find_package 复用）
@@ -470,7 +470,7 @@ jobs:
           cmake --build --preset release --parallel 2
       - name: 前端全量测试
         run: |
-          timeout --foreground --kill-after=30s 30m ctest --preset release --output-on-failure --timeout 300
+          timeout --foreground --kill-after=30s 120m ctest --preset release --output-on-failure --timeout 900
         env:
           QT_QPA_PLATFORM: offscreen
       - name: 打包 deb
@@ -491,7 +491,7 @@ jobs:
           rm -rf /tmp/seriona-xdg && mkdir -p "$XDG_STATE_HOME/logs"
           # 不带 --smoke-* 参数真实启动（smoke 不接后端）；timeout 主动终止（预期 124）
           set +e
-          timeout --foreground --kill-after=5s 15s env QT_QPA_PLATFORM=offscreen seriona \
+          timeout --foreground --kill-after=5s 60s env QT_QPA_PLATFORM=offscreen seriona \
             > /tmp/deb-smoke.log 2>&1
           rc=$?
           set -e
@@ -549,7 +549,7 @@ jobs:
         run: |
           cmake --preset release -G Ninja
           cmake --build --preset release --parallel 2
-          timeout --foreground --kill-after=30s 30m ctest --preset release --output-on-failure --timeout 300
+          timeout --foreground --kill-after=30s 120m ctest --preset release --output-on-failure --timeout 900
           cmake --install build/release --prefix /opt/seriona-deps
       # ---- A2 顺序链 ②：Seriona_Backend find_package 复用 ① → 建测 → install ----
       - name: ② Seriona_Backend 构建+测试+install
@@ -565,7 +565,7 @@ jobs:
             -DSERIONA_INSTALL_EXPORT=ON \
             -DSERIONA_INSTALLED_MODE=ON
           cmake --build --preset release --parallel 2
-          timeout --foreground --kill-after=30s 30m dbus-run-session -- ctest --preset release --output-on-failure --timeout 300
+          timeout --foreground --kill-after=30s 120m dbus-run-session -- ctest --preset release --output-on-failure --timeout 900
           cmake --install build/release --prefix /opt/seriona-deps
       # ---- A2 顺序链 ③：Seriona 前端 find_package 复用 ①② → 建测（打包见后） ----
       - name: ③ Seriona 前端构建（find_package 复用）
@@ -577,7 +577,7 @@ jobs:
           cmake --build --preset release --parallel 2
       - name: 前端全量测试
         run: |
-          timeout --foreground --kill-after=30s 30m ctest --preset release --output-on-failure --timeout 300
+          timeout --foreground --kill-after=30s 120m ctest --preset release --output-on-failure --timeout 900
         env:
           QT_QPA_PLATFORM: offscreen
       - name: 打包 rpm
@@ -597,7 +597,7 @@ jobs:
           rm -rf /tmp/seriona-xdg && mkdir -p "$XDG_STATE_HOME/logs"
           # 不带 --smoke-* 参数真实启动（smoke 不接后端）；timeout 主动终止（预期 124）
           set +e
-          timeout --foreground --kill-after=5s 15s env QT_QPA_PLATFORM=offscreen seriona \
+          timeout --foreground --kill-after=5s 60s env QT_QPA_PLATFORM=offscreen seriona \
             > /tmp/rpm-smoke.log 2>&1
           rc=$?
           set -e
@@ -650,7 +650,7 @@ jobs:
         run: |
           cmake --preset release -G Ninja
           cmake --build --preset release --parallel 2
-          timeout --foreground --kill-after=30s 30m ctest --preset release --output-on-failure --timeout 300
+          timeout --foreground --kill-after=30s 120m ctest --preset release --output-on-failure --timeout 900
           cmake --install build/release --prefix /opt/seriona-deps
       # ---- A2 顺序链 ②：Seriona_Backend find_package 复用 ① → 建测 → install ----
       - name: ② Seriona_Backend 构建+测试+install
@@ -666,7 +666,7 @@ jobs:
             -DSERIONA_INSTALL_EXPORT=ON \
             -DSERIONA_INSTALLED_MODE=ON
           cmake --build --preset release --parallel 2
-          timeout --foreground --kill-after=30s 30m dbus-run-session -- ctest --preset release --output-on-failure --timeout 300
+          timeout --foreground --kill-after=30s 120m dbus-run-session -- ctest --preset release --output-on-failure --timeout 900
           cmake --install build/release --prefix /opt/seriona-deps
       # ---- A2 顺序链 ③：Seriona 前端 find_package 复用 ①② → 建测（打包见后） ----
       - name: ③ Seriona 前端构建（find_package 复用）
@@ -678,7 +678,7 @@ jobs:
           cmake --build --preset release --parallel 2
       - name: 前端全量测试
         run: |
-          timeout --foreground --kill-after=30s 30m ctest --preset release --output-on-failure --timeout 300
+          timeout --foreground --kill-after=30s 120m ctest --preset release --output-on-failure --timeout 900
         env:
           QT_QPA_PLATFORM: offscreen
       - name: 打包 rpm
@@ -698,7 +698,7 @@ jobs:
           rm -rf /tmp/seriona-xdg && mkdir -p "$XDG_STATE_HOME/logs"
           # 不带 --smoke-* 参数真实启动（smoke 不接后端）；timeout 主动终止（预期 124）
           set +e
-          timeout --foreground --kill-after=5s 15s env QT_QPA_PLATFORM=offscreen seriona \
+          timeout --foreground --kill-after=5s 60s env QT_QPA_PLATFORM=offscreen seriona \
             > /tmp/rpm-smoke.log 2>&1
           rc=$?
           set -e

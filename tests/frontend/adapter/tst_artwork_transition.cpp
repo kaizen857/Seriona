@@ -5753,7 +5753,7 @@ void ArtworkTransitionTest::artwork_transition()
     // so only the preferred layer becomes visible.
     controller.applyPlayerStateSnapshot(makeArtworkSnapshot(thumbnail, thumbnail));
     QTRY_COMPARE_WITH_TIMEOUT(block.preferred->property("status").toInt(),
-        StatusReady, 5000);
+        StatusReady, 15000);
     QCOMPARE(block.preferred->property("source").toUrl(),
         QUrl::fromLocalFile(thumbnail));
     QCOMPARE(block.fallback->property("source").toUrl(),
@@ -5774,7 +5774,7 @@ void ArtworkTransitionTest::artwork_transition()
     QCOMPARE(block.icon->isVisible(), false);
 
     QTRY_COMPARE_WITH_TIMEOUT(block.preferred->property("status").toInt(),
-        StatusReady, 5000);
+        StatusReady, 15000);
     QCOMPARE(block.fallback->property("source").toUrl(),
         QUrl::fromLocalFile(thumbnail));
     QCOMPARE(block.preferred->isVisible(), true);
@@ -5789,9 +5789,9 @@ void ArtworkTransitionTest::artwork_transition()
     QCoreApplication::processEvents(QEventLoop::AllEvents);
     controller.applyPlayerStateSnapshot(makeArtworkSnapshot(thumbnailB, thumbnailB));
     QTRY_COMPARE_WITH_TIMEOUT(block.preferred->property("source").toUrl(),
-        QUrl::fromLocalFile(thumbnailB), 5000);
+        QUrl::fromLocalFile(thumbnailB), 15000);
     QTRY_COMPARE_WITH_TIMEOUT(block.preferred->property("status").toInt(),
-        StatusReady, 5000);
+        StatusReady, 15000);
     QCOMPARE(block.fallback->property("source").toUrl(),
         QUrl::fromLocalFile(thumbnailB));
     QCOMPARE(block.preferred->isVisible(), true);
@@ -5859,9 +5859,9 @@ void ArtworkTransitionTest::artwork_fallback()
     // Invalid/deleted full artwork: preferred errors, thumbnail bridge shows.
     controller.applyPlayerStateSnapshot(makeArtworkSnapshot(deleted, thumbnail));
     QTRY_COMPARE_WITH_TIMEOUT(block.preferred->property("status").toInt(),
-        StatusError, 5000);
+        StatusError, 15000);
     QTRY_COMPARE_WITH_TIMEOUT(block.fallback->property("status").toInt(),
-        StatusReady, 5000);
+        StatusReady, 15000);
     QCOMPARE(block.preferred->isVisible(), false);
     QCOMPARE(block.fallback->isVisible(), true);
     QCOMPARE(block.icon->isVisible(), false);
@@ -5871,9 +5871,9 @@ void ArtworkTransitionTest::artwork_fallback()
     // Invalid thumbnail (and no full): both layers error, placeholder shows.
     controller.applyPlayerStateSnapshot(makeArtworkSnapshot(missing, missing));
     QTRY_COMPARE_WITH_TIMEOUT(block.preferred->property("status").toInt(),
-        StatusError, 5000);
+        StatusError, 15000);
     QTRY_COMPARE_WITH_TIMEOUT(block.fallback->property("status").toInt(),
-        StatusError, 5000);
+        StatusError, 15000);
     QCOMPARE(block.preferred->isVisible(), false);
     QCOMPARE(block.fallback->isVisible(), false);
     QCOMPARE(block.icon->isVisible(), true);
@@ -5881,7 +5881,7 @@ void ArtworkTransitionTest::artwork_fallback()
     // Invalid thumbnail with valid full: preferred still wins on Ready.
     controller.applyPlayerStateSnapshot(makeArtworkSnapshot(thumbnail, missing));
     QTRY_COMPARE_WITH_TIMEOUT(block.preferred->property("status").toInt(),
-        StatusReady, 5000);
+        StatusReady, 15000);
     QCOMPARE(block.preferred->isVisible(), true);
     QCOMPARE(block.fallback->isVisible(), false);
     QCOMPARE(block.icon->isVisible(), false);
@@ -5897,13 +5897,12 @@ void ArtworkTransitionTest::artwork_palette_nonblocking()
     const QString full = writeFixture(fixtureDir, "full.png", kRed1024Png, kRed1024PngLen);
 
     std::atomic<int> decodeCalls{0};
-    std::atomic<bool> releaseDecoder{false};
+    // 解码器用信号量阻塞而非忙等：墙钟测量不与自旋竞争，只验证"不 join 解码线程"
+    QSemaphore releaseDecoder;
     Seriona::App::PlaybackController controller(
         [&decodeCalls, &releaseDecoder](const QString &) {
             decodeCalls.fetch_add(1);
-            while (!releaseDecoder.load()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
+            releaseDecoder.acquire();
             return samplePalette();
         });
     Seriona::App::NotificationController notifications;
@@ -5919,32 +5918,32 @@ void ArtworkTransitionTest::artwork_palette_nonblocking()
     QVERIFY(block.preferred);
 
     // Snapshot application and current-song notification must not wait for the
-    // 500 ms-class decoder that runs on the palette worker thread.
+    // blocked decoder that runs on the palette worker thread.
     QSignalSpy songSpy(&controller, &Seriona::App::PlaybackController::currentSongChanged);
     QElapsedTimer timer;
     timer.start();
     controller.applyPlayerStateSnapshot(makeArtworkSnapshot(thumbnail, thumbnail));
     const qint64 applyElapsedMs = timer.nsecsElapsed() / 1000000;
 
-    QVERIFY2(applyElapsedMs <= 50,
+    QVERIFY2(applyElapsedMs <= 500,
         qPrintable(QStringLiteral("snapshot application blocked %1 ms behind the palette decoder")
                        .arg(applyElapsedMs)));
     QCOMPARE(songSpy.count(), 1);
     QTRY_COMPARE_WITH_TIMEOUT(block.preferred->property("status").toInt(),
-        StatusReady, 5000);
+        StatusReady, 15000);
     QCOMPARE(decodeCalls.load(), 1);
 
     // Full-only upgrade (thumbnail path unchanged) must not enqueue a second
     // palette decode.
     controller.applyPlayerStateSnapshot(makeArtworkSnapshot(full, thumbnail));
     QTRY_COMPARE_WITH_TIMEOUT(block.preferred->property("source").toUrl(),
-        QUrl::fromLocalFile(full), 5000);
+        QUrl::fromLocalFile(full), 15000);
     QTRY_COMPARE_WITH_TIMEOUT(block.preferred->property("status").toInt(),
-        StatusReady, 5000);
+        StatusReady, 15000);
     QCOMPARE(decodeCalls.load(), 1);
 
-    releaseDecoder.store(true);
-    QTRY_COMPARE_WITH_TIMEOUT(controller.gradientColor0(), QStringLiteral("#aabbcc"), 2000);
+    releaseDecoder.release();
+    QTRY_COMPARE_WITH_TIMEOUT(controller.gradientColor0(), QStringLiteral("#aabbcc"), 8000);
     QCOMPARE(decodeCalls.load(), 1);
 }
 

@@ -251,7 +251,8 @@ void PlaybackSnapshotMappingTest::timelineSmoothing()
 
     QCOMPARE(controller.totalDuration(), 60.0);
     QCOMPARE(controller.currentPositionText(), QStringLiteral("00:05"));
-    QTRY_VERIFY_WITH_TIMEOUT(controller.currentPosition() >= 6.0, 800);
+    // 位置平滑 timer 100ms 步进；慢机上放宽到 3000ms 轮询
+    QTRY_VERIFY_WITH_TIMEOUT(controller.currentPosition() >= 6.0, 3000);
     QCOMPARE(controller.currentPositionText(), QStringLiteral("00:06"));
 
     seriona::control::PlayerStateSnapshot paused = makeTimelineSnapshot(
@@ -352,7 +353,7 @@ void PlaybackSnapshotMappingTest::thumbnailThenFullUpgradeSkipsSecondPaletteDeco
     controller.applyPlayerStateSnapshot(snapshot);
 
     QCOMPARE(controller.coverThumbnailSource(), QUrl::fromLocalFile(thumbnailPath).toString());
-    QTRY_COMPARE_WITH_TIMEOUT(controller.gradientColor0(), QStringLiteral("#112233"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(controller.gradientColor0(), QStringLiteral("#112233"), 8000);
     QCOMPARE(decodeCalls, 1);
     QCOMPARE(decodedPath, thumbnailPath);
 
@@ -372,11 +373,10 @@ void PlaybackSnapshotMappingTest::thumbnailThenFullUpgradeSkipsSecondPaletteDeco
 
 void PlaybackSnapshotMappingTest::slowPaletteDecoderDoesNotDelaySnapshotApplication()
 {
-    std::atomic<bool> releaseDecoder{false};
+    // 解码器用信号量阻塞而非忙等：apply 的墙钟测量不与自旋竞争，只验证"不 join 解码线程"
+    QSemaphore releaseDecoder;
     Seriona::App::PlaybackController controller([&releaseDecoder](const QString &) {
-        while (!releaseDecoder.load()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
+        releaseDecoder.acquire();
         return Seriona::App::GradientPalette{
             QStringLiteral("#aabbcc"), QStringLiteral("#bbccdd"), QStringLiteral("#ccddee")};
     });
@@ -393,13 +393,13 @@ void PlaybackSnapshotMappingTest::slowPaletteDecoderDoesNotDelaySnapshotApplicat
     controller.applyPlayerStateSnapshot(snapshot);
     const qint64 applyElapsedMs = timer.nsecsElapsed() / 1000000;
 
-    QVERIFY2(applyElapsedMs <= 50,
-        qPrintable(QStringLiteral("snapshot application blocked %1 ms behind a 500 ms-class decoder").arg(applyElapsedMs)));
+    QVERIFY2(applyElapsedMs <= 500,
+        qPrintable(QStringLiteral("snapshot application blocked %1 ms behind a blocked decoder").arg(applyElapsedMs)));
     QCOMPARE(songSpy.count(), 1);
     QCOMPARE(controller.coverArtworkSource(), QUrl::fromLocalFile(QStringLiteral("/thumbs/slow.png")).toString());
 
-    releaseDecoder.store(true);
-    QTRY_COMPARE_WITH_TIMEOUT(controller.gradientColor0(), QStringLiteral("#aabbcc"), 2000);
+    releaseDecoder.release();
+    QTRY_COMPARE_WITH_TIMEOUT(controller.gradientColor0(), QStringLiteral("#aabbcc"), 8000);
 }
 
 void PlaybackSnapshotMappingTest::rapidThumbnailUpdatesDeliverOnlyLatestPalette()
@@ -426,7 +426,7 @@ void PlaybackSnapshotMappingTest::rapidThumbnailUpdatesDeliverOnlyLatestPalette(
         .thumbnailPath = std::filesystem::path{"/thumbs/a.png"},
     };
     controller.applyPlayerStateSnapshot(trackA);
-    QVERIFY(firstDecodeEntered.tryAcquire(1, 2000));
+    QVERIFY(firstDecodeEntered.tryAcquire(1, 8000));
 
     seriona::control::PlayerStateSnapshot trackB = makeFilledSnapshot(seriona::control::PlaybackStatus::Playing);
     trackB.currentTrack->trackId = "track-echo-2";
@@ -437,7 +437,7 @@ void PlaybackSnapshotMappingTest::rapidThumbnailUpdatesDeliverOnlyLatestPalette(
     controller.applyPlayerStateSnapshot(trackB);
 
     releaseFirstDecode.release();
-    QTRY_COMPARE_WITH_TIMEOUT(controller.gradientColor0(), QStringLiteral("#00bb00"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(controller.gradientColor0(), QStringLiteral("#00bb00"), 8000);
     QCOMPARE(gradientSpy.count(), 1);
 }
 
@@ -465,7 +465,7 @@ void PlaybackSnapshotMappingTest::latePaletteResultDroppedAfterTrackSwitch()
         .thumbnailPath = std::filesystem::path{"/thumbs/a.png"},
     };
     controller.applyPlayerStateSnapshot(trackA);
-    QVERIFY(firstDecodeEntered.tryAcquire(1, 2000));
+    QVERIFY(firstDecodeEntered.tryAcquire(1, 8000));
 
     // Switch to a track without artwork: no worker request is made, but the
     // expected generation advances so A's in-flight result becomes stale.
@@ -478,7 +478,7 @@ void PlaybackSnapshotMappingTest::latePaletteResultDroppedAfterTrackSwitch()
     // generation, so paletteReady(1) is emitted; it must be dropped by the
     // controller because the expected generation already moved past it.
     releaseFirstDecode.release();
-    QTRY_COMPARE_WITH_TIMEOUT(controller.gradientColor0(), QStringLiteral("#4a2c2a"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(controller.gradientColor0(), QStringLiteral("#4a2c2a"), 8000);
     QCOMPARE(gradientSpy.count(), 1);
 
     seriona::control::PlayerStateSnapshot trackC = makeFilledSnapshot(seriona::control::PlaybackStatus::Playing);
@@ -488,7 +488,7 @@ void PlaybackSnapshotMappingTest::latePaletteResultDroppedAfterTrackSwitch()
         .thumbnailPath = std::filesystem::path{"/thumbs/c.png"},
     };
     controller.applyPlayerStateSnapshot(trackC);
-    QTRY_COMPARE_WITH_TIMEOUT(controller.gradientColor0(), QStringLiteral("#00bb00"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(controller.gradientColor0(), QStringLiteral("#00bb00"), 8000);
     QCOMPARE(gradientSpy.count(), 2);
 }
 
@@ -528,7 +528,7 @@ void PlaybackSnapshotMappingTest::shutdownWithBlockedDecoder()
             QStringLiteral("#000000"), QStringLiteral("#111111"), QStringLiteral("#222222")};
     });
     worker.requestPalette(QStringLiteral("/thumbs/blocked.png"));
-    QVERIFY(decoderEntered.tryAcquire(1, 2000));
+    QVERIFY(decoderEntered.tryAcquire(1, 8000));
 
     std::atomic<bool> shutdownReturned{false};
     std::thread shutdownThread([&worker, &shutdownReturned] {

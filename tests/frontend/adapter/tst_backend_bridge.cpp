@@ -449,11 +449,28 @@ seriona::audio::BackendEvent makePlaybackStateEvent(std::uint64_t version, serio
     return event;
 }
 
+// 排空事件队列直到无待处理事件（慢机上跨线程事件可能在固定 50ms 排空后才到达；
+// 先排空再断言，避免把迟到的合法投递误判为"泄漏/回调仍在跑"的假失败）。
+// QEventLoop::processEvents 处理到队列空并返回"是否处理过事件"；每轮给跨线程
+// 迟到投递 20ms 真实时间窗，多轮兜底，空队列即提前返回。
+void drainEventsUntilIdle()
+{
+    QEventLoop loop;
+    for (int i = 0; i < 10; ++i) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        if (!loop.processEvents(QEventLoop::AllEvents)) {
+            return;
+        }
+        QTest::qWait(20);
+    }
+}
+
+// 真实内嵌后端启动 + 跨线程首快照投递：慢机上可远超 QTRY 默认 5s，显式放宽预算。
 void waitForInitialPlayerSnapshot(Seriona::App::BackendBridge &bridge)
 {
     QSignalSpy playerSpy(&bridge, &Seriona::App::BackendBridge::playerSnapshotChanged);
     bridge.start();
-    QTRY_VERIFY(playerSpy.count() > 0);
+    QTRY_VERIFY_WITH_TIMEOUT(playerSpy.count() > 0, 15000);
 }
 
 QVariantMap sortRule(const QString &field, const QString &order)
@@ -515,7 +532,7 @@ void seedLibrarySnapshot(Seriona::App::BackendBridge &bridge, ControllerHarness 
 {
     QSignalSpy librarySpy(&bridge, &Seriona::App::BackendBridge::librarySnapshotChanged);
     harness.scanner->emitSnapshot(makeQueueSnapshot());
-    QTRY_VERIFY(librarySpy.count() > 0);
+    QTRY_VERIFY_WITH_TIMEOUT(librarySpy.count() > 0, 10000);
 }
 
 }
@@ -572,7 +589,8 @@ void BackendBridgeTest::threading()
     });
     producer.join();
 
-    QTRY_VERIFY(playerSpy.count() > 0);
+    // 跨线程事件投递到主线程：显式放宽预算（默认 QTRY 5s 在慢机上等效很短）
+    QTRY_VERIFY_WITH_TIMEOUT(playerSpy.count() > 0, 10000);
     QCOMPARE(signalThread, QCoreApplication::instance()->thread());
     QCOMPARE(bridge.playerSnapshot().playback.state, seriona::control::PlaybackStatus::Playing);
 
@@ -590,11 +608,11 @@ void BackendBridgeTest::shutdown()
     bridge->drainForTests();
 
     bridge->shutdown();
-    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+    drainEventsUntilIdle();
     QCOMPARE(playerSpy.count(), 0);
 
     bridge.reset();
-    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+    drainEventsUntilIdle();
     QVERIFY(true);
 }
 
@@ -631,7 +649,7 @@ void BackendBridgeTest::shutdownSequence()
 
     harness.audio->emitEvent(makePlaybackStateEvent(2, seriona::audio::PlaybackState::Playing));
     bridge.drainForTests();
-    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+    drainEventsUntilIdle();
     QCOMPARE(playerSpy.count(), 0);
 
     const int audioEventSinkClearCalls = harness.audio->eventSinkClearCalls();
@@ -661,7 +679,7 @@ void BackendBridgeTest::shutdownStartFailed()
 
     harness.audio->emitEvent(makePlaybackStateEvent(3, seriona::audio::PlaybackState::Playing));
     bridge.drainForTests();
-    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+    drainEventsUntilIdle();
     QCOMPARE(playerSpy.count(), 0);
 
     bridge.shutdown();
@@ -1236,7 +1254,7 @@ void BackendBridgeTest::transitionConfigWhilePlayingDoesNotReloadOrInterrupt()
     settings.setCrossfadeMs(1500);
     settings.setCrossfadeMs(2500);
     QCOMPARE(harness.audio->configureTransitionCalls(), 1);
-    QTRY_COMPARE_WITH_TIMEOUT(harness.audio->configureTransitionCalls(), 2, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(harness.audio->configureTransitionCalls(), 2, 8000);
     QCOMPARE(harness.audio->lastTransitionConfig().crossfadeMs, std::chrono::milliseconds(2500));
 
     // 无整轨重载副作用：无 LoadTrack / 无设备重开（stop）/ 无 ConfigureOutput

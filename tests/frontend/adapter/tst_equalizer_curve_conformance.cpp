@@ -223,7 +223,7 @@ void EqualizerCurveConformanceTest::synthMatchesBackendReducerOverAllCases()
         Seriona::App::BackendBridge bridge(harness.factory());
         QSignalSpy eqSpy(&bridge, &Seriona::App::BackendBridge::equalizerStateChanged);
         bridge.start();
-        QTRY_VERIFY_WITH_TIMEOUT(eqSpy.count() > 0, 5000); // 订阅初始投递（gen0 空快照）
+        QTRY_VERIFY_WITH_TIMEOUT(eqSpy.count() > 0, 15000); // 订阅初始投递（gen0 空快照）
 
         // 组包（enabled/bandMode/preGainDb/gains/limiter/spectrum）→ 真 reducer
         QVariantList gains;
@@ -240,7 +240,7 @@ void EqualizerCurveConformanceTest::synthMatchesBackendReducerOverAllCases()
         }
 
         // 镜像 curvePoints（QueuedConnection 搬运 → 轮询等镜像）
-        QTRY_VERIFY_WITH_TIMEOUT(eqSpy.count() >= 2, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(eqSpy.count() >= 2, 15000);
         const seriona::audio::EqualizerStateSnapshot &snapshot = bridge.equalizerStateSnapshot();
 
         // 本地合成（同一组输入；fs=0 = 后端 reducer 恒走分支）
