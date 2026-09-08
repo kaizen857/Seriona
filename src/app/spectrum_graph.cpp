@@ -30,12 +30,15 @@ constexpr int kCurveFillAlpha = 22; // 曲线下淡填充 alpha（255·~0.09）
 constexpr double kCurveSoftWidthPx = 3.0; // 下 pass 3px
 constexpr double kCurveCoreWidthPx = 1.5; // 上 pass 1.5px 实色（伪 AA 芯线）
 
-// —— band 手柄（T9）：三角扇圆盘 + hover 放大/提亮 + 命中容差 ——
+// —— band 手柄（T9）：三角列圆盘 + hover 放大/提亮 + 命中容差 ——
+// Qt 6 场景图不再支持 DrawTriangleFan（枚举仅为兼容保留，运行时仅支持
+// Points/Lines/LineStrip/Triangles/TriangleStrip，见 QSGGeometry::DrawingMode），
+// 圆盘用显式三角形列绘制：每段 3 顶点 [中心, 环点 i, 环点 i+1]，冗余中心、无索引。
 constexpr double kHandleRadiusPx = 6.0; // 直径 12px 圆盘
 constexpr double kHandleHoverRadiusPx = 8.0; // hover/拖动放大（半径 8px）
 constexpr double kHandleHitTolerancePx = 8.0; // 命中容差 ±8px（距中心）
-constexpr int kHandleFanSegments = 18; // 三角扇段数（24 段规格带内取 18；闭合环 → 顶点 20）
-constexpr int kHandleFanVertices = kHandleFanSegments + 2; // 中心 + 环 N+1（末点=首点闭合）
+constexpr int kHandleDiscSegments = 18; // 圆盘细分段数（24 段规格带内取 18）
+constexpr int kHandleDiscVertices = kHandleDiscSegments * 3; // DrawTriangles：中心 + 环两点 × 段
 
 // —— 顶点色 uchar 0-255（ColoredPoint2D 契约，T6 spike 坑：勿传 0..1 float）——
 struct RgbaU8 {
@@ -89,17 +92,23 @@ inline void writeSegment(QSGGeometry::ColoredPoint2D *v, float x0, float y0, flo
     v[5].set(cx, cy, color.r, color.g, color.b, color.a);
 }
 
-// 写入一个闭合三角扇圆盘（DrawTriangleFan：中心 + 环 kSegments+1 点，末点=首点）。
-inline void writeDiscFan(QSGGeometry::ColoredPoint2D *v, float cx, float cy, float radius,
-                         RgbaU8 color)
+// 写入一个闭合圆盘（DrawTriangles 三角形列：每段 [中心, 环点 i, 环点 i+1]，
+// 末段环点角度 2π 与首点重合 → 自动闭合）。
+inline void writeDiscTriangles(QSGGeometry::ColoredPoint2D *v, float cx, float cy, float radius,
+                               RgbaU8 color)
 {
     constexpr double kTwoPi = 6.28318530717958647692;
-    v[0].set(cx, cy, color.r, color.g, color.b, color.a);
-    for (int i = 0; i <= kHandleFanSegments; ++i) {
-        const double angle = kTwoPi * static_cast<double>(i) / static_cast<double>(kHandleFanSegments);
-        v[i + 1].set(cx + static_cast<float>(radius * std::cos(angle)),
-                     cy + static_cast<float>(radius * std::sin(angle)),
-                     color.r, color.g, color.b, color.a);
+    for (int i = 0; i < kHandleDiscSegments; ++i) {
+        const double angle0 = kTwoPi * static_cast<double>(i) / static_cast<double>(kHandleDiscSegments);
+        const double angle1 = kTwoPi * static_cast<double>(i + 1) / static_cast<double>(kHandleDiscSegments);
+        QSGGeometry::ColoredPoint2D *tri = v + 3 * i;
+        tri[0].set(cx, cy, color.r, color.g, color.b, color.a);
+        tri[1].set(cx + static_cast<float>(radius * std::cos(angle0)),
+                   cy + static_cast<float>(radius * std::sin(angle0)),
+                   color.r, color.g, color.b, color.a);
+        tri[2].set(cx + static_cast<float>(radius * std::cos(angle1)),
+                   cy + static_cast<float>(radius * std::sin(angle1)),
+                   color.r, color.g, color.b, color.a);
     }
 }
 
@@ -758,7 +767,7 @@ void SpectrumGraph::onAnimTick()
 //   [2] 曲线淡填充 DrawTriangleStrip  2×N（N = 显示曲线点数）
 //   [3] 曲线下 pass DrawTriangles     6×(N−1)
 //   [4] 曲线上 pass DrawTriangles     6×(N−1)
-//   [5..] 手柄    DrawTriangleFan     20×k 顶点（k = 手柄数，hover/拖动放大提亮）
+//   [5..] 手柄    DrawTriangles   54×k 顶点（k = 手柄数，18 段×3 顶点；hover/拖动放大提亮）
 // 曲线显示源（本地包络通道）共用同一几何路径：仅顶点数据源固定（x 轴同公式）。
 // spectrumBarsVisible=false 时柱/峰节点写零面积退化几何（节点数/组合签名不变，
 // 见柱节注释；T10 频谱开关联动）。
@@ -902,16 +911,16 @@ QSGNode *SpectrumGraph::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
         const RgbaU8 handleHoverRgba = toRgbaU8(m_handleHoverColor);
         for (int i = 0; i < handleCountNow; ++i) {
             QSGGeometryNode *node = ensureGeometryNode(root, handleBase + i,
-                                                       kHandleFanVertices, QSGGeometry::DrawTriangleFan);
+                                                       kHandleDiscVertices, QSGGeometry::DrawTriangles);
             QSGGeometry::ColoredPoint2D *v = node->geometry()->vertexDataAsColoredPoint2D();
             const bool emphasized = (i == m_hoverBandIndex || i == m_dragBandIndex);
             const double radius = emphasized ? kHandleHoverRadiusPx : kHandleRadiusPx;
             const double centerHz = eqIsoBandCenterHz(m_bandMode, i);
             const double gain = (m_dragBandIndex == i) ? m_dragGainDb
                                                        : storedBandGain(m_bandMode, i);
-            writeDiscFan(v, static_cast<float>(freqToX(centerHz)),
-                         static_cast<float>(dbToY(gain)), static_cast<float>(radius),
-                         emphasized ? handleHoverRgba : handleRgba);
+            writeDiscTriangles(v, static_cast<float>(freqToX(centerHz)),
+                               static_cast<float>(dbToY(gain)), static_cast<float>(radius),
+                               emphasized ? handleHoverRgba : handleRgba);
             node->geometry()->markVertexDataDirty();
             node->markDirty(QSGNode::DirtyGeometry);
         }
