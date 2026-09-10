@@ -119,10 +119,12 @@ Item {
     TrackDetailWindow {
         id: detailWindow
         appFacade: root.appFacade
-        // 注入主窗口作为 transientParent：详情窗是独立 Window，自身无法用 Window.window
-        // （仅 Item 可用）。固定"只在主窗口之上、不压过其它应用"的对话框语义
-        // （与同文件的 ConfirmDeleteDialog 一致）。
-        transientParent: root.Window.window
+        // transientParent: null：显式解除嵌套 Window 的自动 transient 关联（Qt 会沿对象父链
+        // 自动取到主窗口并设置 transientParent，Windows 下即"所有者窗口"语义——永远压在
+        // 主窗口之上）。详情窗按独立窗口运行：主窗口移到其上时可正常覆盖（不再被其挡住）。
+        // （同文件的 ConfirmDeleteDialog 保持 transientParent 注入：删除确认是对话框，
+        // 需维持"只在主窗口之上"的对话框语义。）
+        transientParent: null
     }
 }
 

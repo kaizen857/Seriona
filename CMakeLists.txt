@@ -686,6 +686,7 @@ add_test(NAME seriona_frontend_settings_transition_startup_apply COMMAND seriona
         add_test(NAME seriona_frontend_qml_startup_property_contract COMMAND seriona_frontend_ui_only_handler_policy_tests qmlStartupDoesNotCallQtApplicationPropertyFunction)
         add_test(NAME seriona_frontend_qml_layout COMMAND seriona_frontend_ui_only_handler_policy_tests qmlLayoutSourceContractsStayStable)
         add_test(NAME seriona_frontend_ui_only_equalizer_contract COMMAND seriona_frontend_ui_only_handler_policy_tests equalizerWindowSourceContractsStayStable)
+        add_test(NAME seriona_frontend_ui_only_aux_window_layering COMMAND seriona_frontend_ui_only_handler_policy_tests auxiliaryWindowLayeringContractsStayStable)
 
         add_executable(seriona_frontend_library_select_track_tests
             tests/frontend/adapter/tst_library_select_track.cpp

@@ -197,6 +197,10 @@ Window {
     onClosing: function (closeEvent) {
         shutdownRequested = true;
         appFacade.shutdown();
+        // 三个辅助窗口(设置/均衡器/歌曲详情)已显式解除 transientParent,不再参与
+        // QGuiApplication 的 lastWindowClosed 判定(带 transient parent 的窗口不参与);
+        // 主窗口关闭时主动退出应用,保持"关主窗即退出"的既有语义。
+        Qt.quit();
     }
 
     Timer {
@@ -385,6 +389,11 @@ Window {
                         onExitRequested: window.requestApplicationClose()
 
                         onOpenSettingsRequested: {
+                            // 首次打开时居中(一次性定位,不跟随主窗口)
+                            if (!settingsWindow.visible) {
+                                settingsWindow.x = window.x + (window.width - settingsWindow.width) / 2;
+                                settingsWindow.y = window.y + (window.height - settingsWindow.height) / 2;
+                            }
                             settingsWindow.show();
                         }
 
@@ -537,14 +546,21 @@ Window {
     SettingsWindow {
         id: settingsWindow
         appFacade: window.appFacade
-        x: window.x + (window.width - width) / 2
-        y: window.y + (window.height - height) / 2
+        // x/y 坐标绑定已移除:绑定会在主窗口移动时把设置窗瞬移回"打开时的相对位置"并跟随移动
+        // (与均衡器窗口同因)。首次打开居中逻辑见 openSettings 处理器。
+        // transientParent: null:显式解除嵌套 Window 的自动 transient 关联(Qt 会沿对象父链
+        // 自动设置 transientParent,Windows 下即"所有者窗口"语义——永远压在主窗口之上)。
+        // 解除后设置窗为独立窗口:主窗口移动到其上时可正常覆盖(不再被设置窗挡住)。
+        transientParent: null
     }
 
     EqualizerWindow {
         id: equalizerWindow
         // x/y 坐标绑定已移除:避免窗口跟随主窗口瞬移(Wayland transient 语义问题)
         // 首次打开居中逻辑见 openEqualizer 处理器
+        // transientParent: null:显式解除嵌套 Window 的自动 transient 关联(与设置窗同策),
+        // 使主窗口可以覆盖均衡器窗口(不再被其挡住)。
+        transientParent: null
     }
 
     Timer {
@@ -579,7 +595,17 @@ Window {
                 smokeTimer.start();
             } else if (step === 1) {
                 if (settingsWindow.visible) {
-                    console.log("[smoke] settingsWindow opened");
+                    console.log("[smoke] settingsWindow opened"
+                            + " transientParentNull=" + (settingsWindow.transientParent === null));
+                    // 位置独立性断言:主窗口移动不应带动设置窗(修复前 x/y 绑定会瞬移跟随)
+                    var settingsXBefore = settingsWindow.x;
+                    var windowXBefore = window.x;
+                    window.x = windowXBefore + 40;
+                    console.log("[smoke] settingsWindow positionLocked="
+                            + (settingsWindow.x === settingsXBefore)
+                            + " windowMoved=" + (window.x !== windowXBefore)
+                            + " before=" + settingsXBefore + " after=" + settingsWindow.x);
+                    window.x = windowXBefore;
                     settingsWindow.close();
                 }
                 mainContent.openEqualizerRequested();
@@ -588,7 +614,17 @@ Window {
                 smokeTimer.start();
             } else if (step === 2) {
                 if (equalizerWindow.visible) {
-                    console.log("[smoke] equalizerWindow opened");
+                    console.log("[smoke] equalizerWindow opened"
+                            + " transientParentNull=" + (equalizerWindow.transientParent === null));
+                    // 位置独立性断言:主窗口移动不应带动均衡器窗(与设置窗同策回归锁)
+                    var eqXBefore = equalizerWindow.x;
+                    var windowXBefore2 = window.x;
+                    window.x = windowXBefore2 + 40;
+                    console.log("[smoke] equalizerWindow positionLocked="
+                            + (equalizerWindow.x === eqXBefore)
+                            + " windowMoved=" + (window.x !== windowXBefore2)
+                            + " before=" + eqXBefore + " after=" + equalizerWindow.x);
+                    window.x = windowXBefore2;
                     // 既有开窗断言保持；窗口暂不关闭，进入窗内交互步骤（F2.6）
                     step = 3;
                     smokeTimer.interval = 100;
@@ -888,7 +924,21 @@ Window {
                             + " noReopen=" + (picker2 ? picker2.visible === false : false));
                     equalizerWindow.close();
                     console.log("[smoke] equalizerWindow closed after eq graph state machine + T11 storm + preset picker toggle");
+                    // 主窗关闭链路回归（step14/15）：重开设置窗后关闭主窗——解除 transient 后
+                    // 辅助窗不参与 lastWindowClosed 判定，应用退出依赖关闭链路的显式退出。
+                    step = 14;
+                    smokeTimer.interval = 200;
+                    smokeTimer.start();
                 }
+            } else if (step === 14) {
+                // 重开设置窗（保持打开），随后关闭主窗验证退出链路
+                mainContent.openSettingsRequested();
+                step = 15;
+                smokeTimer.interval = 200;
+                smokeTimer.start();
+            } else if (step === 15) {
+                console.log("[smoke] main window close requested with settings open=" + settingsWindow.visible);
+                window.requestApplicationClose();
             }
         }
     }

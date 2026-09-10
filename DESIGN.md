@@ -161,7 +161,7 @@ Windows x64 发布由根目录 `build.bat` 调用 `scripts/build-package-windows
 
 ### 5.8 QML 视图层
 
-- **Main.qml**：360×720 无边框透明窗口（`OpacityMask` 圆角 24，最大化 0）；全局拖拽 + 标题栏 + 封面拖拽（`startSystemMove`）、八向缩放（`startSystemResize`，Maximized 时隐藏）；侧栏 dock（窗口宽 ≥ 800）/overlay 双模式；`smokeScenario` 初始属性在 `Component.onCompleted` 应用；关闭链路 `close() → onClosing → appFacade.shutdown()`。
+- **Main.qml**：360×720 无边框透明窗口（`OpacityMask` 圆角 24，最大化 0）；全局拖拽 + 标题栏 + 封面拖拽（`startSystemMove`）、八向缩放（`startSystemResize`，Maximized 时隐藏）；侧栏 dock（窗口宽 ≥ 800）/overlay 双模式；`smokeScenario` 初始属性在 `Component.onCompleted` 应用；关闭链路 `close() → onClosing → appFacade.shutdown() → Qt.quit()`（设置/均衡器/详情为独立窗口、不参与 lastWindowClosed 判定，主窗关闭时显式退出）。
 - **MainContent.qml**（1853 行）：播放/歌词双 state 共享元素迁移（400ms InOutCubic）；播放控制条、音量、进度（波形拖拽 seek、歌词态线性滑杆）、封面三层回退（全图 `coverArtworkSource` → 缩略图 `coverThumbnailSource` → 占位符"🎵"，逐层降级）、设置 BubbleMenu（"设置"→`openSettingsRequested` 打开 SettingsWindow，歌词分隔符等真实设置项在窗口内；"均衡器"→`openEqualizerRequested` 打开 EqualizerWindow；"关于 Seriona"→AboutOverlay 真实关于界面；退出→真实关闭）、通知 toast（3200ms 自动隐藏）。
 - **StartupView.qml**：启动页；恢复播放列表、添加文件夹（`Qt.labs.platform.FolderDialog` → `appFacade.scanLibrary`）。
 - **Sidebar.qml**：曲库主交互面（树列表带滚动条、表头空白区可拖拽移动窗口、搜索、排序对话框入口、定位当前歌曲 FAB、扫描状态 banner）；delegate 右键菜单（`TrackContextMenu`：详情/下一首播放/删除，删除经 `ConfirmDeleteDialog` 确认）、顶部队列视图（`QueueView`：`PlayNextTrack`/`RemoveFromQueue`）、头部按钮悬停提示（`SharedToolTip`）。文件夹浏览采用 **StackView 页面栈 + FolderPage 实例缓存**：`folderStack` 承载第 1 层及更深文件夹，根视图 `playlistView` 常驻栈外（depth 0 时可见）；`folderPages` 按 folderNodeId 缓存 FolderPage 实例，push/pop 一律传实例、pop/clear 不销毁页面，每层滚动位置与动画状态零成本保留；导航配对调用固定"先栈后 controller"，controller 是导航状态唯一真源，幂等收敛处理器把栈镜像到 controller（重扫/定位等非配对路径自动收敛）；返回根视图时对视口可见 delegate 执行错落滑入。
