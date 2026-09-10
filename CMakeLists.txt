@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.27)
 
 # 版本号由 CI 注入（-DSERIONA_VERSION=1.0.0）；本地默认 0.1
 set(SERIONA_VERSION "0.1" CACHE STRING "Seriona release version (overridden by CI)")

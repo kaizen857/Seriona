@@ -20,7 +20,7 @@ Seriona 是一个 Qt Quick 桌面音乐播放器的**前端**。它本身不实�
 | 语言 | C++23（根 CMake 显式设置 `CMAKE_CXX_STANDARD 23` 并要求该标准） |
 | 框架 | Qt 6.8+（`qt_standard_project_setup(REQUIRES 6.8)`） |
 | Qt 模块 | Quick、Concurrent、QuickDialogs2、Widgets；C++ Qt Test 测试另需 `Qt6::Test`，无 Qt Quick Test 入口 |
-| 构建系统 | mock-only 前端最低 CMake 3.16；默认后端集成与 Windows 发布要求 3.20+；日常开发沿用现有生成器，Windows 发布使用 Visual Studio 17 2022 x64 |
+| 构建系统 | mock-only 前端最低 CMake 3.27；默认后端集成与 Windows 发布要求 3.27+；日常开发沿用现有生成器，Windows 发布使用 Visual Studio 17 2022 x64 |
 | QML 效果 | 实际使用 `Qt5Compat.GraphicalEffects`（ColorOverlay/RectangularGlow/OpacityMask/DropShadow）；`MainContent.qml` 虽导入 `QtQuick.Effects` 但未使用 |
 | 语言服务 | `.clangd` 读 `build/`（相对）；`.qmlls.ini` 硬编码 `build/` 绝对路径 |
 
