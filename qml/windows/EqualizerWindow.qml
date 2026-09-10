@@ -645,7 +645,7 @@ Window {
                         minWidth: 72
                         labelColor: Theme.textSecondary
                         Layout.alignment: Qt.AlignVCenter
-                        onClicked: root.openPresetPicker()
+                        onClicked: root.togglePresetPicker()
                     }
 
                     // 保存当前设置为用户预设
@@ -912,10 +912,45 @@ Window {
         height: Math.min(presetMenuList.contentHeight + 40, 320)
         padding: 0
         margins: 0
-        closePolicy: Popup.CloseOnPressOutside | Popup.CloseOnEscape
+        // 关闭策略：CloseOnPressOutsideParent —— 预设按钮不计入「外部」，按下按钮
+        // 不会先触发关闭，开/关统一由按钮 clicked 的 togglePresetPicker 决定，
+        // 消除「按下先关、松开重开」的闪烁（Qt 官方 Menu 文档记载的模式；
+        // ComboBox / MenuBarItem / Kirigami 同款）。按钮之外的区域按下即关闭。
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
         modal: false
 
-        // 打开前由 openPresetPicker 定位
+        // parent = 预设按钮：CloseOnPressOutsideParent 以 parentItem 的几何判定
+        // 「外部」；定位坐标因此为按钮局部坐标（togglePresetPicker 内换算）。
+        // 打开时弹层仍自挂所属窗口 Overlay 渲染（parent 只影响定位/关闭判定）。
+        parent: presetApplyButton
+
+        // 清除 Basic 样式 Popup 的默认背景（不透明 Rectangle，色值 palette.window，
+        // 浅色主题下为白）：它会在圆角 contentItem 的四角露出白色方形残留。
+        background: null
+
+        // 进出场过渡（Qt Quick Controls 内建 enter/exit）：与播放界面设置菜单
+        // （BubbleMenu）同款 150ms 透明度渐变——入场 OutCubic 减速、退场 InCubic
+        // 加速（Theme 令牌）。退场期间 visible 保持 true（opened 先转 false），
+        // 隐藏发生在退场结束；from/to 必须写全（缺 from 首帧无动画）。
+        enter: Transition {
+            NumberAnimation {
+                property: "opacity"
+                from: 0.0
+                to: 1.0
+                duration: Theme.animationFast
+                easing.type: Theme.easingDecelerate
+            }
+        }
+        exit: Transition {
+            NumberAnimation {
+                property: "opacity"
+                from: 1.0
+                to: 0.0
+                duration: Theme.animationFast
+                easing.type: Theme.easingAccelerate
+            }
+        }
+
         contentItem: Rectangle {
             color: Theme.raisedSurfaceColor
             radius: Theme.radiusMedium
@@ -971,27 +1006,37 @@ Window {
         }
     }
 
-    function openPresetPicker() {
+    // 预设按钮点击 = 打开/关闭切换（修复：已打开时再点按钮不得「瞬间消失又出现」）。
+    // 关闭策略为 CloseOnPressOutsideParent（预设按钮不计入「外部」，见 presetMenu）
+    // → 按下按钮不会先触发关闭；松开时的 clicked 读到稳定状态：visible（含进出场
+    // 过渡期）→ close()（幂等，不重开），否则 open()。与 BubbleMenu.toggle 同款
+    // visible 判据，无时间窗（对照：时间戳阈值方案在「按住超过退出时长再松开」时
+    // 会误重开）。
+    function togglePresetPicker() {
         if (!root.settings)
             return;
+        if (presetMenu.visible) {
+            presetMenu.close();
+            return;
+        }
         if (!root.settings.eqPresetList.length) {
             root.openManagePresets(); // 空列表（异常态）→ 引导到管理新建
             return;
         }
-        // 弹层不手动改 parent：Qt Quick Controls 的 Popup 打开时自挂所属窗口的
-        // Overlay（手设普通 Item parent 会导致 open() 不显示）。坐标空间 = Overlay
-        // = 窗口 contentItem（原点一致），故直接映射到 contentItem 定位。
-        // 弹层高度在打开后才按列表行数收敛，这里用行数估算高度先定位（上弹），
-        // 超窗高时改向下弹；delegate 恒 32 高，估算即实际。
+        // 定位：先按窗口坐标算目标位置（弹层右对齐按钮、默认在按钮上方，空间不足
+        // 改下方），再换算为按钮局部坐标（presetMenu.parent = presetApplyButton）。
+        // 弹层高度在打开后才按列表行数收敛，这里用行数估算高度先定位（上弹）；
+        // delegate 恒 32 高，估算即实际。
         var hostItem = root.contentItem ? root.contentItem : contentRect;
         var estH = Math.min(root.settings.eqPresetList.length * 32 + 40, 320);
         var pos = presetApplyButton.mapToItem(hostItem, 0, 0);
-        var px = pos.x + presetApplyButton.width - presetMenu.width;
+        var px = Math.max(4, Math.min(pos.x + presetApplyButton.width - presetMenu.width,
+                                      hostItem.width - presetMenu.width - 4));
         var py = pos.y - estH - Theme.spacing4;
         if (py < 4)
             py = pos.y + presetApplyButton.height + Theme.spacing4; // 上方不够，改下方
-        presetMenu.x = Math.max(4, Math.min(px, hostItem.width - presetMenu.width - 4));
-        presetMenu.y = Math.max(4, py);
+        presetMenu.x = px - pos.x;
+        presetMenu.y = py - pos.y;
         presetMenu.open();
     }
 

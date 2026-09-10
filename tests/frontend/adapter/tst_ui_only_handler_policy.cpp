@@ -441,10 +441,28 @@ void UiOnlyHandlerPolicyTest::equalizerWindowSourceContractsStayStable()
         "settings: root.settings",
         "function openManagePresets()"
     });
+    // —— R6 预设弹层修复契约：二次点击只关闭不重开（CloseOnPressOutsideParent +
+    //    visible 判据）、圆角白底清除（background:null）、与设置菜单同款进出场过渡 ——
+    expectContainsAll(eqWindowQml, {
+        "function togglePresetPicker()",
+        "if (presetMenu.visible)",
+        "closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent",
+        "parent: presetApplyButton",
+        "background: null",
+        "enter: Transition",
+        "exit: Transition"
+    });
     expectContainsAll(presetDialogQml, {
         "objectName: \"equalizerPresetDialog\"",
         "objectName: \"equalizerPresetDialogClose\"",
         "closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside"
+    });
+    // —— R6 预设行可见性修复契约：预设行必须带 kind 标记（delegate 的
+    //    visible: modelData.kind === "preset" 判定依赖它；C++ 源行无该字段）——
+    expectContainsAll(presetDialogQml, {
+        "function makePresetRow(item)",
+        "Object.assign({ kind: \"preset\" }, item)",
+        "modelData.kind === \"preset\""
     });
 
     // —— 防回归：EQ 域无占位反馈/无后端命令直发；竖条根 value 纯外部可写（B1）——

@@ -643,8 +643,19 @@ Window {
                         var dialog = smokeFindByObjectName(equalizerWindow, "equalizerPresetDialog");
                         if (dialog && dialog.visible)
                             console.log("[smoke] eq presetDialog visible");
-                        if (dialog)
+                        if (dialog) {
+                            // R6 断言：预设行视图模型必须带 kind 标记（delegate 的
+                            // visible: modelData.kind === "preset" 判定依赖它；
+                            // 修复前为 undefined → 行实例存在但不可见）
+                            var presetRows = dialog.sectionedList;
+                            var presetKinds = "";
+                            for (var ri = 0; ri < Math.min(presetRows.length, 4); ++ri)
+                                presetKinds += (ri > 0 ? "," : "") + presetRows[ri].kind;
+                            console.log("[smoke] eq presetDialog rows=" + presetRows.length
+                                    + " kinds=" + presetKinds
+                                    + " firstPresetKind=" + (presetRows.length > 1 ? presetRows[1].kind : "(none)"));
                             dialog.close();
+                        }
                     }
                     // —— T10 图谱区断言起点：频谱刻度 4 档文本存在 + 显式置 OFF 初态 ——
                     // 刻度标签为静态 QML 覆盖层（eqScaleLabel*；0 顶 → -60 底，dbFsToY 定位）。
@@ -825,7 +836,7 @@ Window {
                 }
             } else if (step === 11) {
                 if (equalizerWindow.visible) {
-                    // —— T11 风暴总结（终态 bandMode=10：腿 5 末点 mode10）+ 关窗 ——
+                    // —— T11 风暴总结（终态 bandMode=10：腿 5 末点 mode10）——
                     var gF = smokeFindByObjectName(equalizerWindow, "eqGraphCanvas");
                     var hcF = gF ? gF.handleCount() : -1;
                     console.log("[smoke] eq storm summary legs=6 roundTrips=3 stormOk="
@@ -834,8 +845,49 @@ Window {
                             + " finalHandleCount=" + hcF
                             + " binCountOk=" + (gF !== null && gF.binCount === 120)
                             + " barsStillHidden=" + (gF ? gF.spectrumBarsVisible === false : false));
+                    // —— R6 预设弹层回归：打开（step12 断言）→ 二次点击关闭且不重开（step13）——
+                    var applyBtn = smokeFindByObjectName(equalizerWindow, "eqPresetApplyButton");
+                    if (applyBtn) {
+                        applyBtn.click(); // 打开（enter 过渡）
+                        console.log("[smoke] eq presetPicker click#1 (open)");
+                    } else {
+                        console.log("[smoke] eq presetPicker applyButton missing");
+                    }
+                    step = 12;
+                    smokeTimer.interval = 200;
+                    smokeTimer.start();
+                }
+            } else if (step === 12) {
+                if (equalizerWindow.visible) {
+                    // R6 断言 A：打开态 visible + 背景已清除（background:null 或全透明）
+                    // + enter/exit 过渡存在（与设置菜单同款动画接线）。
+                    var picker = smokeFindByObjectName(equalizerWindow, "eqPresetPickerMenu");
+                    var pickerBg = picker ? picker.background : undefined;
+                    var bgOk = picker !== null
+                            && (pickerBg === null || pickerBg === undefined
+                                || (pickerBg.color !== undefined && pickerBg.color.a === 0));
+                    console.log("[smoke] eq presetPicker afterOpen visible=" + (picker ? picker.visible : "(null)")
+                            + " bgOk=" + bgOk
+                            + " hasEnter=" + (picker ? picker.enter !== null && picker.enter !== undefined : false)
+                            + " hasExit=" + (picker ? picker.exit !== null && picker.exit !== undefined : false));
+                    var applyBtn2 = smokeFindByObjectName(equalizerWindow, "eqPresetApplyButton");
+                    if (applyBtn2) {
+                        applyBtn2.click(); // 已打开时再点：应关闭且不重开
+                        console.log("[smoke] eq presetPicker click#2 (toggle close)");
+                    }
+                    step = 13;
+                    smokeTimer.interval = 350;
+                    smokeTimer.start();
+                }
+            } else if (step === 13) {
+                if (equalizerWindow.visible) {
+                    // R6 断言 B：退场过渡结束（150ms）后弹层隐藏且未重开（noReopen）。
+                    var picker2 = smokeFindByObjectName(equalizerWindow, "eqPresetPickerMenu");
+                    console.log("[smoke] eq presetPicker afterSecondClick visible="
+                            + (picker2 ? picker2.visible : "(null)")
+                            + " noReopen=" + (picker2 ? picker2.visible === false : false));
                     equalizerWindow.close();
-                    console.log("[smoke] equalizerWindow closed after eq graph state machine + T11 storm");
+                    console.log("[smoke] equalizerWindow closed after eq graph state machine + T11 storm + preset picker toggle");
                 }
             }
         }
