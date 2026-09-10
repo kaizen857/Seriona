@@ -9,8 +9,11 @@
       "default-features": false,
       "features": [
         "avcodec",
+        "avdevice",
         "avfilter",
         "avformat",
+        "ffmpeg",
+        "mp3lame",
         "swresample",
         "swscale",
         "zlib"

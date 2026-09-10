@@ -57,3 +57,10 @@
 - SVG 资源使用绝对 QRC 路径，例如 `qrc:/qt/qml/Seriona/qml/assets/play.svg`；新增图标沿用该模式。
 - `qml/Main.qml` 是无边框窗口；标题栏、遮罩、边框改动必须保住 `window.startSystemMove()` 拖拽和 `window.startSystemResize(...)` 八向缩放。
 - 项目以 `Qt5Compat.GraphicalEffects` 为主（Main/MainContent/DynamicBackground/Sidebar/StyleButton/QueueView/PlaylistDelegate/TrackDetailWindow 实际使用）；`QtQuick.Effects` 仅 MainContent.qml 导入、当前无 MultiEffect 用法。改图形效果前先看当前文件依赖哪套。
+
+## 跨平台兼容性（Windows / Linux / macOS）
+
+- 应用目标平台是 Windows / Linux / macOS 三端，代码编写与功能开发必须保证三端可配置、可构建、可运行（三端产物形态：Windows zip / Linux AppImage+deb+rpm / macOS app zip），属硬约束而非发布前适配；平台差异统一走 Qt 跨平台 API（路径、编码、进程/窗口行为），禁止单平台假设进入共享代码。
+- 平台差异只允许出现在既有平台边界内：`scripts/` 三平台脚本（Windows `build-package-windows.ps1`、Linux `install-linux.sh`/`uninstall-linux.sh`、macOS `bundle-macos-dylibs.py`）、`.github/workflows/release.yml` 三平台构建矩阵、`src/main.cpp` 的图标与 `setDesktopFileName` 设置（覆盖 Windows 运行时与 Linux X11/Wayland 任务栏）。新增平台行为必须并入这些入口或建立等价抽象，不在 QML 与共享 C++ 中散落裸 `#ifdef _WIN32`、POSIX-only 或 Windows-only 调用。
+- 引入新依赖或新平台能力前先确认三端供给：Qt 6.8+ 在 Windows（msvc2022_64 kit）、macOS（clang_64 kit）、Linux（官方二进制或发行版包）均可用，依赖经 `vcpkg.json` manifest（Windows 打包链）与各平台包管理器覆盖三端；无法覆盖的能力经 CMake 条件关闭或 mock-only 降级，不得阻塞其它平台构建。
+- 改动涉及平台行为时，至少按另一平台的文档化入口验证（offscreen smoke / 打包脚本 / CI job），无法本机验证时在提交信息中说明受影响面与验证方式。
