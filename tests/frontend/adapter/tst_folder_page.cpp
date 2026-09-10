@@ -2,9 +2,10 @@
 // 断言列表：
 // 1. 无 anchors 且 width/height 跟随 parent
 // 2. 注入投影模型后 ListView 渲染子项
-// 3. 滚动位置保持（实例存活期间 contentY 不变）
+// 3. 滚动位置保持（实例存活期间 contentY 不变）+ 库刷新（投影 reset）后滚动锚点保留
 // 4. 错落滑入动画幂等（连续激活两次 opacity 终值 1.0, translate x 终值 0）
 // 5. Y 竞态回归锁：动画前后 delegate.y 恒定无跳变
+// 6. 锚点条目消失时回退到钳制后的旧 contentY（不无理由跳顶）
 
 #include "app_facade.h"
 #include "library_folder_projection_model.h"
@@ -160,6 +161,7 @@ private slots:
     void componentLoadingAndDimensions();
     void modelRendering();
     void scrollPositionRetention();
+    void scrollAnchorFallbackWhenAnchorMissing();
     void animationIdempotency();
     void yRaceRegressionLock();
 
@@ -172,16 +174,16 @@ private:
     std::unique_ptr<Seriona::App::AppFacade> facade;
     Seriona::App::LibraryController libraryController;
 
-    void applyTreeSnapshot(int childCount = 20);
+    void applyTreeSnapshot(int childCount = 20, const std::string &nodeIdPrefix = "child_");
 };
 
-void FolderPageTest::applyTreeSnapshot(int childCount)
+void FolderPageTest::applyTreeSnapshot(int childCount, const std::string &nodeIdPrefix)
 {
     std::vector<std::string> childIds;
     std::vector<PlaylistNode> nodes;
 
     for (int i = 0; i < childCount; ++i) {
-        std::string cId = "child_" + std::to_string(i);
+        std::string cId = nodeIdPrefix + std::to_string(i);
         childIds.push_back(cId);
         nodes.push_back(makeTrack(cId, "track_id_" + std::to_string(i),
                                   "Track " + std::to_string(i), "Title " + std::to_string(i),
@@ -265,8 +267,15 @@ void FolderPageTest::modelRendering()
 
 void FolderPageTest::scrollPositionRetention()
 {
+    applyTreeSnapshot(25);
+
+    auto *projection = libraryController.projectionModelForNodeId(QStringLiteral("test_folder_node"));
+    QVERIFY(projection != nullptr);
+    folderPage->setProperty("projectionModel", QVariant::fromValue(projection));
+
     auto *listView = folderPage->findChild<QQuickItem *>(QStringLiteral("folderListView"));
     QVERIFY(listView != nullptr);
+    QTRY_COMPARE(listView->property("count").toInt(), 25);
 
     // 强制布局
     QMetaObject::invokeMethod(listView, "forceLayout");
@@ -280,6 +289,64 @@ void FolderPageTest::scrollPositionRetention()
     // 组件未销毁，反复读取 contentY 保持
     QTest::qWait(100);
     QCOMPARE(listView->property("contentY").toReal(), 150.0);
+
+    // 模拟外部移动/重命名文件 → watcher 触发库刷新（快照重建 → 投影 reset）：
+    // 顶部可见条目与条目内偏移必须保留。
+    int anchorIndex = -1;
+    QMetaObject::invokeMethod(listView, "indexAt", Q_RETURN_ARG(int, anchorIndex),
+                              Q_ARG(qreal, 0.0), Q_ARG(qreal, 151.0));
+    QVERIFY2(anchorIndex >= 0, "no visible anchor row at contentY=150");
+    QQuickItem *anchorItem = nullptr;
+    QMetaObject::invokeMethod(listView, "itemAtIndex", Q_RETURN_ARG(QQuickItem *, anchorItem),
+                              Q_ARG(int, anchorIndex));
+    QVERIFY(anchorItem != nullptr);
+    const QString anchorNodeId = anchorItem->property("nodeId").toString();
+    QVERIFY(!anchorNodeId.isEmpty());
+    const qreal anchorOffset = listView->property("contentY").toReal() - anchorItem->y();
+
+    applyTreeSnapshot(25);
+
+    QTRY_COMPARE(listView->property("count").toInt(), 25);
+    QTRY_VERIFY_WITH_TIMEOUT(listView->property("contentY").toReal() > 100.0, 5000);
+    int restoredIndex = -1;
+    QMetaObject::invokeMethod(listView, "indexAt", Q_RETURN_ARG(int, restoredIndex),
+                              Q_ARG(qreal, 0.0),
+                              Q_ARG(qreal, listView->property("contentY").toReal() + 1.0));
+    QVERIFY2(restoredIndex >= 0, "no visible row after refresh restore");
+    QQuickItem *restoredItem = nullptr;
+    QMetaObject::invokeMethod(listView, "itemAtIndex", Q_RETURN_ARG(QQuickItem *, restoredItem),
+                              Q_ARG(int, restoredIndex));
+    QVERIFY(restoredItem != nullptr);
+    QCOMPARE(restoredItem->property("nodeId").toString(), anchorNodeId);
+    QVERIFY2(qAbs((listView->property("contentY").toReal() - restoredItem->y()) - anchorOffset) < 1.0,
+             "intra-item scroll offset not retained");
+}
+
+void FolderPageTest::scrollAnchorFallbackWhenAnchorMissing()
+{
+    applyTreeSnapshot(25);
+
+    auto *projection = libraryController.projectionModelForNodeId(QStringLiteral("test_folder_node"));
+    QVERIFY(projection != nullptr);
+    folderPage->setProperty("projectionModel", QVariant::fromValue(projection));
+
+    auto *listView = folderPage->findChild<QQuickItem *>(QStringLiteral("folderListView"));
+    QVERIFY(listView != nullptr);
+    QTRY_COMPARE(listView->property("count").toInt(), 25);
+
+    QMetaObject::invokeMethod(listView, "forceLayout");
+    QTest::qWait(50);
+    listView->setProperty("contentY", 150.0);
+    QTest::qWait(50);
+    const qreal savedContentY = listView->property("contentY").toReal();
+    QCOMPARE(savedContentY, 150.0);
+
+    // 全部条目换 id（模拟锚点文件被重命名/移动后不在新投影内）：
+    // 内容总量不变 → 必须回退到钳制后的旧 contentY，而非跳回顶部。
+    applyTreeSnapshot(25, "renamed_child_");
+
+    QTRY_COMPARE(listView->property("count").toInt(), 25);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(listView->property("contentY").toReal() - savedContentY) < 1.0, 5000);
 }
 
 void FolderPageTest::animationIdempotency()

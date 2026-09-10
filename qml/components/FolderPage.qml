@@ -71,4 +71,8 @@ Item {
 
         ScrollBar.vertical: StyledScrollBar {}
     }
+
+    ScrollAnchorPreserver {
+        view: folderListView
+    }
 }

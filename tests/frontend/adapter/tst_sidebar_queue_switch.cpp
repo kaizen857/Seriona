@@ -211,6 +211,7 @@ private slots:
     void queueContextMenuItemVisibleOnlyInQueueContext();
     void scrollRetentionAcrossFolderNavigation();
     void rootScrollRetentionRegression();
+    void rootScrollAnchorRetentionAcrossTreeRefresh();
     void emptyFolderAndRootBackNoOp();
     void backToRootClearsStack();
     void rootSlideInAnimationOnBack();
@@ -924,6 +925,48 @@ void SidebarQueueSwitchTest::rootScrollRetentionRegression()
     QTRY_COMPARE(stackView()->property("depth").toInt(), 0);
     QVERIFY(stackView()->property("currentItem").isNull());
     QCOMPARE(rootView->property("contentY").toReal(), rootY);
+}
+
+// 库刷新（外部移动/重命名文件 → watcher 触发快照重建 → 根投影 reset）后
+// 根视图滚动锚点保留：顶部可见条目 nodeId 与条目内偏移不变。
+void SidebarQueueSwitchTest::rootScrollAnchorRetentionAcrossTreeRefresh()
+{
+    resetNavigationState();
+    applyRichTree();
+
+    QQuickItem *rootView = qobject_cast<QQuickItem *>(findItem(QStringLiteral("playlistView")));
+    QVERIFY(rootView != nullptr);
+    QTRY_VERIFY(rootView->property("count").toInt() >= 11);
+
+    rootView->setProperty("contentY", 150.0);
+    QTest::qWait(40);
+    const qreal anchorContentY = rootView->property("contentY").toReal();
+    QVERIFY2(anchorContentY > 0.0, "root view must be scrollable in this tree");
+
+    int anchorIndex = -1;
+    QMetaObject::invokeMethod(rootView, "indexAt", Q_RETURN_ARG(int, anchorIndex),
+                              Q_ARG(qreal, 0.0), Q_ARG(qreal, anchorContentY + 1.0));
+    QVERIFY2(anchorIndex >= 0, "no visible anchor row at contentY=150");
+    QQuickItem *anchorItem = itemAt(rootView, anchorIndex);
+    QVERIFY(anchorItem != nullptr);
+    const QString anchorNodeId = anchorItem->property("nodeId").toString();
+    QVERIFY(!anchorNodeId.isEmpty());
+    const qreal anchorOffset = anchorContentY - anchorItem->y();
+
+    applyRichTree();
+
+    QTRY_VERIFY(rootView->property("count").toInt() >= 11);
+    QTRY_VERIFY_WITH_TIMEOUT(rootView->property("contentY").toReal() > 100.0, 5000);
+    int restoredIndex = -1;
+    QMetaObject::invokeMethod(rootView, "indexAt", Q_RETURN_ARG(int, restoredIndex),
+                              Q_ARG(qreal, 0.0),
+                              Q_ARG(qreal, rootView->property("contentY").toReal() + 1.0));
+    QVERIFY2(restoredIndex >= 0, "no visible row after refresh restore");
+    QQuickItem *restoredItem = itemAt(rootView, restoredIndex);
+    QVERIFY(restoredItem != nullptr);
+    QCOMPARE(restoredItem->property("nodeId").toString(), anchorNodeId);
+    QVERIFY2(qAbs((rootView->property("contentY").toReal() - restoredItem->y()) - anchorOffset) < 1.0,
+             "intra-item scroll offset not retained");
 }
 
 // 空目录进入 + 根目录 back no-op（depth 不变）

@@ -852,6 +852,10 @@ Item {
                             ScrollBar.vertical: StyledScrollBar {}
                         }
 
+                        ScrollAnchorPreserver {
+                            view: playlistView
+                        }
+
                         // 第 1 层及更深层文件夹列表（StackView 页面栈承载）
                         StackView {
                             id: folderStack

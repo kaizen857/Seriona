@@ -40,7 +40,7 @@ public:
     // 投影行内的 Entry 指针（行号越界返回 nullptr）；测试与控制器只读使用。
     const Entry *entryAt(int row) const;
     // 节点在本投影中的行号（不在投影内返回 -1）；QML 锚点恢复按 nodeId 定位行。
-    int rowForNodeId(const QString &nodeId) const;
+    Q_INVOKABLE int rowForNodeId(const QString &nodeId) const;
 
     // 本投影对应的文件夹节点 id（空 = 根投影，投影 rootProjectionNodeIds）。
     QString folderNodeId() const;

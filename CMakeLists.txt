@@ -217,6 +217,7 @@ set(SERIONA_QML_MODULE_FILES
     qml/components/TrackContextMenu.qml
     qml/components/PlaylistDelegate.qml
     qml/components/FolderPage.qml
+    qml/components/ScrollAnchorPreserver.qml
     qml/components/QueueView.qml
     qml/components/AboutOverlay.qml
     qml/components/StyledScrollBar.qml
