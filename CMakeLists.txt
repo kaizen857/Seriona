@@ -190,6 +190,7 @@ set(SERIONA_APP_LAYER_SOURCES
     src/app/library_model.h
     src/app/library_folder_projection_model.cpp
     src/app/library_folder_projection_model.h
+    src/app/row_diff.h
     src/app/library_tree_store.cpp
     src/app/library_tree_store.h
     src/app/track_stats_controller.cpp
@@ -217,7 +218,6 @@ set(SERIONA_QML_MODULE_FILES
     qml/components/TrackContextMenu.qml
     qml/components/PlaylistDelegate.qml
     qml/components/FolderPage.qml
-    qml/components/ScrollAnchorPreserver.qml
     qml/components/QueueView.qml
     qml/components/AboutOverlay.qml
     qml/components/StyledScrollBar.qml
@@ -530,6 +530,19 @@ add_test(NAME seriona_frontend_settings_transition_startup_apply COMMAND seriona
     target_sources(seriona_frontend_queue_view_tests PRIVATE ${SERIONA_QUEUE_VIEW_TEST_QRC})
     add_dependencies(seriona_frontend_queue_view_tests seriona)
     add_test(NAME seriona_frontend_queue_view COMMAND seriona_frontend_queue_view_tests)
+
+    # 行键差分引擎（header-only）：纯 Qt Core 面，mock-only 构建同样注册
+    add_executable(seriona_frontend_row_diff_tests
+        tests/frontend/adapter/tst_row_diff.cpp
+        src/app/row_diff.h
+    )
+    target_include_directories(seriona_frontend_row_diff_tests
+        PRIVATE src/app
+    )
+    target_link_libraries(seriona_frontend_row_diff_tests
+        PRIVATE Qt6::Core Qt6::Test
+    )
+    add_test(NAME seriona_frontend_row_diff COMMAND seriona_frontend_row_diff_tests)
 
     if(SERIONA_BACKEND_CONTROL_TARGET)
         add_executable(seriona_frontend_library_tree_model_tests

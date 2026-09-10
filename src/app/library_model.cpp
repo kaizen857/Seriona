@@ -1790,8 +1790,8 @@ QObject *LibraryController::projectionModelForNodeId(const QString &folderNodeId
         LibraryFolderProjectionModel *model = cacheIt.value();
         const QVector<LibraryModel::SortRule> rules = sortRulesForProjectionLevel(folderNodeId);
         if (!sortRulesEqual(model->sortRules(), rules)) {
-            // 排序规则变化：原地重建（setSource → rebuildFromSource，模型对象身份不变，
-            // 发射 modelReset 而非 layoutChanged，排序应用后视口归顶行为与现状一致）。
+            // 排序规则变化：同一源+同一文件夹 → setSource 走增量重建（行键差分 → rowsMoved
+            // 等行操作 + 批量 dataChanged，模型对象身份不变，不 reset、视口不归零）。
             model->setSource(&m_model, folderNodeId, rules);
         }
         return model;

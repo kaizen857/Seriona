@@ -1,6 +1,7 @@
 #include "library_folder_projection_model.h"
 #include "library_model.h"
 
+#include <QAbstractItemModelTester>
 #include <QFileInfo>
 #include <QSet>
 #include <QSignalSpy>
@@ -125,6 +126,28 @@ PlaylistTreeSnapshot makeProjectedTreeSnapshotV2()
         makeTrack("track-y", "track-y-id", "02-song-y.flac", "Song Y", "Artist Y", "Album A", std::chrono::milliseconds{200000}, std::string{"album-a"}),
         makeTrack("track-c", "track-c-id", "03-song-c.flac", "Song C", "Artist C", "Singles", std::chrono::milliseconds{150000}, std::string{"root"}),
     };
+    return snapshot;
+}
+
+// 参数化 album-a 树：children 指定 album-a 投影的子节点顺序与键集合，
+// 每个键生成节点 nodeId（trackId = nodeId + "-id"）；用于增量行操作测试。
+PlaylistTreeSnapshot makeAlbumChildrenSnapshot(const std::vector<std::pair<std::string, std::string>> &children,
+                                               std::uint64_t version = 51)
+{
+    PlaylistTreeSnapshot snapshot;
+    snapshot.version = version;
+    snapshot.rootNodeId = std::string{"root"};
+    snapshot.nodes.push_back(makeFolder("root", "Library", {"album-a"}, std::nullopt, PlaylistNodeKind::Root));
+
+    std::vector<std::string> childIds;
+    childIds.reserve(children.size());
+    for (const auto &[nodeId, title] : children) {
+        childIds.push_back(nodeId);
+        snapshot.nodes.push_back(makeTrack(nodeId, nodeId + "-id", nodeId + ".flac", title,
+                                           "Artist " + nodeId, "Album A",
+                                           std::chrono::milliseconds{180000}, "album-a"));
+    }
+    snapshot.nodes.push_back(makeFolder("album-a", "Album A", std::move(childIds), std::string{"root"}, PlaylistNodeKind::Album));
     return snapshot;
 }
 
@@ -261,6 +284,13 @@ private slots:
     void projectionSortsPerLevelRules();
     void revisionAdvancesOnRebuild();
     void treeChangeRebuildsProjection();
+    void treeRefreshEmitsIncrementalRowsWithoutReset();
+    void treeRefreshEmitsExactRowOperationArguments();
+    void idleTreeRefreshEmitsNoModelSignals();
+    void survivingChangedRowEmitsDataChangedOnFinalRow();
+    void playingStateRetainedAcrossTreeRefresh();
+    void rowForNodeIdFollowsIncrementalRefresh();
+    void modelTesterValidatesMixedIncrementalScenarios();
     void playingAndFocusSyncEmitDataChanged();
     void stackDepthAndProjectionLifecycle();
     void locateNodeInFolderStackNavigatesToTargetLevel();
@@ -272,6 +302,8 @@ private slots:
     void reconcileClearedFolderEmitsSignals();
     void ancestorChainInvokableMatchesExpected();
     void roleNamesMatchLibraryModel();
+    void sortRuleChangeRebuildsIncrementallyWithoutReset();
+    void repeatSetSourceSameRulesEmitsNoModelSignals();
 };
 
 void LibraryFolderProjectionModelTest::projectionContentsPerFolderLevel()
@@ -382,6 +414,226 @@ void LibraryFolderProjectionModelTest::treeChangeRebuildsProjection()
     controller.goBack();
     QCOMPARE(controller.folderStackDepth(), 0);
     expectProjection(rootProj, {QStringLiteral("album-a"), QStringLiteral("track-c")});
+}
+
+// watcher 触发的快照刷新（treeChanged）只能走增量行操作，绝不允许 reset：
+// 这是滚动位置不闪回的模型层前提（setSource 仅首建/数据源切换/文件夹切换允许 reset）。
+void LibraryFolderProjectionModelTest::treeRefreshEmitsIncrementalRowsWithoutReset()
+{
+    LibraryModel source;
+    source.setPlaylistTreeSnapshot(makeProjectedTreeSnapshot());
+
+    LibraryFolderProjectionModel projection;
+    projection.setSource(&source, QStringLiteral("album-a"), {}); // setSource 允许 reset
+
+    QSignalSpy aboutToResetSpy(&projection, &QAbstractItemModel::modelAboutToBeReset);
+    QSignalSpy resetSpy(&projection, &QAbstractItemModel::modelReset);
+    QSignalSpy insertedSpy(&projection, &QAbstractItemModel::rowsInserted);
+    QSignalSpy removedSpy(&projection, &QAbstractItemModel::rowsRemoved);
+
+    source.setPlaylistTreeSnapshot(makeProjectedTreeSnapshotV2());
+
+    QCOMPARE(aboutToResetSpy.count(), 0);
+    QCOMPARE(resetSpy.count(), 0);
+    QCOMPARE(insertedSpy.count(), 1);
+    QCOMPARE(removedSpy.count(), 1);
+    expectProjection(&projection, {QStringLiteral("track-x"), QStringLiteral("track-y")});
+}
+
+// 行操作的精确信号参数：删除段坐标、插入段坐标、Move 的 destinationChild。
+void LibraryFolderProjectionModelTest::treeRefreshEmitsExactRowOperationArguments()
+{
+    // A) 连续删除段合并为单次 rowsRemoved(0,1)（[a,b,c] → [c]）。
+    {
+        LibraryModel source;
+        source.setPlaylistTreeSnapshot(makeAlbumChildrenSnapshot(
+            {{"track-a", "Song A"}, {"track-b", "Song B"}, {"track-c", "Song C"}}));
+        LibraryFolderProjectionModel projection;
+        projection.setSource(&source, QStringLiteral("album-a"), {});
+
+        QSignalSpy removedSpy(&projection, &QAbstractItemModel::rowsRemoved);
+        QSignalSpy resetSpy(&projection, &QAbstractItemModel::modelReset);
+        source.setPlaylistTreeSnapshot(makeAlbumChildrenSnapshot({{"track-c", "Song C"}}, 52));
+
+        QCOMPARE(resetSpy.count(), 0);
+        QCOMPARE(removedSpy.count(), 1);
+        const QList<QVariant> removedArgs = removedSpy.takeFirst();
+        QCOMPARE(removedArgs.at(1).toInt(), 0);
+        QCOMPARE(removedArgs.at(2).toInt(), 1);
+        expectProjection(&projection, {QStringLiteral("track-c")});
+    }
+
+    // B) 连续插入段合并为单次 rowsInserted(1,2)（[a,b] → [a,x,y,b]）。
+    {
+        LibraryModel source;
+        source.setPlaylistTreeSnapshot(makeAlbumChildrenSnapshot({{"track-a", "Song A"}, {"track-b", "Song B"}}));
+        LibraryFolderProjectionModel projection;
+        projection.setSource(&source, QStringLiteral("album-a"), {});
+
+        QSignalSpy insertedSpy(&projection, &QAbstractItemModel::rowsInserted);
+        source.setPlaylistTreeSnapshot(makeAlbumChildrenSnapshot(
+            {{"track-a", "Song A"}, {"track-x", "Song X"}, {"track-y", "Song Y"}, {"track-b", "Song B"}}, 52));
+
+        QCOMPARE(insertedSpy.count(), 1);
+        const QList<QVariant> insertedArgs = insertedSpy.takeFirst();
+        QCOMPARE(insertedArgs.at(1).toInt(), 1);
+        QCOMPARE(insertedArgs.at(2).toInt(), 2);
+        expectProjection(&projection, {QStringLiteral("track-a"), QStringLiteral("track-x"),
+                                       QStringLiteral("track-y"), QStringLiteral("track-b")});
+    }
+
+    // C) 向左移动：destinationChild == 0（[a,b] → [b,a]）。
+    {
+        LibraryModel source;
+        source.setPlaylistTreeSnapshot(makeAlbumChildrenSnapshot({{"track-a", "Song A"}, {"track-b", "Song B"}}));
+        LibraryFolderProjectionModel projection;
+        projection.setSource(&source, QStringLiteral("album-a"), {});
+
+        QSignalSpy aboutToMoveSpy(&projection, &QAbstractItemModel::rowsAboutToBeMoved);
+        QSignalSpy movedSpy(&projection, &QAbstractItemModel::rowsMoved);
+        QSignalSpy resetSpy(&projection, &QAbstractItemModel::modelReset);
+        source.setPlaylistTreeSnapshot(makeAlbumChildrenSnapshot({{"track-b", "Song B"}, {"track-a", "Song A"}}, 52));
+
+        QCOMPARE(resetSpy.count(), 0);
+        QCOMPARE(aboutToMoveSpy.count(), 1);
+        QCOMPARE(movedSpy.count(), 1);
+        const QList<QVariant> moveArgs = aboutToMoveSpy.takeFirst();
+        QCOMPARE(moveArgs.at(1).toInt(), 1); // sourceFirst
+        QCOMPARE(moveArgs.at(2).toInt(), 1); // sourceLast
+        QCOMPARE(moveArgs.at(4).toInt(), 0); // destinationChild
+        expectProjection(&projection, {QStringLiteral("track-b"), QStringLiteral("track-a")});
+    }
+}
+
+// 空闲刷新：内容完全一致时零模型信号，仅 revision 递增（QML 侧仍可感知刷新完成）。
+void LibraryFolderProjectionModelTest::idleTreeRefreshEmitsNoModelSignals()
+{
+    LibraryModel source;
+    source.setPlaylistTreeSnapshot(makeProjectedTreeSnapshot());
+
+    LibraryFolderProjectionModel projection;
+    projection.setSource(&source, QStringLiteral("album-a"), {});
+
+    int modelSignalCount = 0;
+    QObject counter;
+    const auto countOne = [&modelSignalCount]() { ++modelSignalCount; };
+    QObject::connect(&projection, &QAbstractItemModel::rowsInserted, &counter, countOne);
+    QObject::connect(&projection, &QAbstractItemModel::rowsRemoved, &counter, countOne);
+    QObject::connect(&projection, &QAbstractItemModel::rowsMoved, &counter, countOne);
+    QObject::connect(&projection, &QAbstractItemModel::dataChanged, &counter, countOne);
+    QObject::connect(&projection, &QAbstractItemModel::modelAboutToBeReset, &counter, countOne);
+    QObject::connect(&projection, &QAbstractItemModel::modelReset, &counter, countOne);
+    QObject::connect(&projection, &QAbstractItemModel::layoutAboutToBeChanged, &counter, countOne);
+    QObject::connect(&projection, &QAbstractItemModel::layoutChanged, &counter, countOne);
+    QSignalSpy revisionSpy(&projection, &LibraryFolderProjectionModel::projectionRevisionChanged);
+    const int revisionBefore = projection.projectionRevision();
+
+    source.setPlaylistTreeSnapshot(makeProjectedTreeSnapshot());
+
+    QCOMPARE(modelSignalCount, 0);
+    QCOMPARE(projection.projectionRevision(), revisionBefore + 1);
+    QCOMPARE(revisionSpy.count(), 1);
+}
+
+// 存活行的角色字段变化：dataChanged 必须命中该行在最终投影中的行号，
+// 且 roles 为空 = 全角色（由增量重建在行操作之后统一发射）。
+void LibraryFolderProjectionModelTest::survivingChangedRowEmitsDataChangedOnFinalRow()
+{
+    LibraryModel source;
+    source.setPlaylistTreeSnapshot(makeAlbumChildrenSnapshot({{"track-a", "Song A"}, {"track-b", "Song B"}}));
+
+    LibraryFolderProjectionModel projection;
+    projection.setSource(&source, QStringLiteral("album-a"), {});
+
+    QSignalSpy movedSpy(&projection, &QAbstractItemModel::rowsMoved);
+    QSignalSpy dataSpy(&projection, &QAbstractItemModel::dataChanged);
+
+    // 刷新：track-b 前移（Move）；track-a 标题变化（最终行 1 发 dataChanged）。
+    source.setPlaylistTreeSnapshot(makeAlbumChildrenSnapshot(
+        {{"track-b", "Song B"}, {"track-a", "Song A Renamed"}}, 52));
+
+    QCOMPARE(movedSpy.count(), 1);
+    QCOMPARE(dataSpy.count(), 1);
+    const QList<QVariant> dataArgs = dataSpy.takeFirst();
+    QCOMPARE(dataArgs.at(0).value<QModelIndex>().row(), 1);
+    QCOMPARE(dataArgs.at(1).value<QModelIndex>().row(), 1);
+    QVERIFY(dataArgs.at(2).value<QList<int>>().isEmpty());
+    QCOMPARE(projection.data(projection.index(1, 0), LibraryModel::TitleRole).toString(),
+             QStringLiteral("Song A Renamed"));
+    expectProjection(&projection, {QStringLiteral("track-b"), QStringLiteral("track-a")});
+}
+
+// 播放身份跨刷新保留：track-a 存活且被前插新行后，重新应用同一 trackId
+// 必须命中其最终行。刷新与重应用可能各发一次 dataChanged（重复容忍，不锁计数）。
+void LibraryFolderProjectionModelTest::playingStateRetainedAcrossTreeRefresh()
+{
+    LibraryModel source;
+    source.setPlaylistTreeSnapshot(makeAlbumChildrenSnapshot({{"track-a", "Song A"}, {"track-b", "Song B"}}));
+
+    LibraryFolderProjectionModel projection;
+    projection.setSource(&source, QStringLiteral("album-a"), {});
+    QCOMPARE(projection.data(projection.index(0, 0), LibraryModel::IsPlayingRole).toBool(), false);
+
+    source.setPlayingTrackId(QStringLiteral("track-a-id"));
+    QCOMPARE(projection.data(projection.index(0, 0), LibraryModel::IsPlayingRole).toBool(), true);
+
+    // 树刷新：源快照按既有语义清空播放身份；播放镜像随后重新应用同一 trackId。
+    source.setPlaylistTreeSnapshot(makeAlbumChildrenSnapshot(
+        {{"track-x", "Song X"}, {"track-a", "Song A"}, {"track-b", "Song B"}}, 52));
+    source.setPlayingTrackId(QStringLiteral("track-a-id"));
+
+    expectProjection(&projection, {QStringLiteral("track-x"), QStringLiteral("track-a"), QStringLiteral("track-b")});
+    QCOMPARE(projection.data(projection.index(1, 0), LibraryModel::IsPlayingRole).toBool(), true);
+    QCOMPARE(projection.data(projection.index(0, 0), LibraryModel::IsPlayingRole).toBool(), false);
+    QCOMPARE(projection.data(projection.index(2, 0), LibraryModel::IsPlayingRole).toBool(), false);
+}
+
+// rowForNodeId 跟随增量刷新：被移除键 -1，存活/新键指向最终行。
+void LibraryFolderProjectionModelTest::rowForNodeIdFollowsIncrementalRefresh()
+{
+    LibraryModel source;
+    source.setPlaylistTreeSnapshot(makeAlbumChildrenSnapshot({{"track-a", "Song A"}, {"track-b", "Song B"}}));
+
+    LibraryFolderProjectionModel projection;
+    projection.setSource(&source, QStringLiteral("album-a"), {});
+    QCOMPARE(projection.rowForNodeId(QStringLiteral("track-a")), 0);
+    QCOMPARE(projection.rowForNodeId(QStringLiteral("track-b")), 1);
+
+    source.setPlaylistTreeSnapshot(makeAlbumChildrenSnapshot({{"track-b", "Song B"}, {"track-x", "Song X"}}, 52));
+    QCOMPARE(projection.rowForNodeId(QStringLiteral("track-a")), -1);
+    QCOMPARE(projection.rowForNodeId(QStringLiteral("track-b")), 0);
+    QCOMPARE(projection.rowForNodeId(QStringLiteral("track-x")), 1);
+    QCOMPARE(projection.rowForNodeId(QStringLiteral("missing-node")), -1);
+}
+
+// QAbstractItemModelTester(QtTest) 全程挂在投影模型上，覆盖增删移动/更新/
+// 播放焦点/全量替换/空闲刷新混合场景，校验每个 begin/end 对的信号一致性。
+void LibraryFolderProjectionModelTest::modelTesterValidatesMixedIncrementalScenarios()
+{
+    LibraryModel source;
+    source.setPlaylistTreeSnapshot(makeAlbumChildrenSnapshot(
+        {{"track-a", "Song A"}, {"track-b", "Song B"}, {"track-c", "Song C"}}));
+
+    LibraryFolderProjectionModel projection;
+    projection.setSource(&source, QStringLiteral("album-a"), {});
+
+    QAbstractItemModelTester modelTester(&projection, QAbstractItemModelTester::FailureReportingMode::QtTest);
+
+    // 混合场景 1：删除段 + 前插新键。
+    source.setPlaylistTreeSnapshot(makeAlbumChildrenSnapshot({{"track-x", "Song X"}, {"track-c", "Song C"}}, 52));
+    // 混合场景 2：重排（Move）+ 标题更新（dataChanged）。
+    source.setPlaylistTreeSnapshot(makeAlbumChildrenSnapshot({{"track-c", "Song C2"}, {"track-x", "Song X"}}, 53));
+    // 混合场景 3：播放/焦点身份变化。
+    source.setPlayingTrackId(QStringLiteral("track-c-id"));
+    source.setFocusedNodeId(QStringLiteral("track-x"));
+    // 混合场景 4：全量替换（Remove all + Insert all）。
+    source.setPlaylistTreeSnapshot(makeAlbumChildrenSnapshot({{"track-n", "Song N"}}, 54));
+    // 混合场景 5：空闲刷新（零信号）。
+    source.setPlaylistTreeSnapshot(makeAlbumChildrenSnapshot({{"track-n", "Song N"}}, 55));
+
+    QCOMPARE(projection.rowCount(), 1);
+    QCOMPARE(nodeIdAt(&projection, 0), QStringLiteral("track-n"));
+    QVERIFY(projection.projectionRevision() > 0);
 }
 
 void LibraryFolderProjectionModelTest::playingAndFocusSyncEmitDataChanged()
@@ -724,6 +976,73 @@ void LibraryFolderProjectionModelTest::roleNamesMatchLibraryModel()
     const QHash<int, QByteArray> actual = projectionModel.roleNames();
     QCOMPARE(actual, expected);
     QCOMPARE(actual.size(), expected.size());
+}
+
+// 同一源+同一文件夹下的排序规则变更：只允许增量重建（行操作），绝不允许 reset；
+// 投影内容按新规则排序、sortRules 更新、revision 递增。
+void LibraryFolderProjectionModelTest::sortRuleChangeRebuildsIncrementallyWithoutReset()
+{
+    LibraryModel source;
+    source.setPlaylistTreeSnapshot(makeSortableSnapshot());
+
+    LibraryFolderProjectionModel projection;
+    projection.setSource(&source, QStringLiteral("folder-jazz"), {}); // 首建允许 reset
+    expectProjection(&projection, {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"),
+                                   QStringLiteral("track-folder-c")});
+    const int revisionBefore = projection.projectionRevision();
+
+    QSignalSpy aboutToResetSpy(&projection, &QAbstractItemModel::modelAboutToBeReset);
+    QSignalSpy resetSpy(&projection, &QAbstractItemModel::modelReset);
+    QSignalSpy movedSpy(&projection, &QAbstractItemModel::rowsMoved);
+    QSignalSpy insertedSpy(&projection, &QAbstractItemModel::rowsInserted);
+    QSignalSpy removedSpy(&projection, &QAbstractItemModel::rowsRemoved);
+
+    // 标题升序：原序 [b,a,c] → [a,b,c]，键集合不变，至少一次 rowsMoved。
+    const QVector<LibraryModel::SortRule> titleAscending{{QStringLiteral("title"), QStringLiteral("asc")}};
+    projection.setSource(&source, QStringLiteral("folder-jazz"), titleAscending);
+
+    QCOMPARE(aboutToResetSpy.count(), 0);
+    QCOMPARE(resetSpy.count(), 0);
+    QCOMPARE(insertedSpy.count(), 0);
+    QCOMPARE(removedSpy.count(), 0);
+    QVERIFY(movedSpy.count() >= 1);
+    expectProjection(&projection, {QStringLiteral("track-folder-a"), QStringLiteral("track-folder-b"),
+                                   QStringLiteral("track-folder-c")});
+    QCOMPARE(projection.sortRules().size(), 1);
+    QCOMPARE(projection.sortRules().at(0).field, QStringLiteral("title"));
+    QCOMPARE(projection.sortRules().at(0).order, QStringLiteral("asc"));
+    QCOMPARE(projection.projectionRevision(), revisionBefore + 1);
+}
+
+// 同一源+同一文件夹+相同规则重复 setSource：零模型信号（幂等），仅 revision 递增。
+void LibraryFolderProjectionModelTest::repeatSetSourceSameRulesEmitsNoModelSignals()
+{
+    LibraryModel source;
+    source.setPlaylistTreeSnapshot(makeProjectedTreeSnapshot());
+
+    LibraryFolderProjectionModel projection;
+    projection.setSource(&source, QStringLiteral("album-a"), {});
+
+    int modelSignalCount = 0;
+    QObject counter;
+    const auto countOne = [&modelSignalCount]() { ++modelSignalCount; };
+    QObject::connect(&projection, &QAbstractItemModel::rowsInserted, &counter, countOne);
+    QObject::connect(&projection, &QAbstractItemModel::rowsRemoved, &counter, countOne);
+    QObject::connect(&projection, &QAbstractItemModel::rowsMoved, &counter, countOne);
+    QObject::connect(&projection, &QAbstractItemModel::dataChanged, &counter, countOne);
+    QObject::connect(&projection, &QAbstractItemModel::modelAboutToBeReset, &counter, countOne);
+    QObject::connect(&projection, &QAbstractItemModel::modelReset, &counter, countOne);
+    QObject::connect(&projection, &QAbstractItemModel::layoutAboutToBeChanged, &counter, countOne);
+    QObject::connect(&projection, &QAbstractItemModel::layoutChanged, &counter, countOne);
+    QSignalSpy revisionSpy(&projection, &LibraryFolderProjectionModel::projectionRevisionChanged);
+    const int revisionBefore = projection.projectionRevision();
+
+    projection.setSource(&source, QStringLiteral("album-a"), {});
+
+    QCOMPARE(modelSignalCount, 0);
+    QCOMPARE(projection.projectionRevision(), revisionBefore + 1);
+    QCOMPARE(revisionSpy.count(), 1);
+    expectProjection(&projection, {QStringLiteral("track-a"), QStringLiteral("track-b")});
 }
 
 QTEST_GUILESS_MAIN(LibraryFolderProjectionModelTest)

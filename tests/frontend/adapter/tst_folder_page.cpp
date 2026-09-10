@@ -2,10 +2,12 @@
 // 断言列表：
 // 1. 无 anchors 且 width/height 跟随 parent
 // 2. 注入投影模型后 ListView 渲染子项
-// 3. 滚动位置保持（实例存活期间 contentY 不变）+ 库刷新（投影 reset）后滚动锚点保留
+// 3. 滚动位置保持（实例存活期间 contentY 不变）+ 库刷新（投影增量行操作）不扰动视口
 // 4. 错落滑入动画幂等（连续激活两次 opacity 终值 1.0, translate x 终值 0）
 // 5. Y 竞态回归锁：动画前后 delegate.y 恒定无跳变
-// 6. 锚点条目消失时回退到钳制后的旧 contentY（不无理由跳顶）
+// 6. 全量替换（Remove all + Insert all）不 reset、保留旧 contentY（不无理由跳顶）
+// 7. 视口上方插入/删除后 contentY 保持、锚点行随内容位移
+// 8. 视口外刷新（重命名/前插/删除/重排）后可见行 indexAt↔delegate↔模型映射一致
 
 #include "app_facade.h"
 #include "library_folder_projection_model.h"
@@ -162,6 +164,8 @@ private slots:
     void modelRendering();
     void scrollPositionRetention();
     void scrollAnchorFallbackWhenAnchorMissing();
+    void aboveViewportInsertKeepsContentY();
+    void refreshSweepKeepsVisibleRowsMapped();
     void animationIdempotency();
     void yRaceRegressionLock();
 
@@ -175,6 +179,8 @@ private:
     Seriona::App::LibraryController libraryController;
 
     void applyTreeSnapshot(int childCount = 20, const std::string &nodeIdPrefix = "child_");
+    void applyTreeSnapshotChildren(const std::vector<std::string> &childIds);
+    void sweepVisibleRows(QQuickItem *listView, Seriona::App::LibraryFolderProjectionModel *projection);
 };
 
 void FolderPageTest::applyTreeSnapshot(int childCount, const std::string &nodeIdPrefix)
@@ -200,6 +206,69 @@ void FolderPageTest::applyTreeSnapshot(int childCount, const std::string &nodeId
     snapshot.nodes = std::move(nodes);
 
     libraryController.setPlaylistTreeSnapshot(snapshot);
+}
+
+void FolderPageTest::applyTreeSnapshotChildren(const std::vector<std::string> &childIds)
+{
+    std::vector<PlaylistNode> nodes;
+    nodes.reserve(childIds.size() + 2);
+
+    for (const std::string &childId : childIds) {
+        nodes.push_back(makeTrack(childId, childId + "-track", "Track " + childId, "Title " + childId,
+                                  "Artist " + childId, "Album " + childId,
+                                  std::chrono::milliseconds{180000}, "test_folder_node"));
+    }
+    nodes.push_back(makeFolder("root", "Library", {"test_folder_node"}, std::nullopt, PlaylistNodeKind::Root));
+    nodes.push_back(makeFolder("test_folder_node", "Test Folder", childIds, std::string{"root"}, PlaylistNodeKind::Directory));
+
+    PlaylistTreeSnapshot snapshot;
+    snapshot.version = 1;
+    snapshot.rootNodeId = "root";
+    snapshot.nodes = std::move(nodes);
+
+    libraryController.setPlaylistTreeSnapshot(snapshot);
+}
+
+// 从当前视口顶部起逐行遍历，断言每个可见行 indexAt 命中且 delegate.nodeId
+// 与模型最终行映射一致（QTBUG-120941 视图刷新后 itemAtIndex 失效回归锁）。
+void FolderPageTest::sweepVisibleRows(QQuickItem *listView, Seriona::App::LibraryFolderProjectionModel *projection)
+{
+    QMetaObject::invokeMethod(listView, "forceLayout");
+    QTest::qWait(30);
+
+    const qreal viewportTop = listView->property("contentY").toReal();
+    const qreal viewportBottom = viewportTop + listView->height();
+    int firstVisible = -1;
+    QMetaObject::invokeMethod(listView, "indexAt", Q_RETURN_ARG(int, firstVisible),
+                              Q_ARG(qreal, 0.0), Q_ARG(qreal, viewportTop + 1.0));
+    QVERIFY2(firstVisible >= 0, "no visible row at current contentY");
+
+    int sweptRows = 0;
+    for (int row = firstVisible; row < projection->rowCount(); ++row) {
+        QQuickItem *item = nullptr;
+        QMetaObject::invokeMethod(listView, "itemAtIndex", Q_RETURN_ARG(QQuickItem *, item), Q_ARG(int, row));
+        if (item == nullptr) {
+            break;
+        }
+        const qreal itemTop = item->y();
+        if (itemTop >= viewportBottom) {
+            break;
+        }
+        if (itemTop + item->height() <= viewportTop) {
+            continue;
+        }
+
+        int hit = -1;
+        QMetaObject::invokeMethod(listView, "indexAt", Q_RETURN_ARG(int, hit),
+                                  Q_ARG(qreal, 0.0), Q_ARG(qreal, qMax(itemTop, viewportTop) + 1.0));
+        QCOMPARE(hit, row);
+        const QString nodeId = item->property("nodeId").toString();
+        QVERIFY2(!nodeId.isEmpty(), "delegate rendered without nodeId");
+        QCOMPARE(nodeId, projection->data(projection->index(row, 0), Seriona::App::LibraryModel::NodeIdRole).toString());
+        QCOMPARE(projection->rowForNodeId(nodeId), row);
+        ++sweptRows;
+    }
+    QVERIFY2(sweptRows > 0, "sweep visited no visible rows");
 }
 
 void FolderPageTest::initTestCase()
@@ -290,8 +359,8 @@ void FolderPageTest::scrollPositionRetention()
     QTest::qWait(100);
     QCOMPARE(listView->property("contentY").toReal(), 150.0);
 
-    // 模拟外部移动/重命名文件 → watcher 触发库刷新（快照重建 → 投影 reset）：
-    // 顶部可见条目与条目内偏移必须保留。
+    // 模拟 watcher 触发的库刷新（同一内容快照 → 增量刷新零行操作）：
+    // 刷新不得扰动视口：顶部可见条目与条目内偏移必须保留。
     int anchorIndex = -1;
     QMetaObject::invokeMethod(listView, "indexAt", Q_RETURN_ARG(int, anchorIndex),
                               Q_ARG(qreal, 0.0), Q_ARG(qreal, 151.0));
@@ -326,7 +395,8 @@ void FolderPageTest::scrollAnchorFallbackWhenAnchorMissing()
 {
     applyTreeSnapshot(25);
 
-    auto *projection = libraryController.projectionModelForNodeId(QStringLiteral("test_folder_node"));
+    auto *projection = qobject_cast<Seriona::App::LibraryFolderProjectionModel *>(
+        libraryController.projectionModelForNodeId(QStringLiteral("test_folder_node")));
     QVERIFY(projection != nullptr);
     folderPage->setProperty("projectionModel", QVariant::fromValue(projection));
 
@@ -341,12 +411,150 @@ void FolderPageTest::scrollAnchorFallbackWhenAnchorMissing()
     const qreal savedContentY = listView->property("contentY").toReal();
     QCOMPARE(savedContentY, 150.0);
 
-    // 全部条目换 id（模拟锚点文件被重命名/移动后不在新投影内）：
-    // 内容总量不变 → 必须回退到钳制后的旧 contentY，而非跳回顶部。
+    // 全部条目换 id（模拟整个文件夹内容被重命名/移动）：
+    // 增量全量替换（Remove all + Insert all）不 reset → 视图保留旧 contentY，而非跳回顶部。
     applyTreeSnapshot(25, "renamed_child_");
 
     QTRY_COMPARE(listView->property("count").toInt(), 25);
     QTRY_VERIFY_WITH_TIMEOUT(qAbs(listView->property("contentY").toReal() - savedContentY) < 1.0, 5000);
+
+    // 全量替换后可见行必须完整实例化（仅 contentY 数值保持不算通过）。
+    sweepVisibleRows(listView, projection);
+}
+
+// 视口上方插入/删除：增量行操作不得给 contentY 赋值（不跳顶），
+// 原顶部条目随内容整体位移后仍在视口内渲染。
+void FolderPageTest::aboveViewportInsertKeepsContentY()
+{
+    applyTreeSnapshot(25);
+
+    auto *projection = qobject_cast<Seriona::App::LibraryFolderProjectionModel *>(
+        libraryController.projectionModelForNodeId(QStringLiteral("test_folder_node")));
+    QVERIFY(projection != nullptr);
+    folderPage->setProperty("projectionModel", QVariant::fromValue(projection));
+
+    auto *listView = folderPage->findChild<QQuickItem *>(QStringLiteral("folderListView"));
+    QVERIFY(listView != nullptr);
+    QTRY_COMPARE(listView->property("count").toInt(), 25);
+
+    // 前置归位：前序用例的全量替换可能在本机 Qt 6.11.2 上留下不完整布局（视图保留
+    // contentY 数值但未完成行实例化，属 Qt 视图缺陷），先回顶部等待布局收敛。
+    listView->setProperty("contentY", 0.0);
+    QTRY_VERIFY_WITH_TIMEOUT([&]() {
+        QMetaObject::invokeMethod(listView, "forceLayout");
+        QQuickItem *topItem = nullptr;
+        QMetaObject::invokeMethod(listView, "itemAtIndex", Q_RETURN_ARG(QQuickItem *, topItem), Q_ARG(int, 0));
+        return topItem != nullptr && qAbs(topItem->y()) < 1.0;
+    }(), 5000);
+
+    listView->setProperty("contentY", 150.0);
+    QMetaObject::invokeMethod(listView, "forceLayout");
+    QTest::qWait(50);
+    QCOMPARE(listView->property("contentY").toReal(), 150.0);
+
+    int anchorIndex = -1;
+    QMetaObject::invokeMethod(listView, "indexAt", Q_RETURN_ARG(int, anchorIndex),
+                              Q_ARG(qreal, 0.0), Q_ARG(qreal, 151.0));
+    QVERIFY2(anchorIndex >= 0, "no visible anchor row at contentY=150");
+    QQuickItem *anchorItem = nullptr;
+    QMetaObject::invokeMethod(listView, "itemAtIndex", Q_RETURN_ARG(QQuickItem *, anchorItem),
+                              Q_ARG(int, anchorIndex));
+    QVERIFY(anchorItem != nullptr);
+    const QString anchorNodeId = anchorItem->property("nodeId").toString();
+    QVERIFY(!anchorNodeId.isEmpty());
+    // 锚点行必须与模型行映射一致（防前序残留布局导致 indexAt 指向错误行）。
+    QCOMPARE(anchorNodeId, projection->data(projection->index(anchorIndex, 0),
+                                            Seriona::App::LibraryModel::NodeIdRole).toString());
+
+    // 顶部前插 2 行（视口上方 Insert，行高 72 → 内容整体下移 144px）。
+    std::vector<std::string> prepended{"prepend_0", "prepend_1"};
+    for (int i = 0; i < 25; ++i) {
+        prepended.push_back("child_" + std::to_string(i));
+    }
+    applyTreeSnapshotChildren(prepended);
+
+    QTRY_COMPARE(listView->property("count").toInt(), 27);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(listView->property("contentY").toReal() - 150.0) < 1.0, 5000);
+    QQuickItem *shiftedAnchor = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT([&]() {
+        QMetaObject::invokeMethod(listView, "forceLayout");
+        QMetaObject::invokeMethod(listView, "itemAtIndex", Q_RETURN_ARG(QQuickItem *, shiftedAnchor),
+                                  Q_ARG(int, anchorIndex + 2));
+        return shiftedAnchor != nullptr;
+    }(), 5000);
+    QCOMPARE(shiftedAnchor->property("nodeId").toString(), anchorNodeId);
+
+    // 再删除这 2 行（视口上方 Remove）：contentY 仍稳定，锚点回到原行。
+    applyTreeSnapshot(25);
+
+    QTRY_COMPARE(listView->property("count").toInt(), 25);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(listView->property("contentY").toReal() - 150.0) < 1.0, 5000);
+    QQuickItem *restoredAnchor = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT([&]() {
+        QMetaObject::invokeMethod(listView, "forceLayout");
+        QMetaObject::invokeMethod(listView, "itemAtIndex", Q_RETURN_ARG(QQuickItem *, restoredAnchor),
+                                  Q_ARG(int, anchorIndex));
+        return restoredAnchor != nullptr;
+    }(), 5000);
+    QCOMPARE(restoredAnchor->property("nodeId").toString(), anchorNodeId);
+}
+
+// QTBUG-120941 回归扫描（视口外修改）：滚到底部后，反复触发只改动视口外（顶部）
+// 节点的外部刷新（重命名/前插/删除），每次从顶到底遍历可见行：indexAt 必须命中、
+// delegate.nodeId 与模型最终行及 rowForNodeId 映射必须一致（刷新后行索引不失配）。
+void FolderPageTest::refreshSweepKeepsVisibleRowsMapped()
+{
+    applyTreeSnapshot(25);
+
+    auto *projection = qobject_cast<Seriona::App::LibraryFolderProjectionModel *>(
+        libraryController.projectionModelForNodeId(QStringLiteral("test_folder_node")));
+    QVERIFY(projection != nullptr);
+    folderPage->setProperty("projectionModel", QVariant::fromValue(projection));
+
+    auto *listView = folderPage->findChild<QQuickItem *>(QStringLiteral("folderListView"));
+    QVERIFY(listView != nullptr);
+    QTRY_COMPARE(listView->property("count").toInt(), 25);
+    QMetaObject::invokeMethod(listView, "forceLayout");
+    QTest::qWait(50);
+
+    // 滚到底部：视口只覆盖模型尾部，后续刷新只改动视口外（顶部）节点。
+    const qreal bottom = listView->property("contentHeight").toReal()
+                       + listView->property("bottomMargin").toReal()
+                       - listView->height();
+    listView->setProperty("contentY", bottom);
+    QTest::qWait(50);
+
+    // 刷新 1：视口外重命名（顶部 child_0 → moved_0：Remove 0 + Insert 0）。
+    std::vector<std::string> renamed{"moved_0"};
+    for (int i = 1; i < 25; ++i) {
+        renamed.push_back("child_" + std::to_string(i));
+    }
+    applyTreeSnapshotChildren(renamed);
+    QTRY_COMPARE(listView->property("count").toInt(), 25);
+    sweepVisibleRows(listView, projection);
+
+    // 刷新 2：视口外前插 2 行（顶部 Insert）。
+    std::vector<std::string> prepended{"extra_0", "extra_1"};
+    prepended.insert(prepended.end(), renamed.begin(), renamed.end());
+    applyTreeSnapshotChildren(prepended);
+    QTRY_COMPARE(listView->property("count").toInt(), 27);
+    sweepVisibleRows(listView, projection);
+
+    // 刷新 3：删除视口外前插的 2 行（顶部 Remove）。
+    applyTreeSnapshotChildren(renamed);
+    QTRY_COMPARE(listView->property("count").toInt(), 25);
+    sweepVisibleRows(listView, projection);
+
+    // 刷新 4：视口外重排（顶部两行互换 → 单次 Move），校验移动后行映射。
+    QSignalSpy movedSpy(projection, &QAbstractItemModel::rowsMoved);
+    std::vector<std::string> swapped = renamed;
+    const std::string firstId = swapped.at(0);
+    swapped.at(0) = swapped.at(1);
+    swapped.at(1) = firstId;
+    applyTreeSnapshotChildren(swapped);
+    QTRY_COMPARE(listView->property("count").toInt(), 25);
+    QCOMPARE(movedSpy.count(), 1);
+    sweepVisibleRows(listView, projection);
 }
 
 void FolderPageTest::animationIdempotency()
