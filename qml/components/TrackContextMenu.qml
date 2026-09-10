@@ -119,6 +119,10 @@ Item {
     TrackDetailWindow {
         id: detailWindow
         appFacade: root.appFacade
+        // 注入主窗口作为 transientParent：详情窗是独立 Window，自身无法用 Window.window
+        // （仅 Item 可用）。固定"只在主窗口之上、不压过其它应用"的对话框语义
+        // （与同文件的 ConfirmDeleteDialog 一致）。
+        transientParent: root.Window.window
     }
 }
 

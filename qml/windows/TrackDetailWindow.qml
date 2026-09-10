@@ -11,7 +11,10 @@ Window {
     id: root
     objectName: "trackDetailWindow"
 
-    flags: Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+    // 不设 Qt.WindowStaysOnTopHint：该标志是系统级置顶（Windows WS_EX_TOPMOST），
+    // 会让详情窗悬浮于所有应用窗口之上；Wayland 也不支持应用自行置顶（xdg-shell 限制）。
+    // "保持在主窗口之上"由 transientParent 关系保证（调用方 TrackContextMenu 注入）。
+    flags: Qt.Dialog | Qt.FramelessWindowHint
     color: "transparent"
 
     width: 420
