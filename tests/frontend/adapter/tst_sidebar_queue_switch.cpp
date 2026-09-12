@@ -196,6 +196,62 @@ void settleZeroBaseline(QQuickItem *stack, QQuickItem *listView, int index)
     }
 }
 
+// 按事件派发语义做命中测试：从根逐层下降到最深的可交互子项（QQuickItem::childAt 只检查直接
+// 子项，不足以判断"点击会落到谁"）。每层按绘制序取最上层（z 升序、同 z 取插入序后者），并跳过
+// 不可见/禁用/全透明项——folderStack 在 depth 0 即 z=-1 且 enabled=false，必须如此才不会
+// 钻进被压在下方的空栈；配合调用方的祖先链检查确认点击确实会到达目标条目。
+QQuickItem *hitTestSceneItem(QQuickItem *root, const QPointF &scenePoint)
+{
+    QQuickItem *item = root;
+    while (item != nullptr) {
+        QQuickItem *next = nullptr;
+        for (QQuickItem *child : item->childItems()) {
+            if (!child->isVisible() || !child->isEnabled() || child->opacity() <= 0.0) {
+                continue;
+            }
+            if (!child->contains(child->mapFromScene(scenePoint))) {
+                continue;
+            }
+            if (next == nullptr || child->z() >= next->z()) {
+                next = child;
+            }
+        }
+        if (next == nullptr) {
+            return item;
+        }
+        item = next;
+    }
+    return item;
+}
+
+// 点击会到达 delegate 自身或其子项即视为可点击（覆盖：尚未定型的几何、未归零的错落位移、
+// 被覆盖层/裁剪吞掉、以及重建中的条目）。
+bool delegateAtClickablePoint(QQuickItem *delegate)
+{
+    if (delegate->width() <= 0.0 || delegate->height() <= 0.0) {
+        return false;
+    }
+    if (qAbs(delegate->property("opacity").toReal() - 1.0) > 1e-6) {
+        return false;
+    }
+    auto transforms = delegate->transform();
+    if (transforms.count(&transforms) > 0 && qAbs(transforms.at(&transforms, 0)->property("x").toReal()) > 1e-6) {
+        return false;
+    }
+    auto *delegateWindow = delegate->window();
+    if (delegateWindow == nullptr) {
+        return false;
+    }
+    QQuickItem *hit = hitTestSceneItem(delegateWindow->contentItem(),
+                                       delegate->mapToScene(QPointF(delegate->width() / 2, delegate->height() / 2)));
+    for (QQuickItem *item = hit; item != nullptr; item = item->parentItem()) {
+        if (item == delegate) {
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 class SidebarQueueSwitchTest : public QObject
@@ -581,6 +637,19 @@ QQuickItem *SidebarQueueSwitchTest::itemAt(QQuickItem *listView, int index) cons
 void SidebarQueueSwitchTest::clickDelegate(QQuickItem *delegate)
 {
     QVERIFY(delegate != nullptr);
+    // 慢机防御（macOS CI 实测失败）：条目可能已存在但布局/错落滑入尚未收敛，直接按当前
+    // 几何点击会落空或被吞。等到该条目确实位于可点击状态（尺寸有效、位移归零、完全不透明、
+    // 且场景中心命中它）再点击。
+    bool clickable = false;
+    const QDeadlineTimer deadline(8000);
+    while (!deadline.hasExpired()) {
+        if (delegateAtClickablePoint(delegate)) {
+            clickable = true;
+            break;
+        }
+        QTest::qWait(5);
+    }
+    QVERIFY2(clickable, "delegate did not become clickable within 8s");
     const QPointF center = delegate->mapToScene(QPointF(delegate->width() / 2, delegate->height() / 2));
     QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, center.toPoint());
 }
