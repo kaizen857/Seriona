@@ -238,6 +238,8 @@ public:
         return m_removeLocationResult;
     }
 
+    bool removeRoot(const std::filesystem::path &) override { return true; }
+
     seriona::scanner::PlaylistTreeSnapshot snapshot() const override
     {
         return m_snapshot;

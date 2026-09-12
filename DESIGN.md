@@ -20,7 +20,7 @@ Seriona 是一个 Qt Quick 桌面音乐播放器的**前端**。它本身不实�
 | 语言 | C++23（根 CMake 显式设置 `CMAKE_CXX_STANDARD 23` 并要求该标准） |
 | 框架 | Qt 6.8+（`qt_standard_project_setup(REQUIRES 6.8)`） |
 | Qt 模块 | Quick、Concurrent、QuickDialogs2、Widgets；C++ Qt Test 测试另需 `Qt6::Test`，无 Qt Quick Test 入口 |
-| 构建系统 | mock-only 前端最低 CMake 3.16；默认后端集成与 Windows 发布要求 3.20+；日常开发沿用现有生成器，Windows 发布使用 Visual Studio 17 2022 x64 |
+| 构建系统 | mock-only 前端最低 CMake 3.27；默认后端集成与 Windows 发布要求 3.27+；日常开发沿用现有生成器，Windows 发布使用 Visual Studio 17 2022 x64 |
 | QML 效果 | 实际使用 `Qt5Compat.GraphicalEffects`（ColorOverlay/RectangularGlow/OpacityMask/DropShadow）；`MainContent.qml` 虽导入 `QtQuick.Effects` 但未使用 |
 | 语言服务 | `.clangd` 读 `build/`（相对）；`.qmlls.ini` 硬编码 `build/` 绝对路径 |
 
@@ -118,7 +118,7 @@ Windows x64 发布由根目录 `build.bat` 调用 `scripts/build-package-windows
 
 - **LibraryTreeStore**（非 QObject 纯容器）：以节点 id 为键保存整棵曲库树；`setSnapshot()` 一次重建（含悬空子节点剔除、孤儿回补、root 缺失回退到"无父节点集合"、`descendantTrackCount` 递归）。
 - **LibraryModel**（`QAbstractListModel`，`QML_UNCREATABLE`）：把树投影为扁平列表；19 个角色（type/name/title/artist/album/songCount/duration/…/artworkSource/year）；行⇄节点 id 映射；三种投影：根投影、当前文件夹投影（仅直接子级）、搜索投影（当前文件夹子树内只匹配歌曲，文件夹条目不出现；按标题10/歌手5/专辑3/文件名2 加权评分，完全/前缀/包含分别 ×10/×5/×1）；多规则稳定排序（搜索激活时按评分降序，清空恢复用户规则）；`projectionRevision` 在投影完整替换或快照更新后递增（完整替换用 reset 语义）。
-- **LibraryFolderProjectionModel**（`library_folder_projection_model.{h,cpp}`，非 QML_ELEMENT，归 LibraryController 所有）：按 folderNodeId 缓存的每级文件夹独立投影模型（`QString()` 根键恒为根投影）。每个 FolderPage 绑定各自模型实例，页面与模型都常驻不销毁 → 滚动位置零成本保留（Qt 无 reset 后恢复滚动位置的契约，故不做恢复，而是让视图与模型都不换）；数据为某文件夹的直接子级投影（过滤/排序规则与主模型投影一致，复用 `sortedProjectionNodeIds`）；监听主模型 `treeChanged` 原地自重建（`setSource`→`rebuildFromSource`，实例身份不变，revision 递增）、`playingTrackIdChanged`/`focusedNodeIdChanged` 仅对投影内行发 `dataChanged`。主模型投影能力保留给搜索/曲库页等其他使用者。
+- **LibraryFolderProjectionModel**（`library_folder_projection_model.{h,cpp}`，非 QML_ELEMENT，归 LibraryController 所有）：按 folderNodeId 缓存的每级文件夹独立投影模型（`QString()` 根键恒为根投影）。每个 FolderPage 绑定各自模型实例，页面与模型都常驻不销毁 → 滚动位置零成本保留（Qt 无 reset 后恢复滚动位置的契约，故不做恢复，而是让视图与模型都不换）；数据为某文件夹的直接子级投影（过滤/排序规则与主模型投影一致，复用 `sortedProjectionNodeIds`）；监听主模型 `treeChanged` 原地增量自重建（`rebuildFromSource` 经 `row_diff` 只发行操作/`rowsMoved`/批量 `dataChanged`，不 reset，视图视口不归零；仅 `setSource` 首建/数据源切换/文件夹切换走 `resetFromSource`，同一源+同一文件夹的排序规则变更同样走增量行操作；实例身份不变，revision 递增）、`playingTrackIdChanged`/`focusedNodeIdChanged` 仅对投影内行发 `dataChanged`。主模型投影能力保留给搜索/曲库页等其他使用者。
 - **LibraryController**（定义于 `library_model.{h,cpp}`，`QML_ELEMENT`，**无独立文件**）：QML 可见门面。
   - **文件夹导航与投影模型缓存**：投影模型按 folderNodeId 缓存（`projectionModelForNodeId(nodeId)` get-or-create，`QString()` 根键）；`enterFolder`/`goBack` 只修改当前文件夹、不销毁任何缓存模型；主树 `treeChanged` 时保留全部缓存模型原地自重建（实例身份不变），`projectionGeneration` 递增供测试与诊断，排序变更同样原地重建；`folderStackDepth` = 当前文件夹祖先链（`ancestorChainForNode`，从根向目标、排除根）的长度（根浏览为 0）；`locateNodeInFolderStack(nodeId)` 从根逐级进入直到目标所在级（目标不在任何已建投影时进入其直接父级）。
   - **双游标分离**：`playingTrackId`（播放身份）与 `selectedBrowserNodeId`/`focusedNodeId`（浏览焦点）独立；`setPlayingTrackId` 仅当 `followCurrentlyPlaying=true` 才移动浏览游标；`locateCurrentSong()` 手动定位（切文件夹、清搜索、选中、发滚动请求），不发播放命令；浏览动作一律不污染播放身份。
@@ -161,7 +161,7 @@ Windows x64 发布由根目录 `build.bat` 调用 `scripts/build-package-windows
 
 ### 5.8 QML 视图层
 
-- **Main.qml**：360×720 无边框透明窗口（`OpacityMask` 圆角 24，最大化 0）；全局拖拽 + 标题栏 + 封面拖拽（`startSystemMove`）、八向缩放（`startSystemResize`，Maximized 时隐藏）；侧栏 dock（窗口宽 ≥ 800）/overlay 双模式；`smokeScenario` 初始属性在 `Component.onCompleted` 应用；关闭链路 `close() → onClosing → appFacade.shutdown()`。
+- **Main.qml**：360×720 无边框透明窗口（`OpacityMask` 圆角 24，最大化 0）；全局拖拽 + 标题栏 + 封面拖拽（`startSystemMove`）、八向缩放（`startSystemResize`，Maximized 时隐藏）；侧栏 dock（窗口宽 ≥ 800）/overlay 双模式；`smokeScenario` 初始属性在 `Component.onCompleted` 应用；关闭链路 `close() → onClosing → appFacade.shutdown() → Qt.quit()`（设置/均衡器/详情为独立窗口、不参与 lastWindowClosed 判定，主窗关闭时显式退出）。
 - **MainContent.qml**（1853 行）：播放/歌词双 state 共享元素迁移（400ms InOutCubic）；播放控制条、音量、进度（波形拖拽 seek、歌词态线性滑杆）、封面三层回退（全图 `coverArtworkSource` → 缩略图 `coverThumbnailSource` → 占位符"🎵"，逐层降级）、设置 BubbleMenu（"设置"→`openSettingsRequested` 打开 SettingsWindow，歌词分隔符等真实设置项在窗口内；"均衡器"→`openEqualizerRequested` 打开 EqualizerWindow；"关于 Seriona"→AboutOverlay 真实关于界面；退出→真实关闭）、通知 toast（3200ms 自动隐藏）。
 - **StartupView.qml**：启动页；恢复播放列表、添加文件夹（`Qt.labs.platform.FolderDialog` → `appFacade.scanLibrary`）。
 - **Sidebar.qml**：曲库主交互面（树列表带滚动条、表头空白区可拖拽移动窗口、搜索、排序对话框入口、定位当前歌曲 FAB、扫描状态 banner）；delegate 右键菜单（`TrackContextMenu`：详情/下一首播放/删除，删除经 `ConfirmDeleteDialog` 确认）、顶部队列视图（`QueueView`：`PlayNextTrack`/`RemoveFromQueue`）、头部按钮悬停提示（`SharedToolTip`）。文件夹浏览采用 **StackView 页面栈 + FolderPage 实例缓存**：`folderStack` 承载第 1 层及更深文件夹，根视图 `playlistView` 常驻栈外（depth 0 时可见）；`folderPages` 按 folderNodeId 缓存 FolderPage 实例，push/pop 一律传实例、pop/clear 不销毁页面，每层滚动位置与动画状态零成本保留；导航配对调用固定"先栈后 controller"，controller 是导航状态唯一真源，幂等收敛处理器把栈镜像到 controller（重扫/定位等非配对路径自动收敛）；返回根视图时对视口可见 delegate 执行错落滑入。

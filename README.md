@@ -59,7 +59,7 @@
 ### 依赖要求
 - 支持 **C++23** 的编译器（GCC 13+ / Clang 17+ / MSVC 2022+）
 - **Qt 6.8+**（需包含 Quick、Concurrent、QuickDialogs2、Widgets 模块）
-- **CMake ≥ 3.16**（Windows 打包使用 3.20+）
+- **CMake ≥ 3.27**（Windows 打包使用 3.27+）
 
 ### 构建与运行
 
@@ -135,7 +135,7 @@ Windows x64 的完整构建、测试、Qt 部署和 ZIP 打包由 `build.bat` �
 
 - Visual Studio 2022，勾选"使用 C++ 的桌面开发"和 Windows 10/11 SDK。脚本只接受 VS 2022 的 MSVC x64 工具链。
 - Qt 6.8 或更高版本的 `msvc2022_64` kit，并包含 Quick、Concurrent、QuickDialogs2、Widgets 模块。
-- CMake 3.20+、Git、Python 3，以及已 bootstrap 的 vcpkg。Python 3 必须可通过 `python.exe` 或 `py.exe -3` 发现；可将 vcpkg 根目录加入 `VCPKG_ROOT`，或使用 `-VcpkgRoot` 指定。
+- CMake 3.27+、Git、Python 3，以及已 bootstrap 的 vcpkg。Python 3 必须可通过 `python.exe` 或 `py.exe -3` 发现；可将 vcpkg 根目录加入 `VCPKG_ROOT`，或使用 `-VcpkgRoot` 指定。
 - 可访问网络：首次运行 vcpkg manifest restore 和后端的 FetchContent 可能下载依赖。脚本不会安装 Visual Studio、Qt、CMake、Git 或 VC++ Redistributable。
 
 在仓库根目录执行，或直接双击 `build.bat`：

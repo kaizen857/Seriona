@@ -115,6 +115,7 @@ private slots:
     void uiOnlyHandlersDoNotUseBackendCommands();
     void qmlStartupDoesNotCallQtApplicationPropertyFunction();
     void qmlLayoutSourceContractsStayStable();
+    void auxiliaryWindowLayeringContractsStayStable();
     void equalizerWindowSourceContractsStayStable();
 };
 
@@ -441,10 +442,28 @@ void UiOnlyHandlerPolicyTest::equalizerWindowSourceContractsStayStable()
         "settings: root.settings",
         "function openManagePresets()"
     });
+    // —— R6 预设弹层修复契约：二次点击只关闭不重开（CloseOnPressOutsideParent +
+    //    visible 判据）、圆角白底清除（background:null）、与设置菜单同款进出场过渡 ——
+    expectContainsAll(eqWindowQml, {
+        "function togglePresetPicker()",
+        "if (presetMenu.visible)",
+        "closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent",
+        "parent: presetApplyButton",
+        "background: null",
+        "enter: Transition",
+        "exit: Transition"
+    });
     expectContainsAll(presetDialogQml, {
         "objectName: \"equalizerPresetDialog\"",
         "objectName: \"equalizerPresetDialogClose\"",
         "closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside"
+    });
+    // —— R6 预设行可见性修复契约：预设行必须带 kind 标记（delegate 的
+    //    visible: modelData.kind === "preset" 判定依赖它；C++ 源行无该字段）——
+    expectContainsAll(presetDialogQml, {
+        "function makePresetRow(item)",
+        "Object.assign({ kind: \"preset\" }, item)",
+        "modelData.kind === \"preset\""
     });
 
     // —— 防回归：EQ 域无占位反馈/无后端命令直发；竖条根 value 纯外部可写（B1）——
@@ -458,6 +477,49 @@ void UiOnlyHandlerPolicyTest::equalizerWindowSourceContractsStayStable()
         "root.userEdited(grid)"
     });
     expectAbsent(bandSliderQml, QStringLiteral("root.value ="));
+}
+
+// 窗口层级契约（用户实测修复）：设置/均衡器/歌曲详情三个辅助窗口取消"应用程序内顶层"——
+// ① 设置窗 x/y 绑定移除（旧绑定让主窗口移动时设置窗瞬移回打开时相对位置并跟随），
+//    改首次打开一次性居中；
+// ② 三窗口显式 transientParent: null 解除 Qt 对嵌套 Window 的自动 transient 关联
+//    （Windows 下即"所有者窗口"——永远压在主窗口之上），设置窗另移除系统级
+//    WindowStaysOnTopHint；主窗口可覆盖它们；
+// ③ 解除 transient 后辅助窗不再参与 lastWindowClosed 判定，主窗关闭链路补 Qt.quit()。
+void UiOnlyHandlerPolicyTest::auxiliaryWindowLayeringContractsStayStable()
+{
+    const QString mainQml = sourceFile(QStringLiteral("qml/Main.qml"));
+    const QString settingsWindowQml = sourceFile(QStringLiteral("qml/windows/SettingsWindow.qml"));
+    const QString trackContextMenuQml = sourceFile(QStringLiteral("qml/components/TrackContextMenu.qml"));
+
+    // ① 设置窗：一次性居中（打开处理器）+ 旧 x/y 绑定零残留
+    expectContainsAll(mainQml, {
+        "settingsWindow.x = window.x + (window.width - settingsWindow.width) / 2",
+        "settingsWindow.y = window.y + (window.height - settingsWindow.height) / 2",
+        "if (!settingsWindow.visible) {"
+    });
+    expectAbsent(mainQml, QStringLiteral("x: window.x + (window.width - width) / 2"));
+    expectAbsent(mainQml, QStringLiteral("y: window.y + (window.height - height) / 2"));
+
+    // ② 三窗口解除自动 transient 关联：设置窗/均衡器窗实例各一处（按声明顺序锁定）
+    expectInOrder(mainQml, {
+        "id: settingsWindow",
+        "transientParent: null",
+        "id: equalizerWindow",
+        "transientParent: null"
+    });
+    // 设置窗 flags：无系统级置顶（锁定旧 flags 行不回归；注释中提及标志名属文档）
+    expectContains(settingsWindowQml, QStringLiteral("flags: Qt.Dialog | Qt.FramelessWindowHint"));
+    expectAbsent(settingsWindowQml,
+                 QStringLiteral("flags: Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint"));
+    // 详情窗：解除自动关联；删除确认对话框保持 transient 注入（对话框语义不变）
+    expectContainsAll(trackContextMenuQml, {
+        "transientParent: null",
+        "transientParent: root.Window.window"
+    });
+
+    // ③ 主窗关闭链路：显式退出（辅助窗不再参与 lastWindowClosed 判定）
+    expectContains(mainQml, QStringLiteral("Qt.quit();"));
 }
 
 QTEST_GUILESS_MAIN(UiOnlyHandlerPolicyTest)

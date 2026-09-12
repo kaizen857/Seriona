@@ -102,13 +102,13 @@ Popup {
                     builtinStarted = true;
                     out.push({ kind: "header", text: qsTr("内置预设") });
                 }
-                out.push(item);
+                out.push(makePresetRow(item));
             } else {
                 if (!userStarted) {
                     userStarted = true;
                     out.push({ kind: "header", text: qsTr("我的预设") });
                 }
-                out.push(item);
+                out.push(makePresetRow(item));
             }
         }
         if (!userStarted) {
@@ -116,6 +116,15 @@ Popup {
             out.push({ kind: "empty", text: qsTr("还没有用户预设，可在下方新建") });
         }
         return out;
+    }
+
+    // 预设行 = 源行（id/name/builtin/preGainDb/gains）+ kind 判别标记。
+    // 修复：C++ eqPresetList 条目没有 kind 字段，原实现直接透传 → delegate 的
+    // visible: modelData.kind === "preset" 恒为 false，行实例存在但不可见
+    // （内置分区整片空白、用户预设「隐形」）。此处按文件头视图模型契约补标记；
+    // renameErrorFlash 的 kind === "preset" 行查找同源修复。
+    function makePresetRow(item) {
+        return Object.assign({ kind: "preset" }, item);
     }
 
     // —— 预设行内动作（均由 delegate 行触发）——

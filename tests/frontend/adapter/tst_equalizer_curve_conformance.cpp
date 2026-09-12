@@ -76,6 +76,7 @@ public:
     void stop() override { }
     seriona::scanner::PlaylistTreeSnapshot snapshot() const override { return {}; }
     bool removeLocation(const std::filesystem::path &) override { return false; }
+    bool removeRoot(const std::filesystem::path &) override { return true; }
 };
 
 // —— 最小文件夹排序存储 fake ——
@@ -277,11 +278,13 @@ void EqualizerCurveConformanceTest::synthMatchesBackendReducerOverAllCases()
         const bool passed = worstDev <= 0.05;
         allPassed = allPassed && passed;
         worstOverall = std::max(worstOverall, worstDev);
+        // 全 0 偏差时无 worst 点（worstPoint 保持 -1），跳过频率查询避免 size_t(-1) 越界
+        const double worstHz =
+            worstPoint >= 0 ? local.frequenciesHz[static_cast<std::size_t>(worstPoint)] : 0.0;
         std::printf("[conformance] %-24s mode=%2d preGain=%+4.1f  maxDev=%.6fdB"
                     " (pt %3d, %7.2fHz)  meanDev=%.6fdB  axisMaxDev=%.4eHz  %s\n",
-                    test.name, test.bandMode, test.preGainDb, worstDev, worstPoint,
-                    local.frequenciesHz[static_cast<std::size_t>(worstPoint)], sumDev / kPoints,
-                    worstAxisDev, passed ? "PASS" : "FAIL");
+                    test.name, test.bandMode, test.preGainDb, worstDev, worstPoint, worstHz,
+                    sumDev / kPoints, worstAxisDev, passed ? "PASS" : "FAIL");
     }
     std::printf("[conformance] overall: %s (worst deviation %.6f dB)\n",
                 allPassed ? "ALL PASS" : "FAILED", worstOverall);

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.27)
 
 # 版本号由 CI 注入（-DSERIONA_VERSION=1.0.0）；本地默认 0.1
 set(SERIONA_VERSION "0.1" CACHE STRING "Seriona release version (overridden by CI)")
@@ -190,6 +190,7 @@ set(SERIONA_APP_LAYER_SOURCES
     src/app/library_model.h
     src/app/library_folder_projection_model.cpp
     src/app/library_folder_projection_model.h
+    src/app/row_diff.h
     src/app/library_tree_store.cpp
     src/app/library_tree_store.h
     src/app/track_stats_controller.cpp
@@ -530,6 +531,19 @@ add_test(NAME seriona_frontend_settings_transition_startup_apply COMMAND seriona
     add_dependencies(seriona_frontend_queue_view_tests seriona)
     add_test(NAME seriona_frontend_queue_view COMMAND seriona_frontend_queue_view_tests)
 
+    # 行键差分引擎（header-only）：纯 Qt Core 面，mock-only 构建同样注册
+    add_executable(seriona_frontend_row_diff_tests
+        tests/frontend/adapter/tst_row_diff.cpp
+        src/app/row_diff.h
+    )
+    target_include_directories(seriona_frontend_row_diff_tests
+        PRIVATE src/app
+    )
+    target_link_libraries(seriona_frontend_row_diff_tests
+        PRIVATE Qt6::Core Qt6::Test
+    )
+    add_test(NAME seriona_frontend_row_diff COMMAND seriona_frontend_row_diff_tests)
+
     if(SERIONA_BACKEND_CONTROL_TARGET)
         add_executable(seriona_frontend_library_tree_model_tests
             tests/frontend/adapter/tst_library_tree_model.cpp
@@ -686,6 +700,7 @@ add_test(NAME seriona_frontend_settings_transition_startup_apply COMMAND seriona
         add_test(NAME seriona_frontend_qml_startup_property_contract COMMAND seriona_frontend_ui_only_handler_policy_tests qmlStartupDoesNotCallQtApplicationPropertyFunction)
         add_test(NAME seriona_frontend_qml_layout COMMAND seriona_frontend_ui_only_handler_policy_tests qmlLayoutSourceContractsStayStable)
         add_test(NAME seriona_frontend_ui_only_equalizer_contract COMMAND seriona_frontend_ui_only_handler_policy_tests equalizerWindowSourceContractsStayStable)
+        add_test(NAME seriona_frontend_ui_only_aux_window_layering COMMAND seriona_frontend_ui_only_handler_policy_tests auxiliaryWindowLayeringContractsStayStable)
 
         add_executable(seriona_frontend_library_select_track_tests
             tests/frontend/adapter/tst_library_select_track.cpp

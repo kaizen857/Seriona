@@ -49,7 +49,7 @@
 ## 后端集成（可选）
 - `SERIONA_BACKEND_SOURCE_DIR` 默认是相对仓库根目录的 `../Seriona_Backend`；设为 `""` 才会强制 mock-only。非空时优先 `find_package(SerionaBackend CONFIG QUIET)`（CI 顺序链复用已安装产物：命中则链接 `SerionaBackend::seriona_control/audio/app`、要求 `find_package(spdlog CONFIG REQUIRED)` 并跳过 add_subdirectory）；未命中走源码嵌入链，路径不存在时从 `https://github.com/kaizen857/Seriona_Backend.git` 的 `main` 分支 FetchContent，抓取失败会配置失败，不会自动回退。
 - 接入后端时，前端链接后端的 control/audio/app 目标并定义 `SERIONA_HAS_BACKEND=1`；CMake 会关闭后端子树自身的 app/tests，再恢复前端的 `BUILD_TESTING`。
-- `BUILD_TESTING` 默认为 `ON`；启用测试时，mock-only 只注册纯 QML 面的 8 个测试（`seriona_frontend_command_result_mapping`、`seriona_frontend_snapshot_mapping`、`seriona_frontend_library_tree_mapping`、`seriona_frontend_settings_controller_tests`、`seriona_frontend_track_stats_tests`、`seriona_frontend_about_overlay_tests`、`seriona_frontend_queue_view_tests`、`seriona_frontend_app_facade_smoke_mode`），其余前端测试都要求后端目标。
+- `BUILD_TESTING` 默认为 `ON`；启用测试时，mock-only 只注册无需后端的 9 个测试（`seriona_frontend_command_result_mapping`、`seriona_frontend_snapshot_mapping`、`seriona_frontend_library_tree_mapping`、`seriona_frontend_settings_controller_tests`、`seriona_frontend_track_stats_tests`、`seriona_frontend_about_overlay_tests`、`seriona_frontend_queue_view_tests`、`seriona_frontend_app_facade_smoke_mode`、`seriona_frontend_row_diff`），其余前端测试都要求后端目标。
 - 离线运行验证脚本时，可用 `SERIONA_FETCHCONTENT_CATCH2_DIR` 和 `SERIONA_FETCHCONTENT_THREAD_POOL_DIR` 指向已有依赖源码。注意：前端 `CMakeLists.txt` 已无 Catch2 FetchContent（catch2 由后端嵌入的 TagReader 子树负责：`TAGREADER_USE_SYSTEM_CATCH2` 优先 find_package，缺失才 FetchContent），`CATCH2` 变量只在 TagReader 走 FetchContent 路径时生效；`THREAD_POOL` 变量仍有效（后端 FetchContent 拉取）。
 
 ## QML 与资源

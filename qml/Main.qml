@@ -197,6 +197,10 @@ Window {
     onClosing: function (closeEvent) {
         shutdownRequested = true;
         appFacade.shutdown();
+        // 三个辅助窗口(设置/均衡器/歌曲详情)已显式解除 transientParent,不再参与
+        // QGuiApplication 的 lastWindowClosed 判定(带 transient parent 的窗口不参与);
+        // 主窗口关闭时主动退出应用,保持"关主窗即退出"的既有语义。
+        Qt.quit();
     }
 
     Timer {
@@ -385,6 +389,11 @@ Window {
                         onExitRequested: window.requestApplicationClose()
 
                         onOpenSettingsRequested: {
+                            // 首次打开时居中(一次性定位,不跟随主窗口)
+                            if (!settingsWindow.visible) {
+                                settingsWindow.x = window.x + (window.width - settingsWindow.width) / 2;
+                                settingsWindow.y = window.y + (window.height - settingsWindow.height) / 2;
+                            }
                             settingsWindow.show();
                         }
 
@@ -537,14 +546,21 @@ Window {
     SettingsWindow {
         id: settingsWindow
         appFacade: window.appFacade
-        x: window.x + (window.width - width) / 2
-        y: window.y + (window.height - height) / 2
+        // x/y 坐标绑定已移除:绑定会在主窗口移动时把设置窗瞬移回"打开时的相对位置"并跟随移动
+        // (与均衡器窗口同因)。首次打开居中逻辑见 openSettings 处理器。
+        // transientParent: null:显式解除嵌套 Window 的自动 transient 关联(Qt 会沿对象父链
+        // 自动设置 transientParent,Windows 下即"所有者窗口"语义——永远压在主窗口之上)。
+        // 解除后设置窗为独立窗口:主窗口移动到其上时可正常覆盖(不再被设置窗挡住)。
+        transientParent: null
     }
 
     EqualizerWindow {
         id: equalizerWindow
         // x/y 坐标绑定已移除:避免窗口跟随主窗口瞬移(Wayland transient 语义问题)
         // 首次打开居中逻辑见 openEqualizer 处理器
+        // transientParent: null:显式解除嵌套 Window 的自动 transient 关联(与设置窗同策),
+        // 使主窗口可以覆盖均衡器窗口(不再被其挡住)。
+        transientParent: null
     }
 
     Timer {
@@ -579,7 +595,17 @@ Window {
                 smokeTimer.start();
             } else if (step === 1) {
                 if (settingsWindow.visible) {
-                    console.log("[smoke] settingsWindow opened");
+                    console.log("[smoke] settingsWindow opened"
+                            + " transientParentNull=" + (settingsWindow.transientParent === null));
+                    // 位置独立性断言:主窗口移动不应带动设置窗(修复前 x/y 绑定会瞬移跟随)
+                    var settingsXBefore = settingsWindow.x;
+                    var windowXBefore = window.x;
+                    window.x = windowXBefore + 40;
+                    console.log("[smoke] settingsWindow positionLocked="
+                            + (settingsWindow.x === settingsXBefore)
+                            + " windowMoved=" + (window.x !== windowXBefore)
+                            + " before=" + settingsXBefore + " after=" + settingsWindow.x);
+                    window.x = windowXBefore;
                     settingsWindow.close();
                 }
                 mainContent.openEqualizerRequested();
@@ -588,7 +614,17 @@ Window {
                 smokeTimer.start();
             } else if (step === 2) {
                 if (equalizerWindow.visible) {
-                    console.log("[smoke] equalizerWindow opened");
+                    console.log("[smoke] equalizerWindow opened"
+                            + " transientParentNull=" + (equalizerWindow.transientParent === null));
+                    // 位置独立性断言:主窗口移动不应带动均衡器窗(与设置窗同策回归锁)
+                    var eqXBefore = equalizerWindow.x;
+                    var windowXBefore2 = window.x;
+                    window.x = windowXBefore2 + 40;
+                    console.log("[smoke] equalizerWindow positionLocked="
+                            + (equalizerWindow.x === eqXBefore)
+                            + " windowMoved=" + (window.x !== windowXBefore2)
+                            + " before=" + eqXBefore + " after=" + equalizerWindow.x);
+                    window.x = windowXBefore2;
                     // 既有开窗断言保持；窗口暂不关闭，进入窗内交互步骤（F2.6）
                     step = 3;
                     smokeTimer.interval = 100;
@@ -643,8 +679,19 @@ Window {
                         var dialog = smokeFindByObjectName(equalizerWindow, "equalizerPresetDialog");
                         if (dialog && dialog.visible)
                             console.log("[smoke] eq presetDialog visible");
-                        if (dialog)
+                        if (dialog) {
+                            // R6 断言：预设行视图模型必须带 kind 标记（delegate 的
+                            // visible: modelData.kind === "preset" 判定依赖它；
+                            // 修复前为 undefined → 行实例存在但不可见）
+                            var presetRows = dialog.sectionedList;
+                            var presetKinds = "";
+                            for (var ri = 0; ri < Math.min(presetRows.length, 4); ++ri)
+                                presetKinds += (ri > 0 ? "," : "") + presetRows[ri].kind;
+                            console.log("[smoke] eq presetDialog rows=" + presetRows.length
+                                    + " kinds=" + presetKinds
+                                    + " firstPresetKind=" + (presetRows.length > 1 ? presetRows[1].kind : "(none)"));
                             dialog.close();
+                        }
                     }
                     // —— T10 图谱区断言起点：频谱刻度 4 档文本存在 + 显式置 OFF 初态 ——
                     // 刻度标签为静态 QML 覆盖层（eqScaleLabel*；0 顶 → -60 底，dbFsToY 定位）。
@@ -825,7 +872,7 @@ Window {
                 }
             } else if (step === 11) {
                 if (equalizerWindow.visible) {
-                    // —— T11 风暴总结（终态 bandMode=10：腿 5 末点 mode10）+ 关窗 ——
+                    // —— T11 风暴总结（终态 bandMode=10：腿 5 末点 mode10）——
                     var gF = smokeFindByObjectName(equalizerWindow, "eqGraphCanvas");
                     var hcF = gF ? gF.handleCount() : -1;
                     console.log("[smoke] eq storm summary legs=6 roundTrips=3 stormOk="
@@ -834,9 +881,64 @@ Window {
                             + " finalHandleCount=" + hcF
                             + " binCountOk=" + (gF !== null && gF.binCount === 120)
                             + " barsStillHidden=" + (gF ? gF.spectrumBarsVisible === false : false));
-                    equalizerWindow.close();
-                    console.log("[smoke] equalizerWindow closed after eq graph state machine + T11 storm");
+                    // —— R6 预设弹层回归：打开（step12 断言）→ 二次点击关闭且不重开（step13）——
+                    var applyBtn = smokeFindByObjectName(equalizerWindow, "eqPresetApplyButton");
+                    if (applyBtn) {
+                        applyBtn.click(); // 打开（enter 过渡）
+                        console.log("[smoke] eq presetPicker click#1 (open)");
+                    } else {
+                        console.log("[smoke] eq presetPicker applyButton missing");
+                    }
+                    step = 12;
+                    smokeTimer.interval = 200;
+                    smokeTimer.start();
                 }
+            } else if (step === 12) {
+                if (equalizerWindow.visible) {
+                    // R6 断言 A：打开态 visible + 背景已清除（background:null 或全透明）
+                    // + enter/exit 过渡存在（与设置菜单同款动画接线）。
+                    var picker = smokeFindByObjectName(equalizerWindow, "eqPresetPickerMenu");
+                    var pickerBg = picker ? picker.background : undefined;
+                    var bgOk = picker !== null
+                            && (pickerBg === null || pickerBg === undefined
+                                || (pickerBg.color !== undefined && pickerBg.color.a === 0));
+                    console.log("[smoke] eq presetPicker afterOpen visible=" + (picker ? picker.visible : "(null)")
+                            + " bgOk=" + bgOk
+                            + " hasEnter=" + (picker ? picker.enter !== null && picker.enter !== undefined : false)
+                            + " hasExit=" + (picker ? picker.exit !== null && picker.exit !== undefined : false));
+                    var applyBtn2 = smokeFindByObjectName(equalizerWindow, "eqPresetApplyButton");
+                    if (applyBtn2) {
+                        applyBtn2.click(); // 已打开时再点：应关闭且不重开
+                        console.log("[smoke] eq presetPicker click#2 (toggle close)");
+                    }
+                    step = 13;
+                    smokeTimer.interval = 350;
+                    smokeTimer.start();
+                }
+            } else if (step === 13) {
+                if (equalizerWindow.visible) {
+                    // R6 断言 B：退场过渡结束（150ms）后弹层隐藏且未重开（noReopen）。
+                    var picker2 = smokeFindByObjectName(equalizerWindow, "eqPresetPickerMenu");
+                    console.log("[smoke] eq presetPicker afterSecondClick visible="
+                            + (picker2 ? picker2.visible : "(null)")
+                            + " noReopen=" + (picker2 ? picker2.visible === false : false));
+                    equalizerWindow.close();
+                    console.log("[smoke] equalizerWindow closed after eq graph state machine + T11 storm + preset picker toggle");
+                    // 主窗关闭链路回归（step14/15）：重开设置窗后关闭主窗——解除 transient 后
+                    // 辅助窗不参与 lastWindowClosed 判定，应用退出依赖关闭链路的显式退出。
+                    step = 14;
+                    smokeTimer.interval = 200;
+                    smokeTimer.start();
+                }
+            } else if (step === 14) {
+                // 重开设置窗（保持打开），随后关闭主窗验证退出链路
+                mainContent.openSettingsRequested();
+                step = 15;
+                smokeTimer.interval = 200;
+                smokeTimer.start();
+            } else if (step === 15) {
+                console.log("[smoke] main window close requested with settings open=" + settingsWindow.visible);
+                window.requestApplicationClose();
             }
         }
     }

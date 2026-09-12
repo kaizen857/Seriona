@@ -7,7 +7,9 @@ Window {
     id: root
     objectName: "settingsWindow"
     
-    flags: Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+    flags: Qt.Dialog | Qt.FramelessWindowHint
+    // Qt.WindowStaysOnTopHint removed:该标志是系统级置顶(Windows WS_EX_TOPMOST),
+    // 会压住主窗口;配合 Main.qml 实例的 transientParent: null 使设置窗可被主窗口覆盖。
     color: "transparent"
     
     width: 440
