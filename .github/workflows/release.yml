@@ -873,7 +873,8 @@ jobs:
             "seriona_frontend_backend_bridge_tests threading" \
             "seriona_frontend_app_facade_smoke_mode" \
             "seriona_frontend_startup_restore_tests" \
-            "seriona_frontend_track_detail_tests"; do
+            "seriona_frontend_track_detail_tests" \
+            "seriona_frontend_sidebar_queue_tests"; do
             set -- $t
             bin="./$1"; shift
             echo "========== $t =========="

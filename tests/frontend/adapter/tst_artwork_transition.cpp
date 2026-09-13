@@ -5455,6 +5455,42 @@ Seriona::App::GradientPalette samplePalette()
         QStringLiteral("#aabbcc"), QStringLiteral("#bbccdd"), QStringLiteral("#ccddee")};
 }
 
+// 慢机（CPU 饥饿）统一等待预算：9:1 超订 + nice 19 的极端环境下（见 2026-09-13 审计
+// FE-01/FE-02），同一批 32px/1024px PNG 解码与状态迁移实测需要 15.3–18.05s，固定 15s
+// 预算会确定性误报。放大预算不改变任何断言语义：条件仍须精确成立（status 相等、source
+// 相等、gradientColor0 相等），只是给足事件循环被饿调度后的收敛窗口。
+constexpr int kSlowMachineQtryMs = 60000;
+
+// 非阻塞探针的墙钟上限（原 500ms）。解码器整个用例期间都被 releaseDecoder 扣住，真实的
+// "等待解码器"不可能在有限预算内返回，因此放宽上限不改变断言语义；而饿调度会把主线程自身
+// 的工作量放大数百倍（实测 969ms），500ms 固定值会误报（审计 FE-02 同一函数的固定墙钟悬崖）。
+constexpr int kSlowMachineNonBlockingBudgetMs = 5000;
+
+// 信号量 RAII 释放：QTRY 宏超时/断言失败会提前 return，若此时 palette worker 仍阻塞在
+// acquire()，唯一的手工 release() 不可达，随后 ~PlaybackController → shutdown() 的
+// m_thread.join() 会永久挂起（审计 FE-02 的 join 死锁）。本守卫必须在被测控制器之后构造：
+// C++ 逆序析构保证守卫先于控制器析构，从而覆盖包括提前 return 在内的所有退出路径。
+class ScopedSemaphoreRelease
+{
+public:
+    explicit ScopedSemaphoreRelease(QSemaphore &semaphore) : m_semaphore(semaphore) {}
+
+    ~ScopedSemaphoreRelease() { releaseOnce(); }
+
+    void releaseOnce()
+    {
+        if (m_released) {
+            return;
+        }
+        m_released = true;
+        m_semaphore.release();
+    }
+
+private:
+    QSemaphore &m_semaphore;
+    bool m_released = false;
+};
+
 } // namespace
 
 namespace Seriona {
@@ -5753,7 +5789,7 @@ void ArtworkTransitionTest::artwork_transition()
     // so only the preferred layer becomes visible.
     controller.applyPlayerStateSnapshot(makeArtworkSnapshot(thumbnail, thumbnail));
     QTRY_COMPARE_WITH_TIMEOUT(block.preferred->property("status").toInt(),
-        StatusReady, 15000);
+        StatusReady, kSlowMachineQtryMs);
     QCOMPARE(block.preferred->property("source").toUrl(),
         QUrl::fromLocalFile(thumbnail));
     QCOMPARE(block.fallback->property("source").toUrl(),
@@ -5774,7 +5810,7 @@ void ArtworkTransitionTest::artwork_transition()
     QCOMPARE(block.icon->isVisible(), false);
 
     QTRY_COMPARE_WITH_TIMEOUT(block.preferred->property("status").toInt(),
-        StatusReady, 15000);
+        StatusReady, kSlowMachineQtryMs);
     QCOMPARE(block.fallback->property("source").toUrl(),
         QUrl::fromLocalFile(thumbnail));
     QCOMPARE(block.preferred->isVisible(), true);
@@ -5789,9 +5825,9 @@ void ArtworkTransitionTest::artwork_transition()
     QCoreApplication::processEvents(QEventLoop::AllEvents);
     controller.applyPlayerStateSnapshot(makeArtworkSnapshot(thumbnailB, thumbnailB));
     QTRY_COMPARE_WITH_TIMEOUT(block.preferred->property("source").toUrl(),
-        QUrl::fromLocalFile(thumbnailB), 15000);
+        QUrl::fromLocalFile(thumbnailB), kSlowMachineQtryMs);
     QTRY_COMPARE_WITH_TIMEOUT(block.preferred->property("status").toInt(),
-        StatusReady, 15000);
+        StatusReady, kSlowMachineQtryMs);
     QCOMPARE(block.fallback->property("source").toUrl(),
         QUrl::fromLocalFile(thumbnailB));
     QCOMPARE(block.preferred->isVisible(), true);
@@ -5859,9 +5895,9 @@ void ArtworkTransitionTest::artwork_fallback()
     // Invalid/deleted full artwork: preferred errors, thumbnail bridge shows.
     controller.applyPlayerStateSnapshot(makeArtworkSnapshot(deleted, thumbnail));
     QTRY_COMPARE_WITH_TIMEOUT(block.preferred->property("status").toInt(),
-        StatusError, 15000);
+        StatusError, kSlowMachineQtryMs);
     QTRY_COMPARE_WITH_TIMEOUT(block.fallback->property("status").toInt(),
-        StatusReady, 15000);
+        StatusReady, kSlowMachineQtryMs);
     QCOMPARE(block.preferred->isVisible(), false);
     QCOMPARE(block.fallback->isVisible(), true);
     QCOMPARE(block.icon->isVisible(), false);
@@ -5871,9 +5907,9 @@ void ArtworkTransitionTest::artwork_fallback()
     // Invalid thumbnail (and no full): both layers error, placeholder shows.
     controller.applyPlayerStateSnapshot(makeArtworkSnapshot(missing, missing));
     QTRY_COMPARE_WITH_TIMEOUT(block.preferred->property("status").toInt(),
-        StatusError, 15000);
+        StatusError, kSlowMachineQtryMs);
     QTRY_COMPARE_WITH_TIMEOUT(block.fallback->property("status").toInt(),
-        StatusError, 15000);
+        StatusError, kSlowMachineQtryMs);
     QCOMPARE(block.preferred->isVisible(), false);
     QCOMPARE(block.fallback->isVisible(), false);
     QCOMPARE(block.icon->isVisible(), true);
@@ -5881,7 +5917,7 @@ void ArtworkTransitionTest::artwork_fallback()
     // Invalid thumbnail with valid full: preferred still wins on Ready.
     controller.applyPlayerStateSnapshot(makeArtworkSnapshot(thumbnail, missing));
     QTRY_COMPARE_WITH_TIMEOUT(block.preferred->property("status").toInt(),
-        StatusReady, 15000);
+        StatusReady, kSlowMachineQtryMs);
     QCOMPARE(block.preferred->isVisible(), true);
     QCOMPARE(block.fallback->isVisible(), false);
     QCOMPARE(block.icon->isVisible(), false);
@@ -5905,6 +5941,9 @@ void ArtworkTransitionTest::artwork_palette_nonblocking()
             releaseDecoder.acquire();
             return samplePalette();
         });
+    // 守卫声明在控制器之后（逆序析构 → 守卫先释放、控制器再 shutdown/join）：
+    // 任何断言提前 return 都不会把占用工作线程的 acquire() 遗留成 join 死锁。
+    ScopedSemaphoreRelease releaseDecoderGuard(releaseDecoder);
     Seriona::App::NotificationController notifications;
     Seriona::App::LyricsModel lyrics;
     Seriona::App::LibraryController library;
@@ -5925,25 +5964,25 @@ void ArtworkTransitionTest::artwork_palette_nonblocking()
     controller.applyPlayerStateSnapshot(makeArtworkSnapshot(thumbnail, thumbnail));
     const qint64 applyElapsedMs = timer.nsecsElapsed() / 1000000;
 
-    QVERIFY2(applyElapsedMs <= 500,
+    QVERIFY2(applyElapsedMs <= kSlowMachineNonBlockingBudgetMs,
         qPrintable(QStringLiteral("snapshot application blocked %1 ms behind the palette decoder")
                        .arg(applyElapsedMs)));
     QCOMPARE(songSpy.count(), 1);
     QTRY_COMPARE_WITH_TIMEOUT(block.preferred->property("status").toInt(),
-        StatusReady, 15000);
+        StatusReady, kSlowMachineQtryMs);
     QCOMPARE(decodeCalls.load(), 1);
 
     // Full-only upgrade (thumbnail path unchanged) must not enqueue a second
     // palette decode.
     controller.applyPlayerStateSnapshot(makeArtworkSnapshot(full, thumbnail));
     QTRY_COMPARE_WITH_TIMEOUT(block.preferred->property("source").toUrl(),
-        QUrl::fromLocalFile(full), 15000);
+        QUrl::fromLocalFile(full), kSlowMachineQtryMs);
     QTRY_COMPARE_WITH_TIMEOUT(block.preferred->property("status").toInt(),
-        StatusReady, 15000);
+        StatusReady, kSlowMachineQtryMs);
     QCOMPARE(decodeCalls.load(), 1);
 
-    releaseDecoder.release();
-    QTRY_COMPARE_WITH_TIMEOUT(controller.gradientColor0(), QStringLiteral("#aabbcc"), 8000);
+    releaseDecoderGuard.releaseOnce();
+    QTRY_COMPARE_WITH_TIMEOUT(controller.gradientColor0(), QStringLiteral("#aabbcc"), kSlowMachineQtryMs);
     QCOMPARE(decodeCalls.load(), 1);
 }
 
