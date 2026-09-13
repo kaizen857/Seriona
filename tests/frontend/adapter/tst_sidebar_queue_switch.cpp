@@ -196,6 +196,22 @@ void settleZeroBaseline(QQuickItem *stack, QQuickItem *listView, int index)
     }
 }
 
+// 慢机鲁棒：ListView 布局未收敛前 contentY 设置会被钳回 0；固定 qWait 采样在饿调度下不可靠
+// （实测 29x 慢核上滚动保留用例因此失败）。重复施加目标位置直到生效（超时后仍由调用方断言
+// 失败），返回最终生效值供后续保留断言使用。默认预算 30s：与 clickDelegate 同档——整条长进程
+// 饥饿上下文里引擎/缓存累积状态会显著拖慢 ≥11 行 delegate 的布局收敛，8s 实测不足（审计 FE-03）。
+qreal scrollUntilEffective(QObject *listView, qreal target, int timeoutMs = 30000)
+{
+    const QDeadlineTimer deadline(timeoutMs);
+    qreal current = 0.0;
+    do {
+        listView->setProperty("contentY", target);
+        QTest::qWait(20);
+        current = listView->property("contentY").toReal();
+    } while (current <= 0.0 && !deadline.hasExpired());
+    return current;
+}
+
 // 按事件派发语义做命中测试：从根逐层下降到最深的可交互子项（QQuickItem::childAt 只检查直接
 // 子项，不足以判断"点击会落到谁"）。每层按绘制序取最上层（z 升序、同 z 取插入序后者），并跳过
 // 不可见/禁用/全透明项——folderStack 在 depth 0 即 z=-1 且 enabled=false，必须如此才不会
@@ -308,7 +324,7 @@ private:
     QObject *currentPage() const;
     QObject *currentListView() const;
     QQuickItem *itemAt(QQuickItem *listView, int index) const;
-    void clickDelegate(QQuickItem *delegate);
+    void clickDelegate(QQuickItem *listView, int index);
     QQuickItem *backButton() const;
     int countFolderPageInstances() const;
     // 控制器与栈逐层对齐断言（depth 0 单独断言 currentFolderNodeId 为空）
@@ -634,24 +650,29 @@ QQuickItem *SidebarQueueSwitchTest::itemAt(QQuickItem *listView, int index) cons
     return item;
 }
 
-void SidebarQueueSwitchTest::clickDelegate(QQuickItem *delegate)
+void SidebarQueueSwitchTest::clickDelegate(QQuickItem *listView, int index)
 {
-    QVERIFY(delegate != nullptr);
-    // 慢机防御（macOS CI 实测失败）：条目可能已存在但布局/错落滑入尚未收敛，直接按当前
-    // 几何点击会落空或被吞。等到该条目确实位于可点击状态（尺寸有效、位移归零、完全不透明、
-    // 且场景中心命中它）再点击。
-    bool clickable = false;
-    const QDeadlineTimer deadline(8000);
+    // 慢机防御（macOS CI 实测 SIGSEGV）：等待期间每轮重新按索引取条目——ListView 会回收或
+    // 重建 delegate，跨事件处理（QTest::qWait）持有裸指针会解引用悬垂指针。条目还须与首次
+    // 读到的 nodeId 一致（被复用给别的行时不点错行），并满足可点击条件（尺寸有效、位移归零、
+    // 完全不透明、场景中心按事件派发语义命中它自己）后立即点击（同一段无事件处理，指针安全）。
+    QString expectedNodeId;
+    const QDeadlineTimer deadline(30000);
     while (!deadline.hasExpired()) {
-        if (delegateAtClickablePoint(delegate)) {
-            clickable = true;
-            break;
+        QQuickItem *current = itemAt(listView, index);
+        if (current != nullptr) {
+            if (expectedNodeId.isNull()) {
+                expectedNodeId = current->property("nodeId").toString();
+            }
+            if (current->property("nodeId").toString() == expectedNodeId && delegateAtClickablePoint(current)) {
+                const QPointF center = current->mapToScene(QPointF(current->width() / 2, current->height() / 2));
+                QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, center.toPoint());
+                return;
+            }
         }
         QTest::qWait(5);
     }
-    QVERIFY2(clickable, "delegate did not become clickable within 8s");
-    const QPointF center = delegate->mapToScene(QPointF(delegate->width() / 2, delegate->height() / 2));
-    QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, center.toPoint());
+    QVERIFY2(false, "delegate did not become clickable within 30s");
 }
 
 QQuickItem *SidebarQueueSwitchTest::backButton() const
@@ -909,9 +930,7 @@ void SidebarQueueSwitchTest::scrollRetentionAcrossFolderNavigation()
     QVERIFY(rootView != nullptr);
     QTRY_VERIFY(rootView->property("count").toInt() >= 11);
 
-    rootView->setProperty("contentY", 150.0);
-    QTest::qWait(40);
-    const qreal rootY = rootView->property("contentY").toReal();
+    const qreal rootY = scrollUntilEffective(rootView, 150.0);
     QVERIFY2(rootY > 0.0, "root view must be scrollable in this tree");
 
     // 首次进入：contentY 从顶部边距开始（ListView 首项位于 topMargin 之下时
@@ -920,27 +939,21 @@ void SidebarQueueSwitchTest::scrollRetentionAcrossFolderNavigation()
     assertStackAligned();
     QTRY_VERIFY(currentListView()->property("count").toInt() >= 1);
     assertListViewAtTop(currentListView());
-    currentListView()->setProperty("contentY", 120.0);
-    QTest::qWait(40);
-    const qreal l1Y = currentListView()->property("contentY").toReal();
+    const qreal l1Y = scrollUntilEffective(currentListView(), 120.0);
     QVERIFY2(l1Y > 0.0, "g1 page must be scrollable");
 
     libraryController.enterFolder(QStringLiteral("g2"));
     assertStackAligned();
     QTRY_VERIFY(currentListView()->property("count").toInt() >= 1);
     assertListViewAtTop(currentListView());
-    currentListView()->setProperty("contentY", 90.0);
-    QTest::qWait(40);
-    const qreal l2Y = currentListView()->property("contentY").toReal();
+    const qreal l2Y = scrollUntilEffective(currentListView(), 90.0);
     QVERIFY2(l2Y > 0.0, "g2 page must be scrollable");
 
     libraryController.enterFolder(QStringLiteral("g3"));
     assertStackAligned();
     QTRY_VERIFY(currentListView()->property("count").toInt() >= 1);
     assertListViewAtTop(currentListView());
-    currentListView()->setProperty("contentY", 60.0);
-    QTest::qWait(40);
-    const qreal l3Y = currentListView()->property("contentY").toReal();
+    const qreal l3Y = scrollUntilEffective(currentListView(), 60.0);
     QVERIFY2(l3Y > 0.0, "g3 page must be scrollable");
 
     // 逐级返回：每层位置独立保留（每次 back 前等过渡结束，避免 busy 拒绝）
@@ -982,9 +995,7 @@ void SidebarQueueSwitchTest::rootScrollRetentionRegression()
     QVERIFY(rootView != nullptr);
     QTRY_VERIFY(rootView->property("count").toInt() >= 11);
 
-    rootView->setProperty("contentY", 150.0);
-    QTest::qWait(40);
-    const qreal rootY = rootView->property("contentY").toReal();
+    const qreal rootY = scrollUntilEffective(rootView, 150.0);
     QVERIFY2(rootY > 0.0, "root view must be scrollable in this tree");
 
     libraryController.enterFolder(QStringLiteral("g1"));
@@ -1007,9 +1018,7 @@ void SidebarQueueSwitchTest::rootScrollAnchorRetentionAcrossTreeRefresh()
     QVERIFY(rootView != nullptr);
     QTRY_VERIFY(rootView->property("count").toInt() >= 11);
 
-    rootView->setProperty("contentY", 150.0);
-    QTest::qWait(40);
-    const qreal anchorContentY = rootView->property("contentY").toReal();
+    const qreal anchorContentY = scrollUntilEffective(rootView, 150.0);
     QVERIFY2(anchorContentY > 0.0, "root view must be scrollable in this tree");
 
     int anchorIndex = -1;
@@ -1025,7 +1034,9 @@ void SidebarQueueSwitchTest::rootScrollAnchorRetentionAcrossTreeRefresh()
     applyRichTree();
 
     QTRY_VERIFY(rootView->property("count").toInt() >= 11);
-    QTRY_VERIFY_WITH_TIMEOUT(rootView->property("contentY").toReal() > 100.0, 5000);
+    // 慢机：整条长进程饥饿上下文里"刷新 → 锚点恢复 → 投影重建"的收敛可与滚动收敛同量级，
+    // 默认 5s 轮询窗同样偏紧；与 scrollUntilEffective/clickDelegate 统一到 30s 档（审计 FE-03）。
+    QTRY_VERIFY_WITH_TIMEOUT(rootView->property("contentY").toReal() > 100.0, 30000);
     int restoredIndex = -1;
     QMetaObject::invokeMethod(rootView, "indexAt", Q_RETURN_ARG(int, restoredIndex),
                               Q_ARG(qreal, 0.0),
@@ -1247,7 +1258,7 @@ void SidebarQueueSwitchTest::repeatEnterReusesPageInstance()
     const int instancesBefore = countFolderPageInstances();
 
     // 点击根视图 g1 行（配对路径：push 先于 enterFolder）
-    clickDelegate(itemAt(rootView, 0));
+    clickDelegate(rootView, 0);
     QTRY_COMPARE(stackView()->property("depth").toInt(), 1);
     waitStackSettled();
     assertStackAligned();
@@ -1266,7 +1277,7 @@ void SidebarQueueSwitchTest::repeatEnterReusesPageInstance()
 
     // 重入：同一实例（缓存命中、无新实例创建）
     QTRY_VERIFY(itemAt(rootView, 0) != nullptr);
-    clickDelegate(itemAt(rootView, 0));
+    clickDelegate(rootView, 0);
     QTRY_COMPARE(stackView()->property("depth").toInt(), 1);
     waitStackSettled();
     assertStackAligned();
@@ -1298,9 +1309,7 @@ void SidebarQueueSwitchTest::deepChainNavigationAndCacheSize()
         QCOMPARE(stackView()->property("depth").toInt(), i);
         QObject *lv = currentListView();
         QVERIFY(lv != nullptr);
-        lv->setProperty("contentY", 100.0);
-        QTest::qWait(30);
-        recorded[i] = lv->property("contentY").toReal();
+        recorded[i] = scrollUntilEffective(lv, 100.0);
         QVERIFY2(recorded[i] > 0.0, qPrintable(QStringLiteral("level %1 must be scrollable").arg(i)));
     }
     // 最深层位置在返回前亦保留
@@ -1792,8 +1801,14 @@ void SidebarQueueSwitchTest::rescanRemovesCurrentFolderFallback()
         QTRY_VERIFY_WITH_TIMEOUT(
             qAbs(translateX(g1Lv, 0)) < 1e-6 && qAbs(itemAt(g1Lv, 0)->property("opacity").toReal() - 1.0) < 1e-6,
             8000);
-        clickDelegate(itemAt(g1Lv, 0));
-        QTRY_VERIFY(stackView()->property("busy").toBool());
+        // 慢机防御：QTRY 的 50ms 轮询在极慢机器上可能被调度饿过 220ms 过渡时长而错过
+        // busy=true 窗口（Rocky 10 / 本地慢跑实测）。QSignalSpy 锁存 busyChanged 信号，
+        // 任意一次翻转都会被计数，轮询读计数不受饿调度影响。
+        const bool busyAlready = stackView()->property("busy").toBool();
+        QSignalSpy busyChanges(stackView(), SIGNAL(busyChanged()));
+        QVERIFY(busyChanges.isValid());
+        clickDelegate(g1Lv, 0);
+        QTRY_VERIFY_WITH_TIMEOUT(busyAlready || busyChanges.count() > 0, 8000);
 
         // 过渡中收到重扫（g2 移除）→ 控制器回根；back 点击（canGoBack 已 false）被忽略
         applyRichTree(2);
@@ -1872,8 +1887,12 @@ void SidebarQueueSwitchTest::pairingNoOpSelfHealing()
         QTRY_VERIFY_WITH_TIMEOUT(
             qAbs(translateX(f1Lv, 0)) < 1e-6 && qAbs(itemAt(f1Lv, 0)->property("opacity").toReal() - 1.0) < 1e-6,
             8000);
-        clickDelegate(itemAt(f1Lv, 0)); // 配对 push → 过渡进行中（busy）
-        QTRY_VERIFY(stackView()->property("busy").toBool());
+        // 同上：busy 窗口用信号锁存，避免慢机轮询饥饿错过 220ms 过渡。
+        const bool busyAlready = stackView()->property("busy").toBool();
+        QSignalSpy busyChanges(stackView(), SIGNAL(busyChanged()));
+        QVERIFY(busyChanges.isValid());
+        clickDelegate(f1Lv, 0); // 配对 push → 过渡进行中（busy）
+        QTRY_VERIFY_WITH_TIMEOUT(busyAlready || busyChanges.count() > 0, 8000);
 
         applyBranchTreeNoF2(); // 重扫移除 f2 → 控制器已回根（goBack 零信号场景）
         QMetaObject::invokeMethod(sidebar, "handleBackClicked"); // 被忽略
@@ -1972,8 +1991,7 @@ void SidebarQueueSwitchTest::folderPageDelegateHover()
     QVERIFY(rootView != nullptr);
     QTRY_VERIFY(itemAt(rootView, 0) != nullptr);
 
-    QQuickItem *folderDelegate = itemAt(rootView, 0);
-    clickDelegate(folderDelegate);
+    clickDelegate(rootView, 0);
     QTRY_COMPARE(stackView()->property("depth").toInt(), 1);
     waitStackSettled();
     QObject *page = currentPage();

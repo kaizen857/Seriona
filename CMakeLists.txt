@@ -810,6 +810,21 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
         endif()
     add_test(NAME seriona_frontend_app_facade_smoke_mode COMMAND seriona_frontend_app_facade_smoke_mode)
 
+    # 真实应用入口的 startup 场景冒烟：offscreen 运行 seriona 本体，--smoke-exit-ms=1000
+    # 计时器到点自退（成功须退出码 0）。冷 QML 磁盘缓存 + 慢机的首次加载实测可超过 5 分钟
+    # （审计 FE-05：300s 外部上限下第 1 次超时、预热后 242s 通过），故给足 TIMEOUT（与审计
+    # 极端档 5400s 预算一致）；CI 常规速度下本用例约 1–3s，该属性只在超差机器上生效。
+    # 权衡：这是本用例在 CI 的超时上限，属"超差机器必须能过"的主动决策。
+    add_test(NAME seriona_frontend_smoke_startup
+        COMMAND $<TARGET_FILE:seriona>
+                --smoke-scenario=startup --smoke-exit-ms=1000
+                --smoke-output-dir=${CMAKE_CURRENT_BINARY_DIR}/smoke-evidence
+    )
+    set_tests_properties(seriona_frontend_smoke_startup PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 5400
+    )
+
     if(SERIONA_BACKEND_CONTROL_TARGET)
         add_executable(seriona_frontend_startup_restore_tests
             tests/frontend/adapter/tst_startup_restore.cpp
@@ -982,6 +997,16 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
         )
         add_dependencies(seriona_frontend_sidebar_queue_tests seriona)
         add_test(NAME seriona_frontend_sidebar_queue_switch COMMAND seriona_frontend_sidebar_queue_tests)
+        # 慢机（CPU 饥饿）实测：整条二进制 >1095s，远超 CI 命令行 --timeout 900；且
+        # deepChainNavigationAndCacheSize 会先撞 QtTest 默认 300s/函数 watchdog（qFatal 中止，
+        # 其 gdb 回溯在饥饿下还会停滞数分钟）。CTest 测试属性优先于命令行 --timeout，
+        # 故显式给足极端档预算；函数级 watchdog 提到同一档（5400s），避免先于 ctest 生效。
+        # 权衡：本用例在 CI 的超时上限由 900s 放宽到 5400s（CI 实测 38–66s，正常余量充足），
+        # 这是"超差机器必须能过"的主动代价；--timeout 900 的 CI 保护意图对其余用例不变。
+        set_tests_properties(seriona_frontend_sidebar_queue_switch PROPERTIES
+            TIMEOUT 5400
+            ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=5400000;QTEST_DISABLE_STACK_DUMP=1"
+        )
 
         add_executable(seriona_frontend_folder_page_tests
             tests/frontend/adapter/tst_folder_page.cpp
@@ -1255,6 +1280,16 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
         add_test(NAME seriona_frontend_artwork_transition COMMAND seriona_frontend_artwork_transition_tests artwork_transition)
         add_test(NAME seriona_frontend_artwork_fallback COMMAND seriona_frontend_artwork_transition_tests artwork_fallback)
         add_test(NAME seriona_frontend_artwork_palette_nonblocking COMMAND seriona_frontend_artwork_transition_tests artwork_palette_nonblocking)
+        # 三个用例在极端饥饿下单函数墙钟可超 QtTest 默认 300s per-function watchdog（palette
+        # 用例仅场景初始化+首轮等待就 ≈300s），会被 qFatal 中止且回溯停滞。统一把函数预算提到
+        # 与审计极端档同量级的 5400s，并关闭超时/崩溃时的栈回溯（饥饿下 gdb 采集会长时间挂住）。
+        set_tests_properties(
+            seriona_frontend_artwork_transition
+            seriona_frontend_artwork_fallback
+            seriona_frontend_artwork_palette_nonblocking
+            PROPERTIES
+                ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=5400000;QTEST_DISABLE_STACK_DUMP=1"
+        )
 
         add_executable(seriona_frontend_lyrics_model_tests
             tests/frontend/adapter/tst_lyrics_model.cpp
