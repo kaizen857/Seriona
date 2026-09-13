@@ -268,6 +268,42 @@ bool delegateAtClickablePoint(QQuickItem *delegate)
     return false;
 }
 
+// 点击助手视口兜底：把目标行卷回视口顶部（contentY = item.y - topMargin，与
+// scrollUntilEffective 的"顶部"语义一致）。macOS CI 慢 runner 实测：follow 滚动请求
+// 残留会把行 0 停在视口外且不会自行恢复；由调用方重复施加直到行可点击。
+void scrollRowIntoViewport(QObject *listView, QQuickItem *item)
+{
+    if (listView == nullptr || item == nullptr) {
+        return;
+    }
+    const qreal target = item->y() - listView->property("topMargin").toReal();
+    if (qAbs(listView->property("contentY").toReal() - target) > 0.5) {
+        listView->setProperty("contentY", target);
+    }
+}
+
+// 点击超时诊断：一次输出判定"为何不可点击"所需的全部几何/状态
+QString delegateClickDiagnostics(QObject *listView, QQuickItem *item)
+{
+    QStringList parts;
+    if (listView != nullptr) {
+        parts << QStringLiteral("count=%1").arg(listView->property("count").toInt())
+              << QStringLiteral("contentY=%1").arg(listView->property("contentY").toReal())
+              << QStringLiteral("topMargin=%1").arg(listView->property("topMargin").toReal());
+    }
+    if (item != nullptr) {
+        parts << QStringLiteral("nodeId=%1").arg(item->property("nodeId").toString())
+              << QStringLiteral("y=%1").arg(item->y())
+              << QStringLiteral("h=%1").arg(item->height())
+              << QStringLiteral("opacity=%1").arg(item->property("opacity").toReal());
+        auto transforms = item->transform();
+        if (transforms.count(&transforms) > 0) {
+            parts << QStringLiteral("navX=%1").arg(transforms.at(&transforms, 0)->property("x").toReal());
+        }
+    }
+    return parts.join(QStringLiteral(", "));
+}
+
 } // namespace
 
 class SidebarQueueSwitchTest : public QObject
@@ -289,6 +325,8 @@ private slots:
     void rootSlideInAnimationOnBack();
     void followPlayingZeroAnimation();
     void repeatEnterReusesPageInstance();
+    // macOS CI 回归：follow 滚动请求残留使根视图首行移出视口时，clickDelegate 仍须完成点击
+    void clickAfterRootScrolledAway();
     void deepChainNavigationAndCacheSize();
     void searchActivePreservesNavigationState();
     void locateWhileSearchingExitsSearchAndLocates();
@@ -654,25 +692,30 @@ void SidebarQueueSwitchTest::clickDelegate(QQuickItem *listView, int index)
 {
     // 慢机防御（macOS CI 实测 SIGSEGV）：等待期间每轮重新按索引取条目——ListView 会回收或
     // 重建 delegate，跨事件处理（QTest::qWait）持有裸指针会解引用悬垂指针。条目还须与首次
-    // 读到的 nodeId 一致（被复用给别的行时不点错行），并满足可点击条件（尺寸有效、位移归零、
-    // 完全不透明、场景中心按事件派发语义命中它自己）后立即点击（同一段无事件处理，指针安全）。
+    // 读到的非空 nodeId 一致（被复用给别的行时不点错行），并满足可点击条件（尺寸有效、位移
+    // 归零、完全不透明、场景中心按事件派发语义命中它自己）后立即点击（同一段无事件处理，
+    // 指针安全）。被滚动移出视口的目标行按需卷回（macOS CI 慢 runner 实测 follow 滚动请求
+    // 残留会把行 0 停在视口外且不会自行恢复，可点击谓词 30s 内永不成立）。
     QString expectedNodeId;
     const QDeadlineTimer deadline(30000);
     while (!deadline.hasExpired()) {
         QQuickItem *current = itemAt(listView, index);
         if (current != nullptr) {
-            if (expectedNodeId.isNull()) {
-                expectedNodeId = current->property("nodeId").toString();
+            const QString currentId = current->property("nodeId").toString();
+            if (expectedNodeId.isNull() && !currentId.isEmpty()) {
+                expectedNodeId = currentId;
             }
-            if (current->property("nodeId").toString() == expectedNodeId && delegateAtClickablePoint(current)) {
+            if (!expectedNodeId.isEmpty() && currentId == expectedNodeId && delegateAtClickablePoint(current)) {
                 const QPointF center = current->mapToScene(QPointF(current->width() / 2, current->height() / 2));
                 QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, center.toPoint());
                 return;
             }
+            scrollRowIntoViewport(listView, current);
         }
         QTest::qWait(5);
     }
-    QVERIFY2(false, "delegate did not become clickable within 30s");
+    QVERIFY2(false, qPrintable(QStringLiteral("delegate did not become clickable within 30s (%1)")
+                                   .arg(delegateClickDiagnostics(listView, itemAt(listView, index)))));
 }
 
 QQuickItem *SidebarQueueSwitchTest::backButton() const
@@ -766,6 +809,13 @@ void SidebarQueueSwitchTest::resetNavigationState()
     spec.root({});
     applyTree(libraryController, std::move(spec));
     QTest::qWait(30);
+
+    // 根视图滚动位置显式复位：follow 滚动请求可把根视图停在非顶部（macOS CI 慢
+    // runner 实测空树重建未必触发内容高度钳制，且残留位置使下一用例首击 30s 超时）；
+    // 测试隔离要求每个用例从根视图顶部（contentY == -topMargin）开始。
+    if (QQuickItem *rootView = qobject_cast<QQuickItem *>(findItem(QStringLiteral("playlistView")))) {
+        rootView->setProperty("contentY", -rootView->property("topMargin").toReal());
+    }
 }
 
 void SidebarQueueSwitchTest::applyRichTree(int variant)
@@ -1290,6 +1340,32 @@ void SidebarQueueSwitchTest::repeatEnterReusesPageInstance()
     QVERIFY(pages.contains(QStringLiteral("g1")));
     QObject *cached = pages.value(QStringLiteral("g1")).value<QObject *>();
     QCOMPARE(cached, firstPage);
+}
+
+// 回归：根视图首行已被滚动移出视口时，clickDelegate 必须把目标行带回视口再点击。
+// macOS CI 慢 runner 实测：followPlayingZeroAnimation 的滚动请求（follow 正在播放的
+// 根级曲目 r-01）把根视图停在行 1 置顶的位置，紧接着的用例首击因可点击谓词永不满足
+// 而 30s 超时；该位置不会自行恢复，必须由点击助手兜底收敛。
+void SidebarQueueSwitchTest::clickAfterRootScrolledAway()
+{
+    resetNavigationState();
+    applyRichTree();
+
+    QQuickItem *rootView = qobject_cast<QQuickItem *>(findItem(QStringLiteral("playlistView")));
+    QVERIFY(rootView != nullptr);
+    QTRY_VERIFY(itemAt(rootView, 0) != nullptr);
+
+    // contentY=150 时行 0（高 72）中心位于列表上缘之外，命中测试不会到达条目
+    const qreal scrolled = scrollUntilEffective(rootView, 150.0);
+    QVERIFY2(scrolled > 0.0, "root view must be scrollable for this regression");
+    QVERIFY2(!delegateAtClickablePoint(itemAt(rootView, 0)),
+             "precondition: first row must be outside the clickable viewport");
+
+    clickDelegate(rootView, 0);
+    QTRY_COMPARE(stackView()->property("depth").toInt(), 1);
+    waitStackSettled();
+    assertStackAligned();
+    QCOMPARE(currentPage()->property("folderNodeId").toString(), QStringLiteral("g1"));
 }
 
 // 25 层深链往返：每层位置保留 + 缓存大小 == 去重目录数 + 1（含根键）。
