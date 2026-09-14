@@ -1,6 +1,7 @@
 #include "single_instance_guard.h"
 
 #include <QCryptographicHash>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -32,19 +33,30 @@ QString runtimeDirectory()
     return directory;
 }
 
-// socket 名附每用户哈希后缀：多用户共享 /tmp 时避免同名 socket 互相干扰/误删；
-// 对同一用户稳定（由运行期目录 + 家目录派生），长度固定不触 sun_path 上限。
+// 每用户作用域摘要：多用户共享 /tmp 时避免同名 socket 互相干扰/误删；
+// 对同一用户稳定（由运行期目录 + 家目录派生）。
 QString userScopeToken()
 {
     const QString scope = runtimeDirectory() + QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
     return QString::fromLatin1(QCryptographicHash::hash(scope.toUtf8(), QCryptographicHash::Sha256).toHex().left(12));
 }
 
+// socket 名 = 固定 23 字节的「前缀 + 摘要」（由 appId + 用户作用域派生）。不能把
+// appId 原文带进名字：Qt 在 Unix 把 socket 放进临时目录，名字全路径会撞上平台级
+// sun_path 上限（macOS 104 字节；长 appId + 长 TMPDIR 组合已在 CI 上使 listen 直
+// 接失败、守卫退化为失效），定长名字对任何临时目录长度都留足余量。
+QString socketNameFor(const QString &applicationId)
+{
+    const QString seed = applicationId + QLatin1Char('/') + userScopeToken();
+    return QStringLiteral("seriona-si-")
+        + QString::fromLatin1(QCryptographicHash::hash(seed.toUtf8(), QCryptographicHash::Sha256).toHex().left(12));
+}
+
 }
 
 SingleInstanceGuard::SingleInstanceGuard(const QString &applicationId, QObject *parent)
     : QObject(parent),
-      socketName_(applicationId + QLatin1Char('-') + userScopeToken()),
+      socketName_(socketNameFor(applicationId)),
       lockFile_(runtimeDirectory() + QLatin1Char('/') + applicationId + QStringLiteral(".lock")),
       server_(this)
 {
@@ -74,7 +86,9 @@ bool SingleInstanceGuard::becomePrimary()
     if (!server_.listen(socketName_)) {
         QLocalServer::removeServer(socketName_);
         if (!server_.listen(socketName_)) {
-            qWarning("single instance guard: cannot listen on %s, continuing without guard", qUtf8Printable(socketName_));
+            const QString socketPath = QDir::cleanPath(QDir::tempPath()) + QLatin1Char('/') + socketName_;
+            qWarning("single instance guard: cannot listen on %s (path %s): %s, continuing without guard",
+                     qUtf8Printable(socketName_), qUtf8Printable(socketPath), qUtf8Printable(server_.errorString()));
             return true;
         }
     }
