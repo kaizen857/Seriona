@@ -73,7 +73,7 @@ Windows x64 发布由根目录 `build.bat` 调用 `scripts/build-package-windows
 ## 4. 目录结构
 
 ```
-├── CMakeLists.txt            # 全部构建逻辑（1233 行，单文件）
+├── CMakeLists.txt            # 全部构建逻辑（1520 行，单文件）
 ├── src/
 │   ├── main.cpp              # 入口：QApplication、smoke CLI、加载 Seriona/Main
 │   ├── app/                  # 中间层（AppFacade、控制器、模型、桥接、工具）
@@ -85,7 +85,7 @@ Windows x64 发布由根目录 `build.bat` 调用 `scripts/build-package-windows
 │   ├── windows/              # SettingsWindow、TrackDetailWindow、EqualizerWindow（设置/曲目详情/均衡器弹窗）
 │   ├── theme/Theme.qml       # singleton token
 │   └── assets/               # 25 个 SVG 图标 + MaterialIcons-Regular.ttf（QML 未引用）
-├── tests/frontend/adapter/   # 28 个 QTest 测试源
+├── tests/frontend/adapter/   # 32 个 QTest 测试源
 ├── scripts/verify-middle-layer.sh
 ├── docs/
 │   ├── architecture/backend-integration-contract.md   # 现行契约（verify 要求存在）
@@ -206,7 +206,7 @@ WindowControls.closeRequested / 设置菜单"退出" ──► requestApplicatio
 
 ## 7. 启动流程
 
-1. `main.cpp`：解析 `--smoke-*` 参数（见 §9.3）；`QApplication`；接入后端时初始化后端日志（FFmpeg av_log 级别按 NDEBUG 调整）。
+1. `main.cpp`：解析 `--smoke-*` 参数（见 §9.3）；`QApplication`；接入后端时初始化后端日志（FFmpeg av_log 级别按 NDEBUG 调整）；非 smoke 且未设 `SERIONA_DISABLE_SINGLE_INSTANCE` 时创建 `SingleInstanceGuard`（见 §9.2），非主实例转发激活后直接退出 0。
 2. 创建 `QQmlApplicationEngine`；smoke 模式设置 `seriona.backendBridgeAutostartEnabled=false` 并注入初始属性 `smokeScenario`。
 3. `loadFromModule("Seriona", "Main")` → Main.qml 实例化 `AppFacade`。
 4. AppFacade 构造：注入执行器、连接快照信号、`start()` 后端桥（默认自动）。
@@ -232,9 +232,9 @@ WindowControls.closeRequested / 设置菜单"退出" ──► requestApplicatio
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `BUILD_TESTING` | ON | mock-only 只注册 8 个测试；其余 20 个测试二进制要求后端 |
+| `BUILD_TESTING` | ON | mock-only 只注册 11 个测试二进制；其余 21 个要求后端目标 |
 | `SERIONA_BACKEND_SOURCE_DIR` | `../Seriona_Backend` | 空= mock-only；存在=本地引入；不存在=FetchContent GitHub main |
-| `CMAKE_BUILD_TYPE` | — | Release 触发 LTO/`-march=native` |
+| `CMAKE_BUILD_TYPE` | — | Release 触发 LTO/`-march=x86-64`（GNU/Clang 基线，替代 `-march=native`） |
 | `SERIONA_FETCHCONTENT_CATCH2_DIR` / `SERIONA_FETCHCONTENT_THREAD_POOL_DIR` | — | 离线 configure 注入后端依赖源码 |
 
 `SERIONA_HAS_BACKEND` 由 CMake 生成器表达式推导（`$<BOOL:${SERIONA_BACKEND_CONTROL_TARGET}>`），不手动设置。
@@ -243,6 +243,7 @@ WindowControls.closeRequested / 设置菜单"退出" ──► requestApplicatio
 
 - 应用设置存储：三个控制器（SettingsController / NavigationController / TrackStatsController）共用；默认内存存储（进程内，mock-only/smoke 有效），AppFacade 接入后端时注入 BackendBridge（命令/快照边界）→ 后端键值存储（`app_settings` 表），读取失败回退内存缓存。
 - QCoreApplication 动态属性：`seriona.backendBridgeAutostartEnabled`（跳过后端自启）、`seriona.smokeScenario`（smoke 场景名，见 §9.3）。
+- 环境变量：`SERIONA_DISABLE_SINGLE_INSTANCE=1` 跳过 `SingleInstanceGuard`（门禁/自动化需要独立进程行为，`verify-middle-layer.sh` 的 offscreen 冒烟即使用它）。
 - `Theme.qml` token：共享颜色/尺寸/动画参数。
 
 ### 9.3 Smoke CLI（`./build/seriona`）
@@ -255,7 +256,7 @@ WindowControls.closeRequested / 设置菜单"退出" ──► requestApplicatio
 
 - 启用时禁后端自启、写入 `smoke-<scenario>.log`（scenario/exit_ms/timestamp_utc/artifact 四行）后定时退出；`smokeScenario` 经初始属性传入 QML，由 `applySmokeScenario` 驱动各场景视图动作（`smokeVisualStateJson()` 聚合窗口/曲库/播放文本供后续扩展）。
 - 退出码：0 正常；2 参数/场景非法；3 日志写入失败；-1 QML 创建失败。
-- `verify-middle-layer.sh` 的 offscreen 冒烟：`QT_QPA_PLATFORM=offscreen timeout 5s ./build/seriona` 必须退出码 124。
+- `verify-middle-layer.sh` 的 offscreen 冒烟：`QT_QPA_PLATFORM=offscreen SERIONA_DISABLE_SINGLE_INSTANCE=1 timeout 5s ./build/seriona` 必须退出码 124（旁路单实例守卫，保证被测进程独立启动）。
 
 ## 10. 测试体系
 

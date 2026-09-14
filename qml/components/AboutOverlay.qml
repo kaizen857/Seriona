@@ -288,8 +288,9 @@ Popup {
 
                     Text {
                         id: versionLabel
+                        objectName: "aboutVersionLabel"
                         anchors.centerIn: parent
-                        text: qsTr("v0.2.0 (C++23 & Qt 6)")
+                        text: qsTr("v%1 (C++23 & Qt 6)").arg(Qt.application.version)
                         color: Theme.textSecondary
                         font.pixelSize: Theme.fontCaption
                     }

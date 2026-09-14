@@ -7,6 +7,7 @@
 #include <QStringList>
 #include <QTimer>
 #include <QVariantMap>
+#include <QWindow>
 
 #if SERIONA_HAS_BACKEND
 #include "seriona/app/application_logging.h"
@@ -21,11 +22,13 @@ extern "C" {
 #endif
 
 #include "app/path_text.h"
+#include "app/single_instance_guard.h"
 
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 
 namespace {
 
@@ -135,6 +138,29 @@ bool writeSmokeLog(const SmokeOptions &options, QString *error)
 
     return true;
 }
+
+// 把已运行实例的窗口带到前台：Wayland 下需携带二次启动进程转交的激活令牌，KWin 才会
+// 给出完整置顶+聚焦（否则仅任务栏提示）；Qt 读取 XDG_ACTIVATION_TOKEN 后自动清除。
+void activateExistingInstance(QQmlApplicationEngine &engine, const QByteArray &activationToken)
+{
+    if (engine.rootObjects().isEmpty()) {
+        return;
+    }
+    auto *window = qobject_cast<QWindow *>(engine.rootObjects().constFirst());
+    if (window == nullptr) {
+        return;
+    }
+    if (!activationToken.isEmpty()) {
+        qputenv("XDG_ACTIVATION_TOKEN", activationToken);
+    }
+    if (window->visibility() == QWindow::Minimized) {
+        window->showNormal();
+    } else if (!window->isVisible()) {
+        window->show();
+    }
+    window->raise();
+    window->requestActivate();
+}
 }
 
 int main(int argc, char *argv[])
@@ -157,6 +183,9 @@ int main(int argc, char *argv[])
         app.setWindowIcon(appIcon);
         // Wayland 的 app_id / GNOME 关联依赖桌面文件名（不含 .desktop 后缀）。
         app.setDesktopFileName(QStringLiteral("org.kaizen857.Seriona"));
+        // 版本号由构建注入（CI 计算，见 release.yml 的 version job；本地为 CMake 默认值），
+        // QML 侧经 Qt.application.version 读取并展示在「关于 Seriona」。
+        app.setApplicationVersion(QStringLiteral(SERIONA_VERSION_STRING));
     }
 
 #if SERIONA_HAS_BACKEND && !defined(NDEBUG)
@@ -204,6 +233,17 @@ int main(int argc, char *argv[])
         QTimer::singleShot(smokeOptions.exitMs, &app, []() { QCoreApplication::quit(); });
     }
 
+    // 单实例守卫：第二次启动不新起实例，把激活请求转交已运行实例后退出。
+    // smoke 场景与自动化验证（verify-middle-layer.sh 的 timeout 124 断言）需要独立
+    // 进程行为，故 smoke 模式与 SERIONA_DISABLE_SINGLE_INSTANCE 下显式旁路。
+    std::unique_ptr<SingleInstanceGuard> singleInstanceGuard;
+    if (!smokeOptions.enabled && !qEnvironmentVariableIsSet("SERIONA_DISABLE_SINGLE_INSTANCE")) {
+        singleInstanceGuard = std::make_unique<SingleInstanceGuard>(QStringLiteral("org.kaizen857.Seriona"));
+        if (!singleInstanceGuard->isPrimaryInstance()) {
+            return 0;
+        }
+    }
+
     QQmlApplicationEngine engine;
     QVariantMap initialProperties;
     initialProperties.insert(QStringLiteral("smokeScenario"), smokeOptions.enabled ? smokeOptions.scenario : QString{});
@@ -218,6 +258,12 @@ int main(int argc, char *argv[])
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app, []()
                      { QCoreApplication::exit(-1); }, Qt::QueuedConnection);
     engine.loadFromModule("Seriona", "Main");
+
+    if (singleInstanceGuard) {
+        singleInstanceGuard->setActivationHandler([&engine](const QByteArray &activationToken) {
+            activateExistingInstance(engine, activationToken);
+        });
+    }
 
     return QCoreApplication::exec();
 }
