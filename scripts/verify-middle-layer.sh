@@ -264,7 +264,9 @@ fi
 
 log "Offscreen startup smoke"
 set +e
-QT_QPA_PLATFORM=offscreen timeout 5s "./$SERIONA_BUILD_DIR/seriona"
+# SERIONA_DISABLE_SINGLE_INSTANCE：门禁要求被测进程独立启动——开发者若已运行 Seriona，
+# 单实例守卫会转发激活并立即以 0 退出，破坏下方 124 断言。
+QT_QPA_PLATFORM=offscreen SERIONA_DISABLE_SINGLE_INSTANCE=1 timeout 5s "./$SERIONA_BUILD_DIR/seriona"
 smoke_status=$?
 set -e
 

@@ -51,6 +51,7 @@ private slots:
     void openShowsOverlay();
     void closeHidesOverlay();
     void closePolicyAllowsEscapeAndPressOutside();
+    void versionLabelShowsApplicationVersion();
 
 private:
     QQuickWindow *window = nullptr;
@@ -64,6 +65,8 @@ private:
 
 void AboutOverlayTest::initTestCase()
 {
+    // 版本胶囊读取 Qt.application.version（与 main.cpp 的 setApplicationVersion 同源）。
+    QCoreApplication::setApplicationVersion(QStringLiteral("9.9.9"));
     engine.addImportPath(QCoreApplication::applicationDirPath());
     engine.loadData(QByteArray(kHostQml), QUrl(QStringLiteral("qrc:/seriona_about_overlay_test.qml")));
 
@@ -107,6 +110,14 @@ void AboutOverlayTest::closePolicyAllowsEscapeAndPressOutside()
     const int policy = overlay->property("closePolicy").toInt();
     QVERIFY2((policy & kEscape) != 0, "closePolicy misses CloseOnEscape");
     QVERIFY2((policy & kPressOutside) != 0, "closePolicy misses CloseOnPressOutside");
+}
+
+void AboutOverlayTest::versionLabelShowsApplicationVersion()
+{
+    QObject *label = overlay->findChild<QObject *>(QStringLiteral("aboutVersionLabel"));
+    QVERIFY2(label != nullptr, "aboutVersionLabel not found");
+    const QString text = label->property("text").toString();
+    QVERIFY2(text.contains(QStringLiteral("v9.9.9")), qPrintable(text));
 }
 
 QTEST_MAIN(AboutOverlayTest)

@@ -1,7 +1,10 @@
 # Seriona 发布流水线（GitHub Actions）
 #
 # 双轨触发：
-#   1. push 到 main（develop 合并后）→ 自动构建 + 测试 + 打包，产物存 artifact（不发 release）
+#   1. push 到 main（develop 合并后）→ 自动构建 + 测试 + 打包，产物存 artifact（不发 release）；
+#      构建版本 = 最新正式 release 基线 + 构建序号（release v0.1.1 → push 构建 0.1.1.1、0.1.1.2 …；
+#      发版构建本身占据该序列的 .0，故 push 构建自 .1 起，新 release 发布后重新从 .1 递增），
+#      并注入应用内「关于 Seriona」展示
 #   2. workflow_dispatch（Actions 页 "Run workflow" 按钮）→ 输入版本号，全量构建后自动创建
 #      GitHub Release（v<version> tag）并挂载全部资产
 #
@@ -44,15 +47,64 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # 版本解析：push 到 main 的自动构建从「最新正式 release」基线派生构建序号。
+  # 发版构建（workflow_dispatch）本身就是该版本序列的 .0（v0.2 发布 → 0.2.0），
+  # 故 push 构建自 .1 起递增（v0.2 之后的首次 push 构建 = 0.2.1）。
+  # 发版按钮直接采用输入的版本号，与 v<version> 标签语义一致。
+  # ---------------------------------------------------------------------------
+  version:
+    name: 版本解析
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_VERSION}" ]; then
+            echo "version=${INPUT_VERSION}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # 最新 release 作为基线（如 v0.1.1 → 0.1.1）；无 release 时退回项目默认版本
+          latest_tag=$(gh api "repos/${REPO}/releases/latest" --jq .tag_name 2>/dev/null || true)
+          base="${latest_tag#v}"
+          if [[ ! "${base}" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
+            base="0.1"
+          fi
+          # 序号占位：发版构建占据 .0，push 构建自 .1 起 —
+          # patch = 该 release 发布以来的 push 构建数（含本次运行）；新 release 发布后重新从 1 开始。
+          published=$(gh api "repos/${REPO}/releases/latest" --jq .published_at 2>/dev/null || true)
+          created_filter=""
+          if [[ -n "${published}" ]]; then
+            created_filter="&created=%3E=${published}"
+          fi
+          count=$(gh api --paginate \
+            "repos/${REPO}/actions/workflows/release.yml/runs?event=push&branch=main&per_page=100${created_filter}" \
+            --jq '.workflow_runs[].id' | wc -l)
+          patch=$((count))
+          if [ "${patch}" -lt 1 ]; then
+            patch=1
+          fi
+          echo "version=${base}.${patch}" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
   # Linux：AppImage + tar.gz（ubuntu:22.04 容器，glibc 2.35 基线）+ 全量测试
   # ---------------------------------------------------------------------------
   linux:
     name: Linux (AppImage + tar.gz)
     runs-on: ubuntu-24.04
+    needs: version
     container:
       image: ubuntu:22.04
     env:
-      SERIONA_VERSION: ${{ inputs.version || '0.1' }}
+      SERIONA_VERSION: ${{ needs.version.outputs.version }}
       BACKEND_REF: ${{ inputs.backend_ref || 'main' }}
       TAGREADER_REF: ${{ inputs.tagreader_ref || 'main' }}
     steps:
@@ -214,15 +266,17 @@ jobs:
           done
         env:
           QT_QPA_PLATFORM: offscreen
-      - name: 下载 linuxdeploy
+      - name: 下载 linuxdeploy（runner 临时目录，避免混入工作区产物）
         run: |
-          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -O linuxdeploy.AppImage
-          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage -O linuxdeploy-plugin-qt.AppImage
-          chmod +x linuxdeploy*.AppImage
+          mkdir -p "$RUNNER_TEMP/appimage-tools"
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -O "$RUNNER_TEMP/appimage-tools/linuxdeploy.AppImage"
+          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage -O "$RUNNER_TEMP/appimage-tools/linuxdeploy-plugin-qt.AppImage"
+          chmod +x "$RUNNER_TEMP"/appimage-tools/linuxdeploy*.AppImage
         env:
           APPIMAGE_EXTRACT_AND_RUN: '1'
       - name: 组装 AppDir 并生成 AppImage + tar.gz
         run: |
+          TOOLS_DIR="$RUNNER_TEMP/appimage-tools"
           cmake --install build/release --prefix AppDir/usr
           # AppImage 内桌面文件 Exec 需相对可执行名（安装版是绝对路径）
           sed -i 's|^Exec=.*|Exec=seriona|' AppDir/usr/share/applications/org.kaizen857.Seriona.desktop
@@ -243,8 +297,8 @@ jobs:
             fi
           done
           export EXTRA_PLATFORM_PLUGINS
-          ./linuxdeploy.AppImage --appdir AppDir --plugin qt \
-            --custom-apprun=$GITHUB_WORKSPACE/scripts/appimage-AppRun.sh
+          (cd "$TOOLS_DIR" && ./linuxdeploy.AppImage --appdir "$GITHUB_WORKSPACE/AppDir" --plugin qt \
+            --custom-apprun=$GITHUB_WORKSPACE/scripts/appimage-AppRun.sh)
           # plugin-qt 不部署 wayland-graphics-integration-client（client buffer 集成）：
           # 缺它则 Wayland 平台报 "Failed to load client buffer integration: wayland-egl"
           # → QRhiGles2 初始化失败 abort（2026-09-05 用户实测崩溃）。整个目录补拷。
@@ -257,10 +311,11 @@ jobs:
           # 实体（不再重跑 linuxdeploy，避免覆盖补拷的 wayland 目录与根图标）。
           rm -f AppDir/org.kaizen857.Seriona.png
           cp AppDir/usr/share/icons/hicolor/256x256/apps/org.kaizen857.Seriona.png AppDir/org.kaizen857.Seriona.png
-          ./linuxdeploy.AppImage --appimage-extract > /dev/null
-          ./squashfs-root/plugins/linuxdeploy-plugin-appimage/usr/bin/appimagetool AppDir
-          rm -rf squashfs-root
-          tar czf Seriona-${{ env.SERIONA_VERSION }}-linux-x86_64.tar.gz AppDir
+          (cd "$TOOLS_DIR" && ./linuxdeploy.AppImage --appimage-extract > /dev/null)
+          "$TOOLS_DIR/squashfs-root/plugins/linuxdeploy-plugin-appimage/usr/bin/appimagetool" \
+            AppDir "Seriona-${SERIONA_VERSION}-x86_64.AppImage"
+          rm -rf "$TOOLS_DIR/squashfs-root"
+          tar czf "Seriona-${SERIONA_VERSION}-linux-x86_64.tar.gz" AppDir
         env:
           APPIMAGE_EXTRACT_AND_RUN: '1'
           QML_SOURCES_PATHS: ${{ github.workspace }}/qml
@@ -304,8 +359,8 @@ jobs:
         with:
           name: linux-appimage-targz
           path: |
-            *.AppImage
-            *.tar.gz
+            Seriona-*.AppImage
+            Seriona-*.tar.gz
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -314,10 +369,11 @@ jobs:
   deb-trixie:
     name: deb (Debian 13 trixie)
     runs-on: ubuntu-24.04
+    needs: version
     container:
       image: debian:trixie
     env:
-      SERIONA_VERSION: ${{ inputs.version || '0.1' }}
+      SERIONA_VERSION: ${{ needs.version.outputs.version }}
       BACKEND_REF: ${{ inputs.backend_ref || 'main' }}
       TAGREADER_REF: ${{ inputs.tagreader_ref || 'main' }}
     steps:
@@ -415,10 +471,11 @@ jobs:
   deb-resolute:
     name: deb (Ubuntu 26.04 resolute)
     runs-on: ubuntu-24.04
+    needs: version
     container:
       image: ubuntu:resolute
     env:
-      SERIONA_VERSION: ${{ inputs.version || '0.1' }}
+      SERIONA_VERSION: ${{ needs.version.outputs.version }}
       BACKEND_REF: ${{ inputs.backend_ref || 'main' }}
       TAGREADER_REF: ${{ inputs.tagreader_ref || 'main' }}
     steps:
@@ -520,10 +577,11 @@ jobs:
   rpm-fedora:
     name: rpm (Fedora 43)
     runs-on: ubuntu-24.04
+    needs: version
     container:
       image: fedora:43
     env:
-      SERIONA_VERSION: ${{ inputs.version || '0.1' }}
+      SERIONA_VERSION: ${{ needs.version.outputs.version }}
       BACKEND_REF: ${{ inputs.backend_ref || 'main' }}
       TAGREADER_REF: ${{ inputs.tagreader_ref || 'main' }}
     steps:
@@ -622,10 +680,11 @@ jobs:
   rpm-rocky:
     name: rpm (Rocky 10)
     runs-on: ubuntu-24.04
+    needs: version
     container:
       image: rockylinux/rockylinux:10
     env:
-      SERIONA_VERSION: ${{ inputs.version || '0.1' }}
+      SERIONA_VERSION: ${{ needs.version.outputs.version }}
       BACKEND_REF: ${{ inputs.backend_ref || 'main' }}
       TAGREADER_REF: ${{ inputs.tagreader_ref || 'main' }}
     steps:
@@ -726,8 +785,9 @@ jobs:
   windows:
     name: Windows (portable zip)
     runs-on: windows-2022
+    needs: version
     env:
-      SERIONA_VERSION: ${{ inputs.version || '0.1' }}
+      SERIONA_VERSION: ${{ needs.version.outputs.version }}
       BACKEND_REF: ${{ inputs.backend_ref || 'main' }}
       TAGREADER_REF: ${{ inputs.tagreader_ref || 'main' }}
     steps:
@@ -765,6 +825,9 @@ jobs:
       - name: 构建 + 打包 + smoke 验证（脚本内置 6 场景）
         shell: pwsh
         run: '& .\scripts\build-package-windows.ps1 -Version $env:SERIONA_VERSION -BackendSourceDir $env:GITHUB_WORKSPACE\Seriona_Backend -TagReaderSourceDir $env:GITHUB_WORKSPACE\TagReader -Force'
+      - name: 版本化 Windows 产物名
+        shell: pwsh
+        run: Move-Item -Force "dist/Seriona-windows-x64.zip" "dist/Seriona-${{ env.SERIONA_VERSION }}-windows-x64.zip"
       - name: 上传构建日志（失败诊断）
         if: always()
         uses: actions/upload-artifact@v7
@@ -793,8 +856,9 @@ jobs:
   macos:
     name: macOS (app zip, arm64)
     runs-on: macos-15
+    needs: version
     env:
-      SERIONA_VERSION: ${{ inputs.version || '0.1' }}
+      SERIONA_VERSION: ${{ needs.version.outputs.version }}
       BACKEND_REF: ${{ inputs.backend_ref || 'main' }}
       TAGREADER_REF: ${{ inputs.tagreader_ref || 'main' }}
     steps:

@@ -33,7 +33,7 @@ elseif(CMAKE_GENERATOR MATCHES "Unix Makefiles")
     endif()
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Quick Concurrent QuickDialogs2 Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Quick Concurrent QuickDialogs2 Widgets Network)
 
 qt_standard_project_setup(REQUIRES 6.8)
 
@@ -195,6 +195,8 @@ set(SERIONA_APP_LAYER_SOURCES
     src/app/library_tree_store.h
     src/app/track_stats_controller.cpp
     src/app/track_stats_controller.h
+    src/app/single_instance_guard.cpp
+    src/app/single_instance_guard.h
 )
 
 set(SERIONA_QML_MODULE_FILES
@@ -302,21 +304,28 @@ target_include_directories(seriona
 
 target_compile_definitions(seriona
     PRIVATE SERIONA_HAS_BACKEND=$<BOOL:${SERIONA_BACKEND_CONTROL_TARGET}>
+    PRIVATE SERIONA_VERSION_STRING="${PROJECT_VERSION}"
 )
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
 # If you are developing for iOS or macOS you should consider setting an
 # explicit, fixed bundle identifier manually though.
+# macOS 的 CFBundleShortVersionString 按 Apple 规范取三段（MAJOR.MINOR[.PATCH]）：
+# 本地默认版本 0.1 保持两段，CI 注入的三段/四段版本取前三段展示。
+set(SERIONA_MACOS_SHORT_VERSION "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}")
+if(PROJECT_VERSION_PATCH)
+    string(APPEND SERIONA_MACOS_SHORT_VERSION ".${PROJECT_VERSION_PATCH}")
+endif()
 set_target_properties(seriona PROPERTIES
 #    MACOSX_BUNDLE_GUI_IDENTIFIER com.example.Seriona
     MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
-    MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
+    MACOSX_BUNDLE_SHORT_VERSION_STRING ${SERIONA_MACOS_SHORT_VERSION}
     MACOSX_BUNDLE TRUE
     WIN32_EXECUTABLE TRUE
 )
 
 target_link_libraries(seriona
-    PRIVATE Qt6::Quick Qt6::Concurrent Qt6::QuickDialogs2 Qt6::Widgets
+    PRIVATE Qt6::Quick Qt6::Concurrent Qt6::QuickDialogs2 Qt6::Widgets Qt6::Network
 )
 
 if(SERIONA_BACKEND_CONTROL_TARGET)
@@ -510,6 +519,20 @@ add_test(NAME seriona_frontend_settings_transition_startup_apply COMMAND seriona
     # 依赖 Seriona 目标的 qt_add_qml_module 输出先就绪。
     add_dependencies(seriona_frontend_about_overlay_tests seriona)
     add_test(NAME seriona_frontend_about_overlay COMMAND seriona_frontend_about_overlay_tests)
+
+    # 单实例守卫：主/次实例判定与激活转发（本地 socket，不依赖后端）
+    add_executable(seriona_frontend_single_instance_tests
+        tests/frontend/adapter/tst_single_instance_guard.cpp
+        src/app/single_instance_guard.cpp
+        src/app/single_instance_guard.h
+    )
+    target_include_directories(seriona_frontend_single_instance_tests
+        PRIVATE src/app
+    )
+    target_link_libraries(seriona_frontend_single_instance_tests
+        PRIVATE Qt6::Network Qt6::Test
+    )
+    add_test(NAME seriona_frontend_single_instance COMMAND seriona_frontend_single_instance_tests)
 
     add_executable(seriona_frontend_queue_view_tests
         tests/frontend/adapter/tst_queue_view.cpp
