@@ -1,6 +1,7 @@
 #include "single_instance_guard.h"
 
 #include <QCryptographicHash>
+#include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLocalSocket>
@@ -17,6 +18,7 @@ namespace {
 
 constexpr int kConnectAttempts = 10;
 constexpr int kConnectTimeoutMs = 100;
+constexpr int kConnectBudgetMs = 1500;
 constexpr int kWriteTimeoutMs = 1000;
 constexpr int kAckTimeoutMs = 1000;
 
@@ -89,8 +91,15 @@ bool SingleInstanceGuard::deliverActivationToPrimary()
 #endif
     QLocalSocket socket;
     bool connected = false;
-    // 主实例可能已持锁但尚未 listen 完成：短暂重试后再判定为陈旧残留。
+    // 主实例可能已持锁但尚未 listen 完成：预算内短暂重试后再判定为陈旧残留。
+    // Windows 的 connectToServer 为同步阻塞（waitForConnected 超时参数不生效，单次
+    // WaitNamedPipe 可达数秒），以总预算封顶避免二次启动卡在重试循环。
+    QElapsedTimer connectBudget;
+    connectBudget.start();
     for (int attempt = 0; attempt < kConnectAttempts && !connected; ++attempt) {
+        if (attempt > 0 && connectBudget.elapsed() >= kConnectBudgetMs) {
+            break;
+        }
         socket.connectToServer(socketName_);
         connected = socket.waitForConnected(kConnectTimeoutMs);
     }
