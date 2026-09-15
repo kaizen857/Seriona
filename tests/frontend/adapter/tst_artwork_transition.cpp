@@ -26,6 +26,7 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <memory>
 #include <thread>
 
 namespace {
@@ -5628,13 +5629,13 @@ QQuickItem *ArtworkTransitionTest::loadMainContent(
     initialProperties.insert(QStringLiteral("lyricsState"), QVariant::fromValue<QObject *>(lyrics));
     initialProperties.insert(QStringLiteral("libraryController"), QVariant::fromValue<QObject *>(library));
     initialProperties.insert(QStringLiteral("settings"), QVariant::fromValue<QObject *>(settings));
-    QScopedPointer<QObject> created(component.createWithInitialProperties(
+    std::unique_ptr<QObject> created(component.createWithInitialProperties(
         initialProperties, m_engine.rootContext()));
     if (!created) {
         *error = component.errorString();
         return nullptr;
     }
-    auto *item = qobject_cast<QQuickItem *>(created.take());
+    auto *item = qobject_cast<QQuickItem *>(created.release());
     if (!item) {
         *error = QStringLiteral("MainContent root is not an Item");
     }

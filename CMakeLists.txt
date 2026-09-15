@@ -1359,6 +1359,7 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
         add_test(NAME seriona_frontend_backend_bridge_shutdown_stop_sent COMMAND seriona_frontend_backend_bridge_tests shutdownStopSent)
         add_test(NAME seriona_frontend_shutdown_sequence COMMAND seriona_frontend_backend_bridge_tests shutdownSequence)
         add_test(NAME seriona_frontend_shutdown_start_failed COMMAND seriona_frontend_backend_bridge_tests shutdownStartFailed)
+        add_test(NAME seriona_frontend_start_survives_metadata_failure COMMAND seriona_frontend_backend_bridge_tests startSurvivesMetadataFailure)
         add_test(NAME seriona_frontend_backend_bridge_sort_command_conversion COMMAND seriona_frontend_backend_bridge_tests applyFolderSortRulesBuildsTypedBackendCommand)
         add_test(NAME seriona_frontend_backend_bridge_sort_empty_rules COMMAND seriona_frontend_backend_bridge_tests applyFolderSortRulesAllowsEmptyRules)
         add_test(NAME seriona_frontend_backend_bridge_sort_invalid_payload COMMAND seriona_frontend_backend_bridge_tests applyFolderSortRulesRejectsInvalidPayloadWithoutDispatch)

@@ -790,7 +790,7 @@ try {
         Write-Detail ('构建目录：' + $BuildDirectory)
         Write-Detail ('配置/构建：cmake configure；cmake --build --config Release')
         if (-not $SkipTests) {
-            Write-Detail '测试：ctest --config Release --output-on-failure'
+            Write-Detail '测试：ctest --build-config Release --output-on-failure --timeout 900'
         }
         Write-Detail ('部署：windeployqt --release --qmldir ' + (Join-Path $RepoRoot 'qml'))
         Write-Detail '依赖部署：vcpkg applocal.ps1（仅递归复制 seriona.exe 的动态依赖）'
@@ -855,10 +855,14 @@ try {
                 throw '未找到与 CMake 配套的 ctest.exe。'
             }
             $oldPath = $env:PATH
+            $oldForceStderrLogging = $env:QT_FORCE_STDERR_LOGGING
             try {
                 $env:PATH = (Join-Path $qt.Prefix 'bin') + ';' + $vcpkg.TripletBin + ';' + (Join-Path $BuildDirectory 'Release') + ';' + $oldPath
-                Invoke-Native $ctest @('--test-dir', $BuildDirectory, '--build-config', 'Release', '--output-on-failure') '运行 Release CTest' '04-ctest'
+                # Windows 无控制台时 QTest 经 OutputDebugString 输出、ctest 捕获不到失败详情：强制 Qt 日志走 stderr。
+                $env:QT_FORCE_STDERR_LOGGING = '1'
+                Invoke-Native $ctest @('--test-dir', $BuildDirectory, '--build-config', 'Release', '--output-on-failure', '--timeout', '900') '运行 Release CTest' '04-ctest'
             } finally {
+                $env:QT_FORCE_STDERR_LOGGING = $oldForceStderrLogging
                 $env:PATH = $oldPath
             }
         }

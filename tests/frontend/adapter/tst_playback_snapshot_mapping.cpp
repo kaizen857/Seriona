@@ -527,7 +527,7 @@ void PlaybackSnapshotMappingTest::shutdownWithBlockedDecoder()
         return Seriona::App::GradientPalette{
             QStringLiteral("#000000"), QStringLiteral("#111111"), QStringLiteral("#222222")};
     });
-    worker.requestPalette(QStringLiteral("/thumbs/blocked.png"));
+    static_cast<void>(worker.requestPalette(QStringLiteral("/thumbs/blocked.png")));
     QVERIFY(decoderEntered.tryAcquire(1, 8000));
 
     std::atomic<bool> shutdownReturned{false};

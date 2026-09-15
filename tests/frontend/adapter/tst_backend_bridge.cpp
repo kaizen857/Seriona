@@ -343,6 +343,7 @@ private:
 
 struct FakeMetadataState {
     bool throwOnStart = false;
+    bool throwOnRegister = false;
     int startCalls = 0;
     int stopCalls = 0;
     int unsubscribeCalls = 0;
@@ -368,6 +369,10 @@ public:
 
     seriona::control::SubscriptionHandle registerCommandCallback(seriona::control::MediaControlCommandSink callback) override
     {
+        if (m_state->throwOnRegister) {
+            throw std::runtime_error("metadata command registration failed");
+        }
+
         m_commandSink = std::move(callback);
 
         seriona::control::SubscriptionHandle handle;
@@ -549,6 +554,7 @@ private slots:
     void shutdownStopSent();
     void shutdownSequence();
     void shutdownStartFailed();
+    void startSurvivesMetadataFailure();
     void scanLibraryDefaultsToFullMode();
     void scanLibraryForwardsIncrementalMode();
     void applyFolderSortRulesBuildsTypedBackendCommand();
@@ -667,7 +673,8 @@ void BackendBridgeTest::shutdownSequence()
 void BackendBridgeTest::shutdownStartFailed()
 {
     ControllerHarness harness;
-    harness.metadata->throwOnStart = true;
+    // 命令回调注册异常不在后端 metadata->start() 兜底 try/catch 内：启动硬失败。
+    harness.metadata->throwOnRegister = true;
     Seriona::App::BackendBridge bridge(harness.factory(true));
 
     QSignalSpy playerSpy(&bridge, &Seriona::App::BackendBridge::playerSnapshotChanged);
@@ -675,8 +682,8 @@ void BackendBridgeTest::shutdownStartFailed()
 
     QCOMPARE(bridge.started(), false);
     QCOMPARE(bridge.shuttingDown(), true);
-    QCOMPARE(harness.metadata->startCalls, 1);
-    QCOMPARE(harness.metadata->unsubscribeCalls, 1);
+    QCOMPARE(harness.metadata->startCalls, 0);
+    QCOMPARE(harness.metadata->unsubscribeCalls, 0);
     QCOMPARE(harness.metadata->stopCalls, 1);
 
     harness.audio->emitEvent(makePlaybackStateEvent(3, seriona::audio::PlaybackState::Playing));
@@ -687,6 +694,23 @@ void BackendBridgeTest::shutdownStartFailed()
     bridge.shutdown();
     bridge.shutdown();
     QCOMPARE(harness.audio->stopCalls(), 0);
+    QCOMPARE(harness.metadata->stopCalls, 1);
+}
+
+void BackendBridgeTest::startSurvivesMetadataFailure()
+{
+    ControllerHarness harness;
+    // metadata->start() 异常被后端兜底仅告警：平台控制面降级，不阻断启动。
+    harness.metadata->throwOnStart = true;
+    Seriona::App::BackendBridge bridge(harness.factory(true));
+    waitForInitialPlayerSnapshot(bridge);
+
+    QCOMPARE(bridge.started(), true);
+    QCOMPARE(bridge.shuttingDown(), false);
+    QCOMPARE(harness.metadata->startCalls, 1);
+
+    bridge.shutdown();
+    QCOMPARE(harness.metadata->unsubscribeCalls, 1);
     QCOMPARE(harness.metadata->stopCalls, 1);
 }
 
