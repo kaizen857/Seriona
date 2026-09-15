@@ -112,9 +112,15 @@ jobs:
         run: |
           set -eux
           apt-get update
+          # install-qt-action v4.4.0 起该 action 改为 composite，首个步骤写死 `shell: python`
+          # （其源码注释自述 "we must have a default Python here"）。ubuntu:22.04 的 python3
+          # 包只提供 /usr/bin/python3，容器内没有 `python`，该步会以
+          # `exec: "python": executable file not found in $PATH` 失败（2026-09-15 Linux job
+          # exit 127 的根因）。python-is-python3 建立 /usr/bin/python → python3 软链；
+          # 容器内为 Python 3.10.12，满足 v4.4.0 起「依赖 Python ≥ 3.10」的新下限。
           apt-get install -y --no-install-recommends \
             git ca-certificates wget curl sudo software-properties-common gnupg file \
-            build-essential cmake ninja-build pkg-config python3 python3-pip yasm nasm \
+            build-essential cmake ninja-build pkg-config python3 python3-pip python-is-python3 yasm nasm \
             libgl1-mesa-dev libxkbcommon-dev \
             libspdlog-dev libsqlite3-dev libxxhash-dev libsdbus-c++-dev libpipewire-0.3-dev libsystemd-dev \
             libavformat-dev libavcodec-dev libavutil-dev libavfilter-dev libswresample-dev \
@@ -139,6 +145,10 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install cmake
           cmake --version | head -1
+          # `python` 必须在进入 install-qt-action 前就存在（见上方 python-is-python3 说明）：
+          # 这里提前断言，否则该错误要到 ~27 分钟构建结束后的 Qt 安装阶段才以 exit 127 暴露，
+          # 报错与真因无关、难以定位。
+          command -v python
           # apt 的 FFmpeg 4.4 太老（后端用 av_channel_layout_* 新 API，需 FFmpeg 5.1+）；
           # 源码构建 6.1 装到 /usr/local（AppImage glibc 2.35 基线不变，产物自带 FFmpeg）。
           # 保留 CLI 与 avdevice（lavfi 输入）并补外部编码器：TagReader 回归测试用
@@ -205,13 +215,16 @@ jobs:
           timeout --foreground --kill-after=30s 120m dbus-run-session -- ctest --preset release --output-on-failure --timeout 900
           cmake --install build/release --prefix /opt/seriona-deps
       # Qt 仅前端段需要：放在 ①② 之后安装，与 TagReader/后端建测并行推进（省 ~5 分钟）
-      - uses: jurplel/install-qt-action@v4
+      # 钉住具体版本：@v4 是上游不断前移的分支（当前指向 bcb88e3 = v4.4.0，仓库中并无 v4 标签），
+      # 浮动着用会在上游发版时无预警改变行为——本次 Linux job 失败即 @v4 由 v4.3.1 前移到 v4.4.0。
+      - uses: jurplel/install-qt-action@v4.4.0
         with:
           version: ${{ env.QT_VERSION }}
           arch: linux_gcc_64
           cache: true
           install-deps: true
-          # 容器内使用自带 python3（glibc 2.35）；runner 的 Python 3.12 需 GLIBC 2.38
+          # 用容器内发行版 Python（3.10.12，glibc 2.35）而非 runner 的 Python（其需 GLIBC 2.38，
+          # 22.04 容器跑不起来）；`python` 本体由容器准备的 python-is-python3 提供。
           setup-python: false
           # Qt5Compat 不在默认安装列表，QML 运行时 import Qt5Compat.GraphicalEffects 会失败；
           # GraphicalEffects 插件依赖 Qt6ShaderTools，qtshadertools 也需一并安装
@@ -802,7 +815,8 @@ jobs:
           repository: kaizen857/TagReader
           ref: ${{ env.TAGREADER_REF }}
           path: TagReader
-      - uses: jurplel/install-qt-action@v4
+      # 与 Linux job 同一 action，同样钉住版本（浮动 @v4 曾无预警前移到 v4.4.0）
+      - uses: jurplel/install-qt-action@v4.4.0
         with:
           version: ${{ env.QT_VERSION }}
           host: windows
@@ -881,7 +895,8 @@ jobs:
           brew install ninja pkg-config ffmpeg spdlog xxhash
           cmake --version | head -1
           pkg-config --modversion libavformat libavcodec
-      - uses: jurplel/install-qt-action@v4
+      # 与 Linux job 同一 action，同样钉住版本（浮动 @v4 曾无预警前移到 v4.4.0）
+      - uses: jurplel/install-qt-action@v4.4.0
         with:
           version: ${{ env.QT_VERSION }}
           host: mac
