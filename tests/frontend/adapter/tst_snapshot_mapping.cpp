@@ -221,8 +221,8 @@ void SnapshotMappingTest::mapsArtworkRefPathsRawIntoViewState()
         .genre = {},
     };
     player.artwork = seriona::control::ArtworkRef{
-        .localPath = std::filesystem::u8path(u8"/music/My Tracks/重低音 神曲.png"),
-        .thumbnailPath = std::filesystem::u8path(u8"/thumbs/缩 略 图/track cover.png"),
+        .localPath = std::filesystem::path{u8"/music/My Tracks/重低音 神曲.png"},
+        .thumbnailPath = std::filesystem::path{u8"/thumbs/缩 略 图/track cover.png"},
     };
 
     const Seriona::App::PlayerSnapshotViewState mapped = Seriona::App::mapPlayerSnapshot(player, &library);
