@@ -1053,6 +1053,15 @@ jobs:
               未签名未公证，首次运行需在「系统设置 → 隐私与安全性」放行。
 
             引用版本：后端 `${{ inputs.backend_ref }}` / 标签库 `${{ inputs.tagreader_ref }}`
-          files: artifacts/**
+          # 只挂产品文件：不要用 artifacts/**——那会把 windows-build-logs 工件里的
+          # 构建/冒烟诊断产物（*-NN-*.log、smoke-*.log、console-*.log、
+          # *-applocal-files.txt）一并挂进 Release。诊断文件仍作为 Actions artifact
+          # 保留（每个 job 的上传步骤不变），供失败排查，只是不再进入 Release。
+          files: |
+            artifacts/Seriona-*.AppImage
+            artifacts/Seriona-*.tar.gz
+            artifacts/Seriona-*.zip
+            artifacts/*.deb
+            artifacts/*.rpm
           generate_release_notes: true
           fail_on_unmatched_files: true
