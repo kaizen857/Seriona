@@ -23,15 +23,15 @@ Seriona 前端 QML 不直接持有后端状态；中间层 owners 负责把后�
 
 | 设置号 | 字段 | 取值/枚举语义 | 默认 | 量程（滑块步进 100ms） | 生效输出模式 |
 |---|---|---|---|---|---|
-| 1 | `autoAdvanceFadeMode` | `Off`(0)=不交叉（CUE 无间隙组内尽力无缝）；`ExceptGaplessGroup`(1)=除 CUE 邻曲/无间隙组外交叉；`All`(2)=全交叉 | `Off` | 枚举 [0,2] | 仅 Mixed（Direct 灰化） |
+| 1 | `autoAdvanceFadeMode` | `Off`(0)=不交叉（CUE 无间隙组内尽力无缝）；`ExceptGaplessGroup`(1)=除 CUE 邻曲/无间隙组外交叉；`All`(2)=全交叉 | `Off` | 枚举 [0,2] | 仅 Mixed |
 | 2 | `fadeOnTransport` | 播放/暂停/停止淡入淡出开关 | `false` | 无（开关）| 全局（含 Direct） |
 | 3 | `fadeOnSeek` | seek 淡入淡出开关 | `false` | 无（开关）| 全局（含 Direct） |
-| 4 | `gaplessPreloadMs` | 无间隙音轨预解码触发提前量 | `0` | [0,5000] | 仅 Mixed（Direct 灰化） |
-| 5 | `crossfadeMs` | 交叉淡入淡出长度（自动交叉与手动档 FullCrossfade 共用） | `3000` | [0,10000] | 仅 Mixed（Direct 灰化） |
+| 4 | `gaplessPreloadMs` | 无间隙音轨预解码触发提前量 | `0` | [0,5000] | 仅 Mixed |
+| 5 | `crossfadeMs` | 交叉淡入淡出长度（自动交叉与手动档 FullCrossfade 共用） | `3000` | [0,10000] | 仅 Mixed |
 | 6 | `transportFadeMs` | 播放/暂停/停止淡变长度 | `300` | [0,3000] | 全局（含 Direct） |
 | 7 | `seekFadeMs` | seek 淡变长度 | `300` | [0,3000] | 全局（含 Direct） |
-| 8 | `manualAdvanceFadeMode` | `Off`(0)=无；`ShortDip`(1)=短时渐隐 dip（长度=`manualShortCrossfadeMs`，对半分解）；`FullCrossfade`(2)=交叉淡入淡出（长度=`crossfadeMs`） | `Off` | 枚举 [0,2] | 仅 Mixed（Direct 灰化） |
-| 9 | `manualShortCrossfadeMs` | 手动档 ShortDip 的淡变长度 | `500` | [0,3000] | 仅 Mixed（Direct 灰化） |
+| 8 | `manualAdvanceFadeMode` | `Off`(0)=无；`ShortDip`(1)=短时渐隐 dip（长度=`manualShortCrossfadeMs`，对半分解）；`FullCrossfade`(2)=交叉淡入淡出（长度=`crossfadeMs`） | `Off` | 枚举 [0,2] | 仅 Mixed |
+| 9 | `manualShortCrossfadeMs` | 手动档 ShortDip 的淡变长度 | `500` | [0,3000] | 仅 Mixed |
 
 ### 校验与拒绝
 
