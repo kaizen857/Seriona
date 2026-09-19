@@ -22,6 +22,7 @@ Seriona 是一个 Qt Quick 桌面音乐播放器的**前端**。它本身不实�
 | Qt 模块 | Quick、Concurrent、QuickDialogs2、Widgets、Network（单实例守卫的本地 socket）；C++ Qt Test 测试另需 `Qt6::Test`，无 Qt Quick Test 入口 |
 | 构建系统 | mock-only 前端最低 CMake 3.27；默认后端集成与 Windows 发布要求 3.27+；日常开发沿用现有生成器，Windows 发布使用 Visual Studio 17 2022 x64 |
 | QML 效果 | 实际使用 `Qt5Compat.GraphicalEffects`（ColorOverlay/RectangularGlow/OpacityMask/DropShadow）；`MainContent.qml` 虽导入 `QtQuick.Effects` 但未使用 |
+| 排序依赖 | 排序权威在 Seriona_Backend（ICU 字典序）；前端不排序，仅在自身 `vcpkg.json` 与 CI 中供给 ICU（vcpkg `icu` / `libicu-dev` / Homebrew `icu4c`）以支撑 Windows 打包与三平台构建 |
 | 语言服务 | `.clangd` 读 `build/`（相对）；`.qmlls.ini` 硬编码 `build/` 绝对路径 |
 
 标准构建顺序：
@@ -121,13 +122,13 @@ Windows x64 发布由根目录 `build.bat` 调用 `scripts/build-package-windows
 ### 5.3 曲库模块（`library_model.{h,cpp}`、`library_tree_store.{h,cpp}`）
 
 - **LibraryTreeStore**（非 QObject 纯容器）：以节点 id 为键保存整棵曲库树；`setSnapshot()` 一次重建（含悬空子节点剔除、孤儿回补、root 缺失回退到"无父节点集合"、`descendantTrackCount` 递归）。
-- **LibraryModel**（`QAbstractListModel`，`QML_UNCREATABLE`）：把树投影为扁平列表；19 个角色（type/name/title/artist/album/songCount/duration/…/artworkSource/year）；行⇄节点 id 映射；三种投影：根投影、当前文件夹投影（仅直接子级）、搜索投影（当前文件夹子树内只匹配歌曲，文件夹条目不出现；按标题10/歌手5/专辑3/文件名2 加权评分，完全/前缀/包含分别 ×10/×5/×1）；多规则稳定排序（搜索激活时按评分降序，清空恢复用户规则）；`projectionRevision` 在投影完整替换或快照更新后递增（完整替换用 reset 语义）。
-- **LibraryFolderProjectionModel**（`library_folder_projection_model.{h,cpp}`，非 QML_ELEMENT，归 LibraryController 所有）：按 folderNodeId 缓存的每级文件夹独立投影模型（`QString()` 根键恒为根投影）。每个 FolderPage 绑定各自模型实例，页面与模型都常驻不销毁 → 滚动位置零成本保留（Qt 无 reset 后恢复滚动位置的契约，故不做恢复，而是让视图与模型都不换）；数据为某文件夹的直接子级投影（过滤/排序规则与主模型投影一致，复用 `sortedProjectionNodeIds`）；监听主模型 `treeChanged` 原地增量自重建（`rebuildFromSource` 经 `row_diff` 只发行操作/`rowsMoved`/批量 `dataChanged`，不 reset，视图视口不归零；仅 `setSource` 首建/数据源切换/文件夹切换走 `resetFromSource`，同一源+同一文件夹的排序规则变更同样走增量行操作；实例身份不变，revision 递增）、`playingTrackIdChanged`/`focusedNodeIdChanged` 仅对投影内行发 `dataChanged`。主模型投影能力保留给搜索/曲库页等其他使用者。
+- **LibraryModel**（`QAbstractListModel`，`QML_UNCREATABLE`）：把树投影为扁平列表；19 个角色（type/name/title/artist/album/songCount/duration/…/artworkSource/year）；行⇄节点 id 映射；三种投影：根投影、当前文件夹投影（仅直接子级）、搜索投影（当前文件夹子树内只匹配歌曲，文件夹条目不出现；按标题10/歌手5/专辑3/文件名2 加权评分，完全/前缀/包含分别 ×10/×5/×1）；浏览序完全取后端树序（排序权威在后端，前端不本地重排），唯一保留的前端排序语义是搜索相关性（搜索激活时按评分降序；清空搜索后显示后端树序并恢复该文件夹已存规则）；`projectionRevision` 在投影完整替换或快照更新后递增（完整替换用 reset 语义）。
+- **LibraryFolderProjectionModel**（`library_folder_projection_model.{h,cpp}`，非 QML_ELEMENT，归 LibraryController 所有）：按 folderNodeId 缓存的每级文件夹独立投影模型（`QString()` 根键恒为根投影）。每个 FolderPage 绑定各自模型实例，页面与模型都常驻不销毁 → 滚动位置零成本保留（Qt 无 reset 后恢复滚动位置的契约，故不做恢复，而是让视图与模型都不换）；数据为某文件夹的直接子级投影（过滤规则与主模型投影一致，复用 `sortedProjectionNodeIds`——其浏览路径按后端树序原样返回，仅搜索相关性会排序）；监听主模型 `treeChanged` 原地增量自重建（`rebuildFromSource` 经 `row_diff` 只发行操作/`rowsMoved`/批量 `dataChanged`，不 reset，视图视口不归零；仅 `setSource` 首建/数据源切换/文件夹切换走 `resetFromSource`，同一源+同一文件夹的排序规则变更同样走增量重建、但不再产生行序变化；实例身份不变，revision 递增）、`playingTrackIdChanged`/`focusedNodeIdChanged` 仅对投影内行发 `dataChanged`。主模型投影能力保留给搜索/曲库页等其他使用者。
 - **LibraryController**（定义于 `library_model.{h,cpp}`，`QML_ELEMENT`，**无独立文件**）：QML 可见门面。
   - **文件夹导航与投影模型缓存**：投影模型按 folderNodeId 缓存（`projectionModelForNodeId(nodeId)` get-or-create，`QString()` 根键）；`enterFolder`/`goBack` 只修改当前文件夹、不销毁任何缓存模型；主树 `treeChanged` 时保留全部缓存模型原地自重建（实例身份不变），`projectionGeneration` 递增供测试与诊断，排序变更同样原地重建；`folderStackDepth` = 当前文件夹祖先链（`ancestorChainForNode`，从根向目标、排除根）的长度（根浏览为 0）；`locateNodeInFolderStack(nodeId)` 从根逐级进入直到目标所在级（目标不在任何已建投影时进入其直接父级）。
   - **双游标分离**：`playingTrackId`（播放身份）与 `selectedBrowserNodeId`/`focusedNodeId`（浏览焦点）独立；`setPlayingTrackId` 仅当 `followCurrentlyPlaying=true` 才移动浏览游标；`locateCurrentSong()` 手动定位（切文件夹、清搜索、选中、发滚动请求），不发播放命令；浏览动作一律不污染播放身份。
   - **扫描状态机**：`scanStatus` ∈ pending/running/error/completed（终态由快照映射）；`scanProgress` 0-100 钳制；同时暴露 `scannedSongCount`/`totalSongCount` 供视图展示扫描进度（`MainContent` 经自身 scan 状态呈现进度 toast、`Sidebar`/`StartupView` 经 `scanMessage`——进度状态归 LibraryController 所有，视图只消费不持有）；`libraryState` 派生为 backendUnavailable/empty/ready；`refresh()` 以 Incremental 重扫已存根，`forceRescan()` 显式 Full 强制全量重扫；`clearSavedRootPath(msg)` 清根并上报错误消息（启动恢复失败时由 NavigationController 调用）。
-  - **排序规则**：内存缓存按 `rootPath\nfolderNodeId` 键存；保存经 `FolderSortExecutor`（未注入则降级 `ApplyFolderSortRules` 命令）持久化到后端，`missingValuePolicy=Last`；搜索期间按相关性评分临时排序、不覆盖已存文件夹规则（搜索中应用排序规则为 no-op）；快照 reconcile 时按回退链恢复焦点/选中/文件夹与规则。
+  - **排序规则**：内存缓存按 `rootPath\nfolderNodeId` 键存；保存经 `FolderSortExecutor`（未注入则降级 `ApplyFolderSortRules` 命令）持久化到后端，`missingValuePolicy=Last`。树内顺序由后端唯一决定（ICU 字典序重排各层 `childNodeIds`），前端只上报规则、只渲染后端回推的树序，不本地重排可视顺序；搜索期间按相关性评分临时排序、不覆盖已存文件夹规则（搜索中应用排序规则为 no-op）；快照 reconcile 时按回退链恢复焦点/选中/文件夹与规则。
   - 快照 reconcile：`setPlaylistTreeSnapshot` 前记录聚焦/选中节点的祖先链，节点消失后沿链回退，最终落到首个可见节点。
 
 ### 5.4 LyricsModel（`QML_ELEMENT`，可创建但约定用 `appFacade.lyrics`）
@@ -230,7 +231,7 @@ WindowControls.closeRequested / 设置菜单"退出" ──► requestApplicatio
 | 播放/暂停/切歌 | QML 按钮 → PlaybackController Q_INVOKABLE → 后端命令；后端快照回流 → `applyPlayerStateSnapshot` 更新 UI（含时间轴平滑） |
 | 点播曲目 | Sidebar 点击 → `LibraryController.playItem` → 构造带文件夹/搜索上下文的 `StartPlaybackFromContext` 命令 |
 | 浏览/定位 | `enterFolder`/`goBack`/`selectBrowserNode` 本地改投影；`locateCurrentSong` 按播放曲目切文件夹+滚动，不发命令 |
-| 排序 | SortDialog 编辑（≤5 条）→ `applySortRules` → 本地重投影 + `FolderSortExecutor`/`ApplyFolderSortRules` 持久化；后端回推 `FolderSortRulesApplied` 同步 |
+| 排序 | SortDialog 编辑（≤5 条）→ `applySortRules` → 经 `FolderSortExecutor`/`ApplyFolderSortRules` 上报后端（前端不本地重排）；后端按 ICU 字典序重排树内各层后回推快照 + `FolderSortRulesApplied` 同步 |
 | 扫描 | `scanLibrary(QUrl)` → 后端扫描命令 → 快照回流更新状态机与曲库树 |
 | 歌词 | 快照按 trackId 匹配 → 行/翻译切分 → `playbackPosition` 绑定驱动当前行 |
 | 波形 | 快照 → `requestForSnapshots` → 线程池生成 → `waveformReady` → 波形条渲染，拖拽 seek |
@@ -298,7 +299,7 @@ WindowControls.closeRequested / 设置菜单"退出" ──► requestApplicatio
 - **CMake 同步**：新增/重命名任何 `src/app` 源、模块 QML、SVG、测试源都要同步 CMakeLists 三张清单；`.qmlls.ini` 的 buildDir 是绝对路径，换 worktree 后先修正。
 - **mock-only 差异**：无后端时 PlaybackController 的用户意图入口基本全是空操作（例外：`totalDuration` 的 write setter 仍直接写 read model，见 §5.2）、WaveformProvider 类型不存在、大多数测试不注册——排查"UI 点了没反应"先确认构建模式。
 - **双游标**：改曲库交互时保持播放身份（`playingTrackId`）与浏览焦点分离；"定位当前歌曲"只动浏览。
-- **快照是事实来源**：前端状态一律由 `apply*` 从后端快照更新，UI 直写只用于提交意图；排序/扫描/播放的终态以后端回推为准。
+- **快照是事实来源**：前端状态一律由 `apply*` 从后端快照更新，UI 直写只用于提交意图；排序（含树内条目顺序）/扫描/播放的终态以后端回推为准，前端不本地重排浏览顺序。
 - **`docs/` 的定位**：`docs/architecture/backend-integration-contract.md` 是现行跨端契约（§11.1 要求同步维护）；`docs/backend-integration-strategy.md` 与 `docs/folder-navigation-scroll-state.md` 是历史记录与背景材料，不作为事实来源，一切以后 CMakeLists.txt 与实际源码为准。
 
 ## 13. 跨平台约束（Windows / Linux / macOS）
