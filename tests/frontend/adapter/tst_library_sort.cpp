@@ -173,6 +173,18 @@ PlaylistTreeSnapshot makeFolderRemovedSnapshot()
     return snapshot;
 }
 
+// 模拟「后端按文件夹排序规则重排 folder-jazz 后推送的快照」：前端应直接渲染该顺序。
+PlaylistTreeSnapshot makeBackendSortedSnapshot(std::vector<std::string> folderChildren, std::uint64_t version = 24)
+{
+    PlaylistTreeSnapshot snapshot = makeSortableSnapshot(version);
+    for (PlaylistNode &node : snapshot.nodes) {
+        if (node.nodeId == "folder-jazz") {
+            node.childNodeIds = std::move(folderChildren);
+        }
+    }
+    return snapshot;
+}
+
 // 搜索专用快照：根下两个文件夹（folder-alpha、folder-nest）+ 一首根歌曲。
 // 查询 "Alpha" 的加权得分：track-t1 标题完全匹配 100 > track-nested 标题前缀 50 >
 // track-t2 歌手前缀 25 > track-t3 专辑前缀 15；文件夹名含 "Alpha" 也不得出现。
@@ -331,12 +343,14 @@ void LibrarySortTest::noRulesPreserveScannerOrderForRootFolderAndSearch()
 
 void LibrarySortTest::emptyRulesRestoreScannerOrderAfterSorting()
 {
+    // 排序权威已移交后端（见 docs/playback-sort-order-skip-defect-design-decision-2026-09-19.md
+    // §8 决策⑦）：前端应用/清空规则都不再本地重排，始终渲染后端快照的树序。
     LibraryController controller;
     controller.setPlaylistTreeSnapshot(makeSortableSnapshot());
     controller.enterFolder(QStringLiteral("folder-jazz"));
 
     controller.applySortRules(sortRules({{QStringLiteral("title"), QStringLiteral("asc")}}));
-    expectProjection(controller.model(), {QStringLiteral("track-folder-a"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-c")});
+    expectProjection(controller.model(), {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
 
     controller.applySortRules({});
 
@@ -345,58 +359,88 @@ void LibrarySortTest::emptyRulesRestoreScannerOrderAfterSorting()
 
 void LibrarySortTest::titleAscendingAndDescendingSortCurrentFolderProjection()
 {
+    // 前端只上报规则并渲染后端返回的顺序（决策⑦）：应用规则本身不改动投影，
+    // 后端按该规则重排后推送的新快照才改变它——这里用 makeBackendSortedSnapshot 模拟。
+    QTemporaryDir musicDir;
+    QVERIFY(musicDir.isValid());
     LibraryController controller;
+    const QString rootPath = scanTemporaryRoot(controller, musicDir);
     controller.setPlaylistTreeSnapshot(makeSortableSnapshot());
     controller.enterFolder(QStringLiteral("folder-jazz"));
 
+    CommandRecorder recorder;
+    installCommandRecorder(controller, recorder);
+
     controller.applySortRules(sortRules({{QStringLiteral("title"), QStringLiteral("asc")}}));
+    expectFolderSortCommand(recorder, rootPath, QStringLiteral("folder-jazz"), FolderSortField::Title, FolderSortDirection::Ascending);
+    expectProjection(controller.model(), {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
+
+    controller.setPlaylistTreeSnapshot(makeBackendSortedSnapshot({"track-folder-a", "track-folder-b", "track-folder-c"}));
     expectProjection(controller.model(), {QStringLiteral("track-folder-a"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-c")});
 
+    recorder.clear();
     controller.applySortRules(sortRules({{QStringLiteral("title"), QStringLiteral("desc")}}));
+    expectFolderSortCommand(recorder, rootPath, QStringLiteral("folder-jazz"), FolderSortField::Title, FolderSortDirection::Descending);
+    expectProjection(controller.model(), {QStringLiteral("track-folder-a"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-c")});
+
+    controller.setPlaylistTreeSnapshot(makeBackendSortedSnapshot({"track-folder-c", "track-folder-b", "track-folder-a"}, 25));
     expectProjection(controller.model(), {QStringLiteral("track-folder-c"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a")});
 }
 
 void LibrarySortTest::supportedSortDialogFieldsSortCurrentProjection()
 {
+    // 每个可排序字段都应以正确字段/方向上报后端；前端不本地重排（决策⑦）。
+    QTemporaryDir musicDir;
+    QVERIFY(musicDir.isValid());
     LibraryController controller;
+    const QString rootPath = scanTemporaryRoot(controller, musicDir);
     controller.setPlaylistTreeSnapshot(makeSortableSnapshot());
     controller.enterFolder(QStringLiteral("folder-jazz"));
 
-    controller.applySortRules(sortRules({{QStringLiteral("artist"), QStringLiteral("asc")}}));
-    expectProjection(controller.model(), {QStringLiteral("track-folder-c"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a")});
+    struct FieldCase {
+        QString field;
+        QString order;
+        FolderSortField expectedField;
+        FolderSortDirection expectedDirection;
+    };
+    const std::vector<FieldCase> cases{
+        {QStringLiteral("artist"), QStringLiteral("asc"), FolderSortField::Artist, FolderSortDirection::Ascending},
+        {QStringLiteral("album"), QStringLiteral("desc"), FolderSortField::Album, FolderSortDirection::Descending},
+        {QStringLiteral("filename"), QStringLiteral("desc"), FolderSortField::Filename, FolderSortDirection::Descending},
+        {QStringLiteral("year"), QStringLiteral("asc"), FolderSortField::Year, FolderSortDirection::Ascending},
+        {QStringLiteral("duration"), QStringLiteral("asc"), FolderSortField::Duration, FolderSortDirection::Ascending},
+        {QStringLiteral("createdDate"), QStringLiteral("desc"), FolderSortField::CreatedDate, FolderSortDirection::Descending},
+        {QStringLiteral("discNumber"), QStringLiteral("desc"), FolderSortField::DiscNumber, FolderSortDirection::Descending},
+        {QStringLiteral("trackNumber"), QStringLiteral("asc"), FolderSortField::TrackNumber, FolderSortDirection::Ascending},
+    };
 
-    controller.applySortRules(sortRules({{QStringLiteral("album"), QStringLiteral("desc")}}));
-    expectProjection(controller.model(), {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-c"), QStringLiteral("track-folder-a")});
+    CommandRecorder recorder;
+    installCommandRecorder(controller, recorder);
 
-    controller.applySortRules(sortRules({{QStringLiteral("filename"), QStringLiteral("desc")}}));
-    expectProjection(controller.model(), {QStringLiteral("track-folder-c"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a")});
+    for (const FieldCase &testCase : cases) {
+        recorder.clear();
+        controller.applySortRules(sortRules({{testCase.field, testCase.order}}));
+        expectFolderSortCommand(recorder, rootPath, QStringLiteral("folder-jazz"), testCase.expectedField, testCase.expectedDirection);
+    }
 
-    controller.applySortRules(sortRules({{QStringLiteral("year"), QStringLiteral("asc")}}));
-    expectProjection(controller.model(), {QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c"), QStringLiteral("track-folder-b")});
-
-    controller.applySortRules(sortRules({{QStringLiteral("duration"), QStringLiteral("asc")}}));
-    expectProjection(controller.model(), {QStringLiteral("track-folder-a"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-c")});
-
-    controller.applySortRules(sortRules({{QStringLiteral("createdDate"), QStringLiteral("desc")}}));
-    expectProjection(controller.model(), {QStringLiteral("track-folder-c"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a")});
-
-    controller.applySortRules(sortRules({{QStringLiteral("discNumber"), QStringLiteral("desc")}}));
     expectProjection(controller.model(), {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
-
-    controller.applySortRules(sortRules({{QStringLiteral("trackNumber"), QStringLiteral("asc")}}));
-    expectProjection(controller.model(), {QStringLiteral("track-folder-a"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-c")});
 }
 
 void LibrarySortTest::currentRulesReapplyAcrossEnterFolderSearchSubmitAndClear()
 {
+    // 前端不再本地重排浏览投影（决策⑦）：规则被记住并跨导航保持，投影始终渲染
+    // 后端树序；搜索仍按相关性排序（前端唯一保留的排序语义）。
     LibraryController controller;
     controller.setPlaylistTreeSnapshot(makeSortableSnapshot());
 
     controller.applySortRules(sortRules({{QStringLiteral("title"), QStringLiteral("asc")}}));
-    expectProjection(controller.model(), {QStringLiteral("track-root-a"), QStringLiteral("folder-jazz"), QStringLiteral("track-root-z")});
+    expectProjection(controller.model(), {QStringLiteral("folder-jazz"), QStringLiteral("track-root-z"), QStringLiteral("track-root-a")});
 
     controller.enterFolder(QStringLiteral("folder-jazz"));
-    expectProjection(controller.model(), {QStringLiteral("track-folder-a"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-c")});
+    expectProjection(controller.model(), {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
+    QCOMPARE(controller.currentSortRules().size(), 1);
+    QCOMPARE(controller.currentSortRules().first().toMap().value(QStringLiteral("field")).toString(), QStringLiteral("title"));
+    QCOMPARE(controller.currentSortRules().first().toMap().value(QStringLiteral("order")).toString(), QStringLiteral("asc"));
 
     controller.setSearchQuery(QStringLiteral("Tune"));
     expectProjection(controller.model(), {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
@@ -406,7 +450,7 @@ void LibrarySortTest::currentRulesReapplyAcrossEnterFolderSearchSubmitAndClear()
     QCOMPARE(controller.scrollRequest(), QStringLiteral("track-folder-b"));
 
     controller.clearSearch();
-    expectProjection(controller.model(), {QStringLiteral("track-folder-a"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-c")});
+    expectProjection(controller.model(), {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
 }
 
 void LibrarySortTest::snapshotUpdateReappliesRulesWithoutMutatingScannerOrder()
@@ -415,13 +459,13 @@ void LibrarySortTest::snapshotUpdateReappliesRulesWithoutMutatingScannerOrder()
     controller.setPlaylistTreeSnapshot(makeSortableSnapshot());
     controller.enterFolder(QStringLiteral("folder-jazz"));
     controller.applySortRules(sortRules({{QStringLiteral("duration"), QStringLiteral("desc")}}));
-    expectProjection(controller.model(), {QStringLiteral("track-folder-c"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a")});
+    expectProjection(controller.model(), {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
     QCOMPARE(controller.model()->childNodeIds(QStringLiteral("folder-jazz")), QVector<QString>({QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")}));
 
     controller.setPlaylistTreeSnapshot(makeUpdatedSortableSnapshot());
 
     QCOMPARE(controller.model()->version(), 22ULL);
-    expectProjection(controller.model(), {QStringLiteral("track-folder-c"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a")});
+    expectProjection(controller.model(), {QStringLiteral("track-folder-c"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-b")});
     QCOMPARE(controller.model()->childNodeIds(QStringLiteral("folder-jazz")), QVector<QString>({QStringLiteral("track-folder-c"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-b")}));
 }
 
@@ -443,7 +487,7 @@ void LibrarySortTest::snapshotReconcileKeepsRootSearchSortAndPlaybackMarkers()
     QVERIFY(nodeIsPlaying(controller.model(), QStringLiteral("track-root-z")));
 
     controller.clearSearch();
-    expectProjection(controller.model(), {QStringLiteral("track-root-z"), QStringLiteral("folder-jazz"), QStringLiteral("track-root-a")});
+    expectProjection(controller.model(), {QStringLiteral("folder-jazz"), QStringLiteral("track-root-a"), QStringLiteral("track-root-z")});
 
     controller.applyPlayerStateSnapshot(playerSnapshotForTrack("track-root-a-id"), true);
     QCOMPARE(controller.playingTrackId(), QStringLiteral("track-root-a-id"));
@@ -484,17 +528,23 @@ void LibrarySortTest::snapshotReconcileFallsBackToVisibleRowsWhenFolderDisappear
 
 void LibrarySortTest::invalidSortPayloadLeavesProjectionUnchanged()
 {
+    // 无效载荷不得改变当前规则，也不得本地重排投影（决策⑦）。
     LibraryController controller;
     controller.setPlaylistTreeSnapshot(makeSortableSnapshot());
     controller.enterFolder(QStringLiteral("folder-jazz"));
     controller.applySortRules(sortRules({{QStringLiteral("title"), QStringLiteral("asc")}}));
-    expectProjection(controller.model(), {QStringLiteral("track-folder-a"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-c")});
+    expectProjection(controller.model(), {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
 
     controller.applySortRules(sortRules({{QStringLiteral("unknownField"), QStringLiteral("desc")}}));
-    expectProjection(controller.model(), {QStringLiteral("track-folder-a"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-c")});
+    expectProjection(controller.model(), {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
 
     controller.applySortRules(sortRules({{QStringLiteral("artist"), QStringLiteral("sideways")}}));
-    expectProjection(controller.model(), {QStringLiteral("track-folder-a"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-c")});
+    expectProjection(controller.model(), {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
+
+    const QVariantList currentRules = controller.currentSortRules();
+    QCOMPARE(currentRules.size(), 1);
+    QCOMPARE(currentRules.first().toMap().value(QStringLiteral("field")).toString(), QStringLiteral("title"));
+    QCOMPARE(currentRules.first().toMap().value(QStringLiteral("order")).toString(), QStringLiteral("asc"));
 }
 
 void LibrarySortTest::folderSortSendsApplyCommandWithRootAndFolderKey()
@@ -516,7 +566,7 @@ void LibrarySortTest::folderSortSendsApplyCommandWithRootAndFolderKey()
                             QStringLiteral("folder-jazz"),
                             FolderSortField::Title,
                             FolderSortDirection::Descending);
-    expectProjection(controller.model(), {QStringLiteral("track-folder-c"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a")});
+    expectProjection(controller.model(), {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
     QCOMPARE(controller.lastError(), QString());
 }
 
@@ -536,7 +586,7 @@ void LibrarySortTest::sameFolderNodeIdUnderDifferentRootsDoesNotReuseSavedRules(
     installCommandRecorder(controller, recorder);
     controller.applySortRules(sortRules({{QStringLiteral("title"), QStringLiteral("asc")}}));
     QCOMPARE(recorder.commands.size(), std::size_t{1});
-    expectProjection(controller.model(), {QStringLiteral("track-folder-a"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-c")});
+    expectProjection(controller.model(), {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
 
     scanTemporaryRoot(controller, secondRoot);
     controller.setPlaylistTreeSnapshot(makeSortableSnapshot(31));
@@ -558,11 +608,12 @@ void LibrarySortTest::reenterFolderAndBackendStateReloadRestoreSavedRules()
     CommandRecorder recorder;
     installCommandRecorder(controller, recorder);
     controller.applySortRules(sortRules({{QStringLiteral("title"), QStringLiteral("asc")}}));
-    expectProjection(controller.model(), {QStringLiteral("track-folder-a"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-c")});
+    expectProjection(controller.model(), {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
 
     controller.goBack();
     controller.enterFolder(QStringLiteral("folder-jazz"));
-    expectProjection(controller.model(), {QStringLiteral("track-folder-a"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-c")});
+    expectProjection(controller.model(), {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
+    QCOMPARE(controller.currentSortRules().size(), 1);
 
     LibraryController reloaded;
     scanTemporaryRoot(reloaded, musicDir);
@@ -575,7 +626,9 @@ void LibrarySortTest::reenterFolderAndBackendStateReloadRestoreSavedRules()
     reloaded.applyFolderSortSetting(saved);
     reloaded.enterFolder(QStringLiteral("folder-jazz"));
 
-    expectProjection(reloaded.model(), {QStringLiteral("track-folder-c"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a")});
+    expectProjection(reloaded.model(), {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
+    QCOMPARE(reloaded.currentSortRules().size(), 1);
+    QCOMPARE(reloaded.currentSortRules().first().toMap().value(QStringLiteral("field")).toString(), QStringLiteral("duration"));
 }
 
 void LibrarySortTest::equivalentBackendRootPathVariantsReloadSavedRules()
@@ -596,7 +649,8 @@ void LibrarySortTest::equivalentBackendRootPathVariantsReloadSavedRules()
     reloaded.applyFolderSortSetting(saved);
     reloaded.enterFolder(QStringLiteral("folder-jazz"));
 
-    expectProjection(reloaded.model(), {QStringLiteral("track-folder-c"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a")});
+    expectProjection(reloaded.model(), {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
+    QCOMPARE(reloaded.currentSortRules().size(), 1);
 }
 
 void LibrarySortTest::backendFolderSortNotificationUpdatesActiveCurrentRules()
@@ -622,7 +676,7 @@ void LibrarySortTest::backendFolderSortNotificationUpdatesActiveCurrentRules()
     QCOMPARE(currentRules.size(), 1);
     QCOMPARE(currentRules.first().toMap().value(QStringLiteral("field")).toString(), QStringLiteral("duration"));
     QCOMPARE(currentRules.first().toMap().value(QStringLiteral("order")).toString(), QStringLiteral("desc"));
-    expectProjection(controller.model(), {QStringLiteral("track-folder-c"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a")});
+    expectProjection(controller.model(), {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
 }
 
 void LibrarySortTest::currentSortRulesExposeFolderRulesForQmlAndFallbacks()
@@ -681,7 +735,8 @@ void LibrarySortTest::searchProjectionSortDoesNotPersistOrOverwriteSavedFolderRu
     controller.enterFolder(QStringLiteral("folder-jazz"));
 
     QCOMPARE(recorder.commands.size(), std::size_t{1});
-    expectProjection(controller.model(), {QStringLiteral("track-folder-a"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-c")});
+    expectProjection(controller.model(), {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
+    QCOMPARE(controller.currentSortRules().size(), 1);
 }
 
 void LibrarySortTest::missingContextAndMalformedSortPayloadDoNotPersist()
@@ -774,18 +829,25 @@ void LibrarySortTest::searchRanksByWeightedScore()
 
 void LibrarySortTest::clearSearchRestoresUserSortRules()
 {
+    // 「恢复」指规则被重新记为当前规则（并上报后端）；浏览投影仍渲染后端树序，
+    // 搜索时才按相关性排（决策⑦）。
     LibraryController controller;
     controller.setPlaylistTreeSnapshot(makeSearchSnapshot());
     controller.enterFolder(QStringLiteral("folder-alpha"));
 
     controller.applySortRules(sortRules({{QStringLiteral("title"), QStringLiteral("desc")}}));
-    expectProjection(controller.model(), {QStringLiteral("track-t3"), QStringLiteral("track-t2"), QStringLiteral("track-t1")});
+    expectProjection(controller.model(), {QStringLiteral("track-t1"), QStringLiteral("track-t2"), QStringLiteral("track-t3")});
+    QCOMPARE(controller.currentSortRules().size(), 1);
+    QCOMPARE(controller.currentSortRules().first().toMap().value(QStringLiteral("order")).toString(), QStringLiteral("desc"));
 
     controller.setSearchQuery(QStringLiteral("Alpha"));
     expectProjection(controller.model(), {QStringLiteral("track-t1"), QStringLiteral("track-t2"), QStringLiteral("track-t3")});
 
     controller.clearSearch();
-    expectProjection(controller.model(), {QStringLiteral("track-t3"), QStringLiteral("track-t2"), QStringLiteral("track-t1")});
+    QCOMPARE(controller.currentSortRules().size(), 1);
+    QCOMPARE(controller.currentSortRules().first().toMap().value(QStringLiteral("field")).toString(), QStringLiteral("title"));
+    QCOMPARE(controller.currentSortRules().first().toMap().value(QStringLiteral("order")).toString(), QStringLiteral("desc"));
+    expectProjection(controller.model(), {QStringLiteral("track-t1"), QStringLiteral("track-t2"), QStringLiteral("track-t3")});
 }
 
 QTEST_GUILESS_MAIN(LibrarySortTest)

@@ -930,6 +930,16 @@ QVector<QString> LibraryModel::sortedProjectionNodeIds(QVector<QString> nodeIds,
         return nodeIds;
     }
 
+    // 浏览/树路径原样返回：顺序权威在后端（后端已按文件夹排序规则排好各层 childNodeIds，
+    // 前端只渲染），此处的排序规则仅用于“搜索相关性”这一前端专有语义（searchScore；
+    // 后端无等价物）。见 docs/playback-sort-order-skip-defect-design-decision-2026-09-19.md §8 决策⑦。
+    const bool hasSearchScore = std::any_of(sortRules.cbegin(), sortRules.cend(), [](const SortRule &rule) {
+        return rule.field == QStringLiteral("searchScore");
+    });
+    if (!hasSearchScore) {
+        return nodeIds;
+    }
+
     std::stable_sort(nodeIds.begin(), nodeIds.end(), [this, &sortRules](const QString &leftNodeId, const QString &rightNodeId) {
         const auto leftIt = m_nodeById.constFind(leftNodeId);
         const auto rightIt = m_nodeById.constFind(rightNodeId);

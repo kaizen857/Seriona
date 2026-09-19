@@ -358,12 +358,13 @@ void LibraryFolderProjectionModelTest::projectionSortsPerLevelRules()
     QVERIFY(jazzProj != nullptr);
     expectProjection(jazzProj, {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
 
-    // 排序规则应用到当前文件夹投影（与主模型投影同语义）。
+    // 排序权威在后端（决策⑦）：前端应用规则只记录规则并上报，投影仍渲染后端树序。
     controller.applySortRules(sortRules({{QStringLiteral("title"), QStringLiteral("asc")}}));
-    expectProjection(jazzProj, {QStringLiteral("track-folder-a"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-c")});
+    expectProjection(jazzProj, {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
+    QCOMPARE(jazzProj->sortRules().size(), 1);
 
     controller.applySortRules(sortRules({{QStringLiteral("title"), QStringLiteral("desc")}}));
-    expectProjection(jazzProj, {QStringLiteral("track-folder-c"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a")});
+    expectProjection(jazzProj, {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
 
     // 父级投影不受子级排序影响。
     auto *rootProj = qobject_cast<LibraryFolderProjectionModel *>(controller.projectionModelForNodeId(QString()));
@@ -860,10 +861,10 @@ void LibraryFolderProjectionModelTest::sortChangeKeepsModelIdentity()
     QVERIFY(level1 != nullptr);
     const int revisionBefore = level1->projectionRevision();
 
-    // 排序变更：模型对象身份不变（setSource 原地重建），顺序更新。
+    // 排序变更：模型对象身份不变（setSource 原地重建），顺序保持后端树序（决策⑦）。
     controller.applySortRules(sortRules({{QStringLiteral("title"), QStringLiteral("asc")}}));
     QVERIFY(controller.projectionModelForNodeId(QStringLiteral("folder-jazz")) == level1);
-    expectProjection(level1, {QStringLiteral("track-folder-a"), QStringLiteral("track-folder-b"), QStringLiteral("track-folder-c")});
+    expectProjection(level1, {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"), QStringLiteral("track-folder-c")});
     QVERIFY(level1->projectionRevision() > revisionBefore);
 }
 
@@ -978,8 +979,8 @@ void LibraryFolderProjectionModelTest::roleNamesMatchLibraryModel()
     QCOMPARE(actual.size(), expected.size());
 }
 
-// 同一源+同一文件夹下的排序规则变更：只允许增量重建（行操作），绝不允许 reset；
-// 投影内容按新规则排序、sortRules 更新、revision 递增。
+// 同一源+同一文件夹下的排序规则变更：只允许增量重建，绝不允许 reset。
+// 决策⑦后前端不再本地重排浏览投影，键集合与顺序均不变 → 零行操作，仅 revision 递增。
 void LibraryFolderProjectionModelTest::sortRuleChangeRebuildsIncrementallyWithoutReset()
 {
     LibraryModel source;
@@ -997,7 +998,7 @@ void LibraryFolderProjectionModelTest::sortRuleChangeRebuildsIncrementallyWithou
     QSignalSpy insertedSpy(&projection, &QAbstractItemModel::rowsInserted);
     QSignalSpy removedSpy(&projection, &QAbstractItemModel::rowsRemoved);
 
-    // 标题升序：原序 [b,a,c] → [a,b,c]，键集合不变，至少一次 rowsMoved。
+    // 标题升序：顺序保持后端树序 [b,a,c]，零行操作（无重排、无 reset）。
     const QVector<LibraryModel::SortRule> titleAscending{{QStringLiteral("title"), QStringLiteral("asc")}};
     projection.setSource(&source, QStringLiteral("folder-jazz"), titleAscending);
 
@@ -1005,8 +1006,8 @@ void LibraryFolderProjectionModelTest::sortRuleChangeRebuildsIncrementallyWithou
     QCOMPARE(resetSpy.count(), 0);
     QCOMPARE(insertedSpy.count(), 0);
     QCOMPARE(removedSpy.count(), 0);
-    QVERIFY(movedSpy.count() >= 1);
-    expectProjection(&projection, {QStringLiteral("track-folder-a"), QStringLiteral("track-folder-b"),
+    QCOMPARE(movedSpy.count(), 0);
+    expectProjection(&projection, {QStringLiteral("track-folder-b"), QStringLiteral("track-folder-a"),
                                    QStringLiteral("track-folder-c")});
     QCOMPARE(projection.sortRules().size(), 1);
     QCOMPARE(projection.sortRules().at(0).field, QStringLiteral("title"));

@@ -1572,7 +1572,9 @@ void SidebarQueueSwitchTest::controllerStackSynchronization()
         currentPage()->property("projectionModel").value<QObject *>());
     QVERIFY(g1Model != nullptr);
     QVERIFY(g1Model->rowCount() > 0);
-    QCOMPARE(g1Model->entryAt(0)->nodeId, QStringLiteral("a-10")); // 标题降序 → a-10 在前
+    // 排序权威在后端（决策⑦）：前端只记录规则、不本地重排 → 投影保持后端树序，g1 首项为子文件夹 g2。
+    QCOMPARE(g1Model->entryAt(0)->nodeId, QStringLiteral("g2"));
+    QCOMPARE(libraryController.currentSortRules().size(), 1);
 
     QMetaObject::invokeMethod(sidebar, "handleBackClicked");
     QTRY_COMPARE(stackView()->property("depth").toInt(), 0);
@@ -1584,7 +1586,8 @@ void SidebarQueueSwitchTest::controllerStackSynchronization()
     auto *reentered = qobject_cast<Seriona::App::LibraryFolderProjectionModel *>(
         currentPage()->property("projectionModel").value<QObject *>());
     QCOMPARE(reentered, g1Model); // 同一模型实例
-    QCOMPARE(reentered->entryAt(0)->nodeId, QStringLiteral("a-10")); // 排序规则恢复
+    QCOMPARE(reentered->entryAt(0)->nodeId, QStringLiteral("g2")); // 顺序仍为后端树序（决策⑦）
+    QCOMPARE(libraryController.currentSortRules().size(), 1); // 已保存规则随重进恢复
 }
 
 // locate 变体：冷缓存 / 跨分支 / 反向分歧 / 同级兄弟 / 等深跨分支 / 祖先
@@ -2017,11 +2020,11 @@ void SidebarQueueSwitchTest::deepChainSortRuleRestoration()
     rules.append(rule);
     libraryController.applySortRules(rules);
 
-    // 当前层：模型身份不变、顺序更新（标题降序 → t-25-12 在前）
+    // 当前层：模型身份与行数不变；顺序保持后端树序（决策⑦，前端不本地重排）。
     QCOMPARE(currentPage()->property("projectionModel").value<QObject *>(), currentModel);
     QCOMPARE(currentModel->rowCount(), currentRowsBefore);
-    QCOMPARE(currentModel->entryAt(0)->nodeId, QStringLiteral("t-25-12"));
-    QVERIFY(currentModel->entryAt(0)->nodeId != currentFirstBefore);
+    QCOMPARE(currentModel->entryAt(0)->nodeId, currentFirstBefore);
+    QCOMPARE(libraryController.currentSortRules().size(), 1);
 
     // 其他缓存层：身份与顺序均不变
     QCOMPARE(libraryController.projectionModelForNodeId(QStringLiteral("f10")), otherModel);
