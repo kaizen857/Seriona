@@ -122,7 +122,7 @@ jobs:
             git ca-certificates wget curl sudo software-properties-common gnupg file \
             build-essential cmake ninja-build pkg-config python3 python3-pip python-is-python3 yasm nasm \
             libgl1-mesa-dev libxkbcommon-dev \
-            libspdlog-dev libsqlite3-dev libxxhash-dev libsdbus-c++-dev libpipewire-0.3-dev libsystemd-dev \
+            libspdlog-dev libsqlite3-dev libxxhash-dev libicu-dev libsdbus-c++-dev libpipewire-0.3-dev libsystemd-dev \
             libavformat-dev libavcodec-dev libavutil-dev libavfilter-dev libswresample-dev \
             libvorbis-dev libopus-dev libmp3lame-dev \
             zlib1g-dev
@@ -395,7 +395,7 @@ jobs:
           apt-get update && apt-get install -y --no-install-recommends \
             nodejs git ca-certificates cmake ninja-build g++ pkg-config dpkg-dev \
             qt6-base-dev qt6-declarative-dev qt6-5compat-dev file \
-            libspdlog-dev libsqlite3-dev libxxhash-dev libsdbus-c++-dev libpipewire-0.3-dev libsystemd-dev \
+            libspdlog-dev libsqlite3-dev libxxhash-dev libicu-dev libsdbus-c++-dev libpipewire-0.3-dev libsystemd-dev \
             libavformat-dev libavcodec-dev libavutil-dev libavfilter-dev libswresample-dev \
             ffmpeg \
             dbus libxkbcommon0 qt6-shadertools-dev
@@ -497,7 +497,7 @@ jobs:
           apt-get update && apt-get install -y --no-install-recommends \
             nodejs git ca-certificates cmake ninja-build g++ pkg-config dpkg-dev \
             qt6-base-dev qt6-declarative-dev qt6-5compat-dev file \
-            libspdlog-dev libsqlite3-dev libxxhash-dev libsdbus-c++-dev libpipewire-0.3-dev libsystemd-dev \
+            libspdlog-dev libsqlite3-dev libxxhash-dev libicu-dev libsdbus-c++-dev libpipewire-0.3-dev libsystemd-dev \
             libavformat-dev libavcodec-dev libavutil-dev libavfilter-dev libswresample-dev \
             ffmpeg \
             dbus libxkbcommon0 qt6-shadertools-dev
@@ -602,7 +602,7 @@ jobs:
         run: |
           dnf install -y --nodocs nodejs git cmake ninja-build gcc-c++ pkgconf-pkg-config rpm-build \
             qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qt5compat-devel \
-            spdlog-devel sqlite-devel xxhash-devel sdbus-cpp-devel pipewire-devel \
+            spdlog-devel sqlite-devel xxhash-devel libicu-devel sdbus-cpp-devel pipewire-devel \
             dbus-daemon libxkbcommon qt6-qtshadertools-devel \
             https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-43.noarch.rpm
           # Fedora 自带 ffmpeg-free 拆分包（libavcodec-free 等）与 rpmfusion 冲突，需 --allowerasing 替换
@@ -707,7 +707,7 @@ jobs:
           dnf config-manager --set-enabled crb appstream baseos extras || true
           dnf install -y --nodocs nodejs git cmake ninja-build gcc-c++ pkgconf-pkg-config rpm-build \
             qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qt5compat-devel \
-            spdlog-devel sqlite-devel xxhash-devel sdbus-cpp-devel pipewire-devel \
+            spdlog-devel sqlite-devel xxhash-devel libicu-devel sdbus-cpp-devel pipewire-devel \
             dbus-daemon libxkbcommon qt6-qtshadertools-devel
           # EPEL 10 无完整 ffmpeg；RHEL 10 AppStream 的 ffmpeg-free 提供同名 pkg-config 文件与 CLI
           dnf install -y --nodocs ffmpeg-free ffmpeg-free-devel
@@ -892,7 +892,12 @@ jobs:
           set -eux
           # runner 自带 cmake；其余为后端/TagReader 的 pkg-config 依赖。
           # sqlite 是 keg-only，find_package(SQLite3) 会命中 SDK 自带的 3.5x，够用。
+          # icu4c 是 keg-only（系统自带 libicucore.dylib 功能不全），且公式名带版本号，
+          # 故动态解析实际公式名与前缀并把 ICU_ROOT 交给 FindICU。
           brew install ninja pkg-config ffmpeg spdlog xxhash
+          brew install icu4c@78 || brew install icu4c
+          ICU_PREFIX="$(brew --prefix icu4c@78 2>/dev/null || brew --prefix icu4c)"
+          echo "ICU_ROOT=$ICU_PREFIX" >> "$GITHUB_ENV"
           cmake --version | head -1
           pkg-config --modversion libavformat libavcodec
       # 与 Linux job 同一 action，同样钉住版本（浮动 @v4 曾无预警前移到 v4.4.0）
