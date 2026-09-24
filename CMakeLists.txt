@@ -1333,6 +1333,28 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
         add_test(NAME seriona_frontend_lyrics_missing_empty COMMAND seriona_frontend_lyrics_model_tests missingEmpty)
         add_test(NAME seriona_frontend_lyrics_delimiter_resolution COMMAND seriona_frontend_lyrics_model_tests delimiterResolution)
 
+        # 歌词渲染语义基线（todo 1）：把钉死的输入集喂给**当前** LyricsModel，
+        # 逐行 dump (原文, 译文) 到仓库内 fixtures，作为切分改造前的对照基线。
+        # 它只记录现状，不断言切分正确性，也不修改任何产品行为。
+        add_executable(seriona_frontend_lyrics_model_semantic_golden_tests
+            tests/frontend/adapter/tst_lyrics_model_semantic_golden.cpp
+            src/app/lyrics_model.cpp
+            src/app/lyrics_model.h
+        )
+        target_include_directories(seriona_frontend_lyrics_model_semantic_golden_tests
+            PRIVATE src/app
+        )
+        target_compile_definitions(seriona_frontend_lyrics_model_semantic_golden_tests
+            PRIVATE SERIONA_HAS_BACKEND=1
+            PRIVATE "SERIONA_LYRICS_GOLDEN_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/lyrics\""
+        )
+        target_link_libraries(seriona_frontend_lyrics_model_semantic_golden_tests
+            PRIVATE Qt6::Quick Qt6::Test ${SERIONA_BACKEND_CONTROL_TARGET}
+        )
+
+        add_test(NAME seriona_frontend_lyrics_model_semantic_golden
+                 COMMAND seriona_frontend_lyrics_model_semantic_golden_tests dumpSemanticGolden)
+
         add_executable(seriona_frontend_backend_bridge_tests
             tests/frontend/adapter/tst_backend_bridge.cpp
             src/app/backend_bridge.cpp
