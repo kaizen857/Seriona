@@ -1,5 +1,7 @@
 #include "app_facade.h"
 
+#include "lyric_split_boundary.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -103,6 +105,9 @@ private slots:
     void libraryControllerSubmitsTrackActivationThroughBridge();
     void lateLibrarySnapshotReappliesPlayingHighlight();
     void trackSwitchIncrementsPlayCountThroughFacade();
+    void unchangedBoundaryCommitDispatchesNoCommand();
+    void initialBoundaryCutReproducesSpacedRow();
+    void changedBoundaryCommitDispatchesCommand();
 };
 
 void AppFacadeSmokeModeTest::doesNotStartBackendBridgeWhenSmokeDisablesAutostart()
@@ -225,6 +230,100 @@ void AppFacadeSmokeModeTest::trackSwitchIncrementsPlayCountThroughFacade()
 
     facade.applyPlayerSnapshotForTests(empty, seriona::control::LibraryStateSnapshot{});
     QCOMPARE(facade.trackStats()->playCountFor(QStringLiteral("track-d-id")), 1);
+
+    QCoreApplication::instance()->setProperty("seriona.backendBridgeAutostartEnabled", QVariant{});
+#else
+    QSKIP("backend disabled");
+#endif
+}
+
+// D33-1：窗口打开时的初始分界复现该行当前展示对，因此「选中一行、不拖动、直接保存」
+// 在门函数上必须是无操作：返回 false 且不发任何命令。
+// 这里用「未启动的 bridge 会把任何外发命令转成一条拒绝通知」作可观测面：
+// 只要命令被外发，backendNotificationCountForTests() 就会 +1。命令零外发 ⇒ 计数保持 0。
+// 该行取空格分隔的弱约定（跳过段是纯空白），初始分界与当前展示对逐字一致。
+void AppFacadeSmokeModeTest::unchangedBoundaryCommitDispatchesNoCommand()
+{
+#if SERIONA_HAS_BACKEND
+    QCoreApplication::instance()->setProperty("seriona.backendBridgeAutostartEnabled", false);
+
+    Seriona::App::AppFacade facade;
+    QCOMPARE(facade.backendBridgeStartedForTests(), false);
+
+    const QString rawLine = QStringLiteral("日文 中文");
+    const QString shown = QStringLiteral("日文");
+    const QString trans = QStringLiteral("中文");
+
+    const QVariantMap cut = facade.lyricSplitBoundaryCut(rawLine, shown, trans);
+    QCOMPARE(cut.value(QStringLiteral("valid")).toBool(), true);
+    const int boundaryIndex = cut.value(QStringLiteral("leftEnd")).toInt();
+
+    const QVariantMap parts = facade.lyricSplitBoundaryParts(rawLine, boundaryIndex);
+    QCOMPARE(parts.value(QStringLiteral("original")).toString(), shown);
+    QCOMPARE(parts.value(QStringLiteral("translation")).toString(), trans);
+
+    QCOMPARE(facade.backendNotificationCountForTests(), std::size_t{0});
+    QCOMPARE(facade.commitLyricSplitBoundary(rawLine, boundaryIndex, shown, trans), false);
+    QCOMPARE(facade.backendNotificationCountForTests(), std::size_t{0});
+
+    QCoreApplication::instance()->setProperty("seriona.backendBridgeAutostartEnabled", QVariant{});
+#else
+    QSKIP("backend disabled");
+#endif
+}
+
+// 含分隔符字形的行：窗口初始分界（gap 形式）同样复现当前展示对；
+// 单点切片在「原文结束处」会多带分隔符（故保存由 touched 结构挡住，见 QML 源契约）。
+void AppFacadeSmokeModeTest::initialBoundaryCutReproducesSpacedRow()
+{
+#if SERIONA_HAS_BACKEND
+    QCoreApplication::instance()->setProperty("seriona.backendBridgeAutostartEnabled", false);
+
+    Seriona::App::AppFacade facade;
+
+    const QString rawLine = QStringLiteral("揺るぎない Spirit / 坚定不移的Spirit");
+    const QString shown = QStringLiteral("揺るぎない Spirit");
+    const QString trans = QStringLiteral("坚定不移的Spirit");
+
+    const Seriona::App::LyricSplitBoundaryCut cut =
+        Seriona::App::findLyricSplitBoundaryCut(rawLine, shown, trans);
+    QVERIFY(cut.valid);
+    const Seriona::App::LyricSplitBoundaryParts parts =
+        Seriona::App::splitLyricLineAtBoundary(rawLine, cut);
+    QCOMPARE(parts.original, shown);
+    QCOMPARE(parts.translation, trans);
+
+    const QVariantMap cutFromFacade = facade.lyricSplitBoundaryCut(rawLine, shown, trans);
+    QCOMPARE(cutFromFacade.value(QStringLiteral("valid")).toBool(), true);
+    QCOMPARE(cutFromFacade.value(QStringLiteral("leftEnd")).toInt(), cut.leftEnd);
+    QCOMPARE(cutFromFacade.value(QStringLiteral("rightStart")).toInt(), cut.rightStart);
+
+    QCoreApplication::instance()->setProperty("seriona.backendBridgeAutostartEnabled", QVariant{});
+#else
+    QSKIP("backend disabled");
+#endif
+}
+
+// 真实变更仍会走到命令外发（同一门函数、同一分界，只把当前译文换成别的值）。
+// bridge 未启动故返回 false，但命令确实被外发 —— 由拒绝通知计数证明。
+void AppFacadeSmokeModeTest::changedBoundaryCommitDispatchesCommand()
+{
+#if SERIONA_HAS_BACKEND
+    QCoreApplication::instance()->setProperty("seriona.backendBridgeAutostartEnabled", false);
+
+    Seriona::App::AppFacade facade;
+    QCOMPARE(facade.backendBridgeStartedForTests(), false);
+
+    const QString rawLine = QStringLiteral("日文 中文");
+    const QString shown = QStringLiteral("日文");
+    const QString trans = QStringLiteral("中文");
+    const int boundaryIndex = facade.lyricSplitBoundaryCut(rawLine, shown, trans)
+                                  .value(QStringLiteral("leftEnd"))
+                                  .toInt();
+
+    QCOMPARE(facade.backendNotificationCountForTests(), std::size_t{0});
+    QCOMPARE(facade.commitLyricSplitBoundary(rawLine, boundaryIndex, shown, QStringLiteral("旧译")), false);
+    QCOMPARE(facade.backendNotificationCountForTests(), std::size_t{1});
 
     QCoreApplication::instance()->setProperty("seriona.backendBridgeAutostartEnabled", QVariant{});
 #else

@@ -67,6 +67,99 @@ assert_registered_paths() {
     done
 }
 
+# 新增 QML 组件的成员存在性门禁（S19 A5，S20 L2）：seriona_qmllint 目标存在但退出码
+# 恒 0，且既不在 ctest 也不在本脚本内 —— A1（Window.open）与 A2（Item.transientParent）
+# 这类「引用不存在的成员」因此漏到运行时。全模块有 46 条既有告警，不能整体门禁；
+# 这里只对本次新增的三个组件查 missing-property，命中即失败。
+#
+# S20 L2：此前 Seriona 模块导入失败（`Failed to import Seriona`）被静默忽略。修正两点：
+# ① 用只含一个 `Seriona -> <build>/qml-modules` 符号链接的临时导入根，让 qmllint 真正
+# 解析 Theme 等本地类型（qt_add_qml_module 的产物目录名是 qml-modules，而导入名是
+# Seriona，缺映射就只能退化成「只查 Qt 类型」）；② 把 `Failed to import Seriona` 明确
+# 当失败 —— 否则该门禁会静默退化，而退化本身不报错。注意 Qt 6.11 的 qmllint 不校验
+# 「未声明的信号处理器」（`onFoo:` 拼错亦不报），故 A1/A2 类只以可判负的 missing-property
+# 形式覆盖（如 Window.open），不假设更宽的覆盖。
+assert_new_qml_components_have_no_missing_members() {
+    # 必须用本工程 Qt 6 的 qmllint（支持 --bare/--resource）。PATH 上的
+    # /usr/bin/qmllint 可能是另一套 1.0 版：它拒收这些参数并以 0 退出 ——
+    # 若被静默采用，本门禁就成了永远通过的假门禁（S19 A5 的教训）。
+    # 故优先取 qmake6 -query QT_HOST_BINS 下的 qmllint，并校验它确实认得这些参数。
+    local qmllint_bin=""
+    local host_bins
+    host_bins="$(qmake6 -query QT_HOST_BINS 2>/dev/null || qmake -query QT_HOST_BINS 2>/dev/null || true)"
+    if [[ -n "$host_bins" && -x "$host_bins/qmllint" ]]; then
+        qmllint_bin="$host_bins/qmllint"
+    elif command -v qmllint >/dev/null 2>&1; then
+        qmllint_bin="$(command -v qmllint)"
+    fi
+    if [[ -z "$qmllint_bin" ]]; then
+        printf 'Invariant failed: qmllint not found (ships with the Qt 6 toolchain); cannot gate new QML members\n' >&2
+        return 1
+    fi
+
+    # Qt 自带的 QML 导入根（QtQml/QtQuick/...）。缺了它 qmllint 会把 Qt.Dialog、
+    # Qt.PointingHandCursor、Qt.darker 这类内置成员误报成 missing-property，
+    # 让门禁变成假阳性（对干净文件也失败）。
+    local qt_qml_dir=""
+    qt_qml_dir="$(qmake6 -query QT_INSTALL_QML 2>/dev/null || qmake -query QT_INSTALL_QML 2>/dev/null || true)"
+
+    # `import Seriona` 的导入根：一个临时目录，内含指向 <build>/qml-modules 的符号链接。
+    local build_dir_abs
+    if [[ "$SERIONA_BUILD_DIR" = /* ]]; then
+        build_dir_abs="$SERIONA_BUILD_DIR"
+    else
+        build_dir_abs="$ROOT_DIR/$SERIONA_BUILD_DIR"
+    fi
+    local module_root
+    module_root="$(mktemp -d "${TMPDIR:-/tmp}/seriona-qmllint-XXXXXX")"
+    ln -sfn "$build_dir_abs/qml-modules" "$module_root/Seriona"
+
+    log "New QML components reference no missing members (qmllint)"
+    local file
+    local output
+    local failed=0
+    local hard_fail=0
+    local -a include_args=(-I "$SERIONA_BUILD_DIR" -I "$module_root")
+    if [[ -n "$qt_qml_dir" ]]; then
+        include_args+=(-I "$qt_qml_dir")
+    fi
+    for file in qml/components/LyricLineContextMenu.qml qml/components/LyricCorrectionManager.qml qml/windows/LyricSplitEditorWindow.qml; do
+        output="$("$qmllint_bin" --bare \
+            "${include_args[@]}" \
+            --resource "$SERIONA_BUILD_DIR/.qt/rcc/qmake_Seriona.qrc" \
+            --resource "$SERIONA_BUILD_DIR/.qt/rcc/seriona_raw_qml_0.qrc" \
+            --resource "$SERIONA_BUILD_DIR/.qt/rcc/seriona_raw_res_0.qrc" \
+            --resource "$SERIONA_BUILD_DIR/.qt/rcc/seriona_raw_qml_0_extra_qmldirs.qrc" \
+            "$file" 2>&1 || true)"
+        # 工具不认识这些参数 = 门禁没真正运行，必须失败而不是放行。
+        if [[ "$output" == *"Unknown option"* ]]; then
+            printf 'Invariant failed: %s does not support --bare/--resource (a Qt 6 qmllint is required)\n' "$qmllint_bin" >&2
+            hard_fail=1
+            break
+        fi
+        # S20 L2：模块导入失败 ⇒ 本地类型（Theme 等）根本没解析，门禁形同虚设。
+        # 宁可判负，也不放行一个只查 Qt 类型的「假门禁」。
+        if [[ "$output" == *"Failed to import Seriona"* ]]; then
+            printf '%s\n' "$output" >&2
+            printf 'Invariant failed: qmllint failed to import module Seriona; the missing-member gate would silently skip local types\n' >&2
+            hard_fail=1
+            break
+        fi
+        if [[ "$output" == *missing-property* ]]; then
+            printf '%s\n' "$output" >&2
+            failed=1
+        fi
+    done
+    rm -rf "$module_root"
+    if [[ "$hard_fail" -ne 0 ]]; then
+        return 1
+    fi
+    if [[ "$failed" -ne 0 ]]; then
+        printf 'Invariant failed: a new QML component references a member that does not exist\n' >&2
+        return 1
+    fi
+}
+
 required_app_layer_sources=(
     src/app/app_facade.cpp
     src/app/app_facade.h
@@ -219,6 +312,8 @@ assert_registered_paths "frontend adapter test source" "${required_frontend_test
 for test_target in "${required_frontend_test_targets[@]}"; do
     assert_fixed_match "CMake defines frontend adapter target: ${test_target}" "add_executable(${test_target}" CMakeLists.txt
 done
+
+assert_new_qml_components_have_no_missing_members
 
 assert_no_match \
     "No orphaned legacy app-layer source references in CMake" \

@@ -48,53 +48,29 @@ WaveformResult resultAt(const QSignalSpy &spy, qsizetype index)
     return qvariant_cast<WaveformResult>(spy.at(index).at(0));
 }
 
-seriona::scanner::LyricLine lyricLine(std::chrono::milliseconds timestamp, const std::string &text)
+seriona::control::SplitLyricLine snapshotLine(std::chrono::milliseconds timestamp,
+                                              const std::string &text,
+                                              const std::string &original,
+                                              const std::string &translation)
 {
-    seriona::scanner::LyricLine line;
+    seriona::control::SplitLyricLine line;
     line.timestamp = timestamp;
     line.text = text;
+    line.original = original;
+    line.translation = translation;
+    line.split = !translation.empty();
     return line;
 }
 
-seriona::scanner::PlaylistNode lyricsTrackNode(
-    const std::string &nodeId,
+seriona::control::TrackLyricsSnapshot trackLyricsSnapshot(
     const std::string &trackId,
-    const std::string &lineText)
+    const std::vector<seriona::control::SplitLyricLine> &lines)
 {
-    seriona::scanner::SongMetadata song;
-    song.trackId = trackId;
-    song.filePath = "/music/" + trackId + ".flac";
-    song.sourceFilePath = song.filePath;
-    song.title = trackId;
-    song.effectiveLyrics = {lyricLine(std::chrono::milliseconds{0}, lineText)};
-
-    seriona::scanner::PlaylistNode node;
-    node.nodeId = nodeId;
-    node.kind = seriona::scanner::PlaylistNodeKind::Track;
-    node.displayName = trackId;
-    node.song = std::move(song);
-    return node;
-}
-
-seriona::control::LibraryStateSnapshot lyricsLibrary(
-    const std::string &trackId,
-    const std::string &lineText)
-{
-    seriona::control::LibraryStateSnapshot library;
-    library.libraryTree = seriona::scanner::PlaylistTreeSnapshot{};
-    library.libraryTree->version = 1;
-    library.libraryTree->rootNodeId = "root";
-    library.libraryTree->nodes = {lyricsTrackNode("node-" + trackId, trackId, lineText)};
-    return library;
-}
-
-seriona::control::PlayerStateSnapshot lyricsPlayer(const std::string &trackId)
-{
-    seriona::control::PlayerStateSnapshot player;
-    player.currentTrack = seriona::control::TrackIdentity{};
-    player.currentTrack->trackId = trackId;
-    player.currentTrack->filePath = "/music/" + trackId + ".flac";
-    return player;
+    seriona::control::TrackLyricsSnapshot snapshot;
+    snapshot.trackId = trackId;
+    snapshot.targetLanguage = "zh";
+    snapshot.lines = lines;
+    return snapshot;
 }
 
 QString lyricsDisplayLine(const Seriona::App::LyricsModel &model, int row)
@@ -115,7 +91,7 @@ private slots:
     void cueMetadataChoosesSourceFilePathAndTimeWindow();
     void cueTrackDefersWaveformGenerationUntilLibraryMetadataArrives();
     void staleWorkerResultIsIgnored();
-    void staleLyricsSnapshotForDifferentTrackIsIgnored();
+    void emptyTrackLyricsSnapshotClearsPreviousContent();
     void missingFileFailureReturnsEmptyWaveform();
 };
 
@@ -338,27 +314,27 @@ void WaveformWorkerTest::staleWorkerResultIsIgnored()
     QCOMPARE(controller.waveformBarWidth(), 4);
 }
 
-void WaveformWorkerTest::staleLyricsSnapshotForDifferentTrackIsIgnored()
+void WaveformWorkerTest::emptyTrackLyricsSnapshotClearsPreviousContent()
 {
-    const seriona::control::PlayerStateSnapshot currentPlayer = lyricsPlayer("current-track");
-    const seriona::control::LibraryStateSnapshot currentLibrary = lyricsLibrary(
-        "current-track",
-        "Current lyric / 当前歌词");
-    const seriona::control::LibraryStateSnapshot staleLibrary = lyricsLibrary(
-        "previous-track",
-        "Stale lyric / 过期歌词");
-
     Seriona::App::LyricsModel model;
     model.setShowTranslation(false);
-    model.applyPlayerStateSnapshot(currentPlayer, &currentLibrary);
+
+    model.applyTrackLyricsSnapshot(trackLyricsSnapshot("current-track", {
+        snapshotLine(std::chrono::milliseconds{0}, "Current lyric / 当前歌词", "Current lyric", "当前歌词")}));
 
     QCOMPARE(model.rowCount(), 1);
     QCOMPARE(lyricsDisplayLine(model, 0), QStringLiteral("Current lyric"));
 
-    model.applyPlayerStateSnapshot(currentPlayer, &staleLibrary);
+    // 切到另一首的带曲目空行回退快照 ⇒ 清空
+    model.applyTrackLyricsSnapshot(trackLyricsSnapshot("previous-track", {}));
+    QCOMPARE(model.rowCount(), 0);
 
+    // 同一曲目再次有词后可渲染；随后该曲目的空行回退快照同样清空（不残留旧行）
+    model.applyTrackLyricsSnapshot(trackLyricsSnapshot("current-track", {
+        snapshotLine(std::chrono::milliseconds{0}, "Current lyric / 当前歌词", "Current lyric", "当前歌词")}));
     QCOMPARE(model.rowCount(), 1);
-    QCOMPARE(lyricsDisplayLine(model, 0), QStringLiteral("Current lyric"));
+    model.applyTrackLyricsSnapshot(trackLyricsSnapshot("current-track", {}));
+    QCOMPARE(model.rowCount(), 0);
 }
 
 void WaveformWorkerTest::missingFileFailureReturnsEmptyWaveform()

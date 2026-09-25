@@ -5538,6 +5538,15 @@ void registerSerionaModuleForTests(const QString &sourceRoot)
                < 0
         || qmlRegisterType(moduleFile(QStringLiteral("components/AboutOverlay.qml")),
                kModuleUri, 1, 0, "AboutOverlay")
+               < 0
+        || qmlRegisterType(moduleFile(QStringLiteral("components/LyricLineContextMenu.qml")),
+               kModuleUri, 1, 0, "LyricLineContextMenu")
+               < 0
+        || qmlRegisterType(moduleFile(QStringLiteral("components/LyricCorrectionManager.qml")),
+               kModuleUri, 1, 0, "LyricCorrectionManager")
+               < 0
+        || qmlRegisterType(moduleFile(QStringLiteral("windows/LyricSplitEditorWindow.qml")),
+               kModuleUri, 1, 0, "LyricSplitEditorWindow")
                < 0) {
         qFatal("Seriona QML module registration failed");
     }

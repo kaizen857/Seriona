@@ -105,6 +105,19 @@ public:
     // 译文语言（W3）：SetLyricsTargetLanguage 真命令，载荷 = 语言 token（zh/ja/ko/en）。
     // 前端只传值、不做语言判定；非法值由后端命令拒绝路径反馈。
     seriona::control::MediaControllerCommandResult setLyricsTargetLanguage(const QString &language);
+    // 行级手工纠错（W3，D14 菜单前三项走控制命令）：rawText = 该行快照 text（清洗行），
+    // original/translation 为纠错后的原文/译文（空串 translation = 显式「此行无译文」）。
+    // lyricConvention 取自当前 TrackLyricsSnapshot.convention（经 conventionToken 序列化），
+    // 绝不回退为控制层推断值；未命中当前快照时约定为 None（token "-"）。
+    seriona::control::MediaControllerCommandResult upsertLyricSplitCorrection(
+        const QString &rawText,
+        const QString &original,
+        const QString &translation);
+    // 恢复本行自动识别：RemoveLyricSplitCorrection（rawText + 当前快照约定）。
+    seriona::control::MediaControllerCommandResult removeLyricSplitCorrection(const QString &rawText);
+    // 测试接缝：直接落地一份歌词快照，供命令路径用例构造非 None 约定（仿
+    // AppFacade::applyPlayerSnapshotForTests 的既有先例），不进生产调用链。
+    void applyTrackLyricsSnapshotForTests(seriona::control::TrackLyricsSnapshot snapshot);
     QList<QPair<QString, QString>> enumeratePlaybackDevices();
     QList<PlaybackDeviceCapabilities> enumeratePlaybackDeviceCapabilities();
     void setLogLevel(int level);
@@ -118,6 +131,7 @@ public:
     const seriona::control::LibraryStateSnapshot &librarySnapshot() const;
     const seriona::audio::EqualizerStateSnapshot &equalizerStateSnapshot() const;
     const seriona::audio::SpectrumSnapshot &spectrumSnapshot() const;
+    const seriona::control::TrackLyricsSnapshot &trackLyricsSnapshot() const;
     const std::deque<seriona::control::ControlDomainNotification> &notifications() const;
 #endif
 
@@ -132,6 +146,9 @@ signals:
     // 订阅回调），spectrumChanged 按后端发布频率触发。
     void equalizerStateChanged();
     void spectrumChanged();
+    // W3：当前曲目切分歌词快照落地通知（AppFacade 据此把 original/translation
+    // 整份投给 LyricsModel；订阅即回调当前快照，其后按后端发布时机推送）。
+    void trackLyricsChanged();
     void domainNotificationQueued();
 
 private:
@@ -149,6 +166,7 @@ private:
     void applyLibrarySnapshot(seriona::control::LibraryStateSnapshot snapshot);
     void applyEqualizerStateSnapshot(seriona::audio::EqualizerStateSnapshot snapshot);
     void applySpectrumSnapshot(seriona::audio::SpectrumSnapshot snapshot);
+    void applyTrackLyricsSnapshot(seriona::control::TrackLyricsSnapshot snapshot);
     void enqueueCommandFailureNotification(const seriona::control::MediaControllerCommandResult &result);
     void enqueueNotification(seriona::control::ControlDomainNotification notification);
 
@@ -159,10 +177,12 @@ private:
     seriona::control::SubscriptionHandle m_notificationSubscription;
     seriona::control::SubscriptionHandle m_equalizerSubscription;
     seriona::control::SubscriptionHandle m_spectrumSubscription;
+    seriona::control::SubscriptionHandle m_trackLyricsSubscription;
     seriona::control::PlayerStateSnapshot m_playerSnapshot;
     seriona::control::LibraryStateSnapshot m_librarySnapshot;
     seriona::audio::EqualizerStateSnapshot m_equalizerSnapshot;
     seriona::audio::SpectrumSnapshot m_spectrumSnapshot;
+    seriona::control::TrackLyricsSnapshot m_trackLyricsSnapshot;
     std::deque<seriona::control::ControlDomainNotification> m_notifications;
     // R3：频谱开关期望值缓存（最后一次成功外发 SetSpectrumEnabled 的值；nullopt =
     // 从未成功发送——首次提交即发真命令）。submitEqualizerConfig 的 spectrum 段

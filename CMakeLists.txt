@@ -186,6 +186,7 @@ set(SERIONA_APP_LAYER_SOURCES
     src/app/waveform_provider.h
     src/app/lyrics_model.cpp
     src/app/lyrics_model.h
+    src/app/lyric_split_boundary.h
     src/app/library_model.cpp
     src/app/library_model.h
     src/app/library_folder_projection_model.cpp
@@ -218,6 +219,8 @@ set(SERIONA_QML_MODULE_FILES
     qml/components/SortRuleRow.qml
     qml/components/ConfirmDeleteDialog.qml
     qml/components/TrackContextMenu.qml
+    qml/components/LyricLineContextMenu.qml
+    qml/components/LyricCorrectionManager.qml
     qml/components/PlaylistDelegate.qml
     qml/components/FolderPage.qml
     qml/components/QueueView.qml
@@ -229,6 +232,7 @@ set(SERIONA_QML_MODULE_FILES
     qml/windows/EqualizerWindow.qml
     qml/windows/EqualizerPresetDialog.qml
     qml/windows/TrackDetailWindow.qml
+    qml/windows/LyricSplitEditorWindow.qml
 )
 
 set(SERIONA_QML_MODULE_RESOURCES
@@ -387,6 +391,23 @@ if(BUILD_TESTING)
     )
     add_test(NAME seriona_frontend_library_tree_mapping COMMAND seriona_frontend_library_tree_mapping)
 
+    # 歌词模型为纯 QML 面（无后端订阅源），mock-only 构建同样注册：断言空态且不崩
+    add_executable(seriona_frontend_lyrics_model_mock_only_tests
+        tests/frontend/adapter/tst_lyrics_model_mock_only.cpp
+        src/app/lyrics_model.cpp
+        src/app/lyrics_model.h
+    )
+    target_include_directories(seriona_frontend_lyrics_model_mock_only_tests
+        PRIVATE src/app
+    )
+    target_compile_definitions(seriona_frontend_lyrics_model_mock_only_tests
+        PRIVATE SERIONA_HAS_BACKEND=0
+    )
+    target_link_libraries(seriona_frontend_lyrics_model_mock_only_tests
+        PRIVATE Qt6::Quick Qt6::Test
+    )
+    add_test(NAME seriona_frontend_lyrics_mock_only_empty_state COMMAND seriona_frontend_lyrics_model_mock_only_tests)
+
     # 设置控制器为纯 QML 面（无后端依赖），mock-only 构建同样注册
     add_executable(seriona_frontend_settings_controller_tests
         tests/frontend/adapter/tst_settings_controller.cpp
@@ -523,6 +544,41 @@ add_test(NAME seriona_frontend_settings_transition_startup_apply COMMAND seriona
     add_dependencies(seriona_frontend_about_overlay_tests seriona)
     add_test(NAME seriona_frontend_about_overlay COMMAND seriona_frontend_about_overlay_tests)
 
+    # 歌词纠错 UI 运行时用例（S19 A1/A2/A4/A6 + todo 34）：实例化真实 QML 组件并调用交互入口，
+    # 覆盖源文本断言抓不到的运行时行为（Window.show/居中/拖动保存门/空原文拒绝；
+    # 纠错管理列表的范围/逐行删除/delegate 按钮真实点击/渲染槽/滚动位置保持）。
+    # 纯 QML 面（appFacade 用委托到生产头文件谓词的桩），mock-only 构建同样注册。
+    add_executable(seriona_frontend_lyric_ui_runtime_tests
+        tests/frontend/adapter/tst_lyric_ui_runtime.cpp
+        src/app/lyric_split_boundary.h
+    )
+    target_include_directories(seriona_frontend_lyric_ui_runtime_tests
+        PRIVATE src/app
+    )
+    target_link_libraries(seriona_frontend_lyric_ui_runtime_tests
+        PRIVATE Qt6::Quick Qt6::Test
+    )
+    # 复用 Seriona 的 QML 模块资源（qrc 目录映射），使 `import Seriona` 可解析；
+    # qrc 由 qt_add_qml_module 构建期生成，故测试目标先依赖 Seriona。
+    qt6_add_resources(SERIONA_LYRIC_UI_RUNTIME_TEST_QRC
+        ${CMAKE_CURRENT_BINARY_DIR}/.qt/rcc/qmake_Seriona.qrc
+        ${CMAKE_CURRENT_BINARY_DIR}/.qt/rcc/seriona_raw_qml_0.qrc
+        ${CMAKE_CURRENT_BINARY_DIR}/.qt/rcc/seriona_raw_qml_0_extra_qmldirs.qrc
+    )
+    target_sources(seriona_frontend_lyric_ui_runtime_tests PRIVATE ${SERIONA_LYRIC_UI_RUNTIME_TEST_QRC})
+    add_dependencies(seriona_frontend_lyric_ui_runtime_tests seriona)
+    add_test(NAME seriona_frontend_lyric_ui_runtime_auto_judge COMMAND seriona_frontend_lyric_ui_runtime_tests autoJudgementItemShowsVisibleWindow)
+    add_test(NAME seriona_frontend_lyric_ui_runtime_correction_dialog COMMAND seriona_frontend_lyric_ui_runtime_tests correctionDialogCentersAndRejectsBlankOriginal)
+    add_test(NAME seriona_frontend_lyric_ui_runtime_split_editor COMMAND seriona_frontend_lyric_ui_runtime_tests splitEditorSavesNonReproducibleRowAfterDrag)
+    add_test(NAME seriona_frontend_lyric_correction_scope COMMAND seriona_frontend_lyric_ui_runtime_tests correctionManagerScopeFollowsCurrentTrackOnly)
+    add_test(NAME seriona_frontend_lyric_correction_per_row_remove COMMAND seriona_frontend_lyric_ui_runtime_tests correctionManagerBulkRestoreIssuesOneRemovePerManualRow)
+    add_test(NAME seriona_frontend_lyric_correction_auto_judgement COMMAND seriona_frontend_lyric_ui_runtime_tests correctionManagerShowsAutoJudgementForComparison)
+    add_test(NAME seriona_frontend_lyric_correction_immediate_restore COMMAND seriona_frontend_lyric_ui_runtime_tests correctionManagerBulkRestoreReturnsToAutoImmediately)
+    add_test(NAME seriona_frontend_lyric_correction_single_remove COMMAND seriona_frontend_lyric_ui_runtime_tests correctionManagerSingleRemoveUsesRawKey)
+    add_test(NAME seriona_frontend_lyric_correction_delegate_button COMMAND seriona_frontend_lyric_ui_runtime_tests correctionManagerDelegateButtonRemovesRowByRawLine)
+    add_test(NAME seriona_frontend_lyric_correction_skip_empty_key COMMAND seriona_frontend_lyric_ui_runtime_tests correctionManagerSkipsEmptyRawLine)
+    add_test(NAME seriona_frontend_lyric_correction_scroll_kept COMMAND seriona_frontend_lyric_ui_runtime_tests correctionManagerScrollPositionSurvivesDataChanged)
+
     # 单实例守卫：主/次实例判定与激活转发（本地 socket，不依赖后端）
     add_executable(seriona_frontend_single_instance_tests
         tests/frontend/adapter/tst_single_instance_guard.cpp
@@ -569,6 +625,26 @@ add_test(NAME seriona_frontend_settings_transition_startup_apply COMMAND seriona
         PRIVATE Qt6::Core Qt6::Test
     )
     add_test(NAME seriona_frontend_row_diff COMMAND seriona_frontend_row_diff_tests)
+
+    # 整首纠错窗口的分界换算（header-only 纯函数）：纯 Qt Core 面，mock-only 构建同样注册。
+    add_executable(seriona_frontend_lyric_split_boundary_tests
+        tests/frontend/adapter/tst_lyric_split_boundary.cpp
+        src/app/lyric_split_boundary.h
+    )
+    target_include_directories(seriona_frontend_lyric_split_boundary_tests
+        PRIVATE src/app
+    )
+    target_link_libraries(seriona_frontend_lyric_split_boundary_tests
+        PRIVATE Qt6::Core Qt6::Test
+    )
+    add_test(NAME seriona_frontend_lyric_split_boundary_splits COMMAND seriona_frontend_lyric_split_boundary_tests splitsAtBoundaryWithTrim)
+    add_test(NAME seriona_frontend_lyric_split_boundary_clamps COMMAND seriona_frontend_lyric_split_boundary_tests clampsOutOfRangeBoundary)
+    add_test(NAME seriona_frontend_lyric_split_boundary_empty_original COMMAND seriona_frontend_lyric_split_boundary_tests rejectsEmptyOriginal)
+    add_test(NAME seriona_frontend_lyric_split_boundary_differs COMMAND seriona_frontend_lyric_split_boundary_tests differsFromCurrentOnlyOnRealChange)
+    add_test(NAME seriona_frontend_lyric_split_boundary_initial_cut COMMAND seriona_frontend_lyric_split_boundary_tests initialCutReproducesDisplayedPair)
+    add_test(NAME seriona_frontend_lyric_split_boundary_single_index_gap COMMAND seriona_frontend_lyric_split_boundary_tests spacedPairIsNotReproducibleBySingleIndex)
+    add_test(NAME seriona_frontend_lyric_split_boundary_initial_cut_invalid COMMAND seriona_frontend_lyric_split_boundary_tests initialCutRejectsPairThatNoBoundaryExpresses)
+    add_test(NAME seriona_frontend_lyric_split_boundary_commit_gate COMMAND seriona_frontend_lyric_split_boundary_tests commitGateRequiresRealChangeAndNonBlankOriginal)
 
     if(SERIONA_BACKEND_CONTROL_TARGET)
         add_executable(seriona_frontend_library_tree_model_tests
@@ -727,6 +803,9 @@ add_test(NAME seriona_frontend_settings_transition_startup_apply COMMAND seriona
         add_test(NAME seriona_frontend_qml_layout COMMAND seriona_frontend_ui_only_handler_policy_tests qmlLayoutSourceContractsStayStable)
         add_test(NAME seriona_frontend_ui_only_equalizer_contract COMMAND seriona_frontend_ui_only_handler_policy_tests equalizerWindowSourceContractsStayStable)
         add_test(NAME seriona_frontend_ui_only_aux_window_layering COMMAND seriona_frontend_ui_only_handler_policy_tests auxiliaryWindowLayeringContractsStayStable)
+        add_test(NAME seriona_frontend_ui_only_lyric_line_correction COMMAND seriona_frontend_ui_only_handler_policy_tests lyricLineCorrectionMenuSourceContractsStayStable)
+        add_test(NAME seriona_frontend_ui_only_lyric_split_editor COMMAND seriona_frontend_ui_only_handler_policy_tests lyricSplitEditorWindowSourceContractsStayStable)
+        add_test(NAME seriona_frontend_ui_only_lyric_correction_manager COMMAND seriona_frontend_ui_only_handler_policy_tests lyricCorrectionManagerSourceContractsStayStable)
 
         add_executable(seriona_frontend_library_select_track_tests
             tests/frontend/adapter/tst_library_select_track.cpp
@@ -788,6 +867,7 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
         add_executable(seriona_frontend_app_facade_smoke_mode
             tests/frontend/adapter/tst_app_facade_smoke_mode.cpp
             src/app/app_facade.cpp
+            src/app/lyric_split_boundary.h
             src/app/app_settings_storage.cpp
             src/app/app_settings_storage.h
             src/app/track_stats_controller.cpp
@@ -835,6 +915,9 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
             )
         endif()
     add_test(NAME seriona_frontend_app_facade_smoke_mode COMMAND seriona_frontend_app_facade_smoke_mode)
+    add_test(NAME seriona_frontend_app_facade_lyric_split_boundary_noop COMMAND seriona_frontend_app_facade_smoke_mode unchangedBoundaryCommitDispatchesNoCommand)
+    add_test(NAME seriona_frontend_app_facade_lyric_split_boundary_spaced COMMAND seriona_frontend_app_facade_smoke_mode initialBoundaryCutReproducesSpacedRow)
+    add_test(NAME seriona_frontend_app_facade_lyric_split_boundary_changed COMMAND seriona_frontend_app_facade_smoke_mode changedBoundaryCommitDispatchesCommand)
 
     # 真实应用入口的 startup 场景冒烟：offscreen 运行 seriona 本体，--smoke-exit-ms=1000
     # 计时器到点自退（成功须退出码 0）。冷 QML 磁盘缓存 + 慢机的首次加载实测可超过 5 分钟
@@ -1332,12 +1415,14 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
             PRIVATE Qt6::Quick Qt6::Test ${SERIONA_BACKEND_CONTROL_TARGET}
         )
 
-        add_test(NAME seriona_frontend_lyrics_trackid_lookup COMMAND seriona_frontend_lyrics_model_tests trackidLookup)
+        add_test(NAME seriona_frontend_lyrics_snapshot_lines COMMAND seriona_frontend_lyrics_model_tests snapshotLinesDrivePlayback)
         add_test(NAME seriona_frontend_lyrics_missing_empty COMMAND seriona_frontend_lyrics_model_tests missingEmpty)
+        add_test(NAME seriona_frontend_lyrics_correction_roles COMMAND seriona_frontend_lyrics_model_tests correctionRolesExposeAutoAndOverride)
+        add_test(NAME seriona_frontend_lyrics_correction_dedup COMMAND seriona_frontend_lyrics_model_tests correctionFieldsParticipateInDedup)
 
-        # 歌词渲染语义基线（todo 1）：把钉死的输入集喂给**当前** LyricsModel，
-        # 逐行 dump (原文, 译文) 到仓库内 fixtures，作为切分改造前的对照基线。
-        # 它只记录现状，不断言切分正确性，也不修改任何产品行为。
+        # 歌词渲染语义基线（todo 1 建立，todo 31 迁移）：模型不再自己切分后，改为
+        # 喂后端 TrackLyricsSnapshot → 断言渲染出的 (原文, 译文) 对；并逐行比对冻结的
+        # 旧口径 golden，断言全部差异命中 expected-diff-list.tsv 的既有类别。
         add_executable(seriona_frontend_lyrics_model_semantic_golden_tests
             tests/frontend/adapter/tst_lyrics_model_semantic_golden.cpp
             src/app/lyrics_model.cpp
@@ -1355,12 +1440,15 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
         )
 
         add_test(NAME seriona_frontend_lyrics_model_semantic_golden
-                 COMMAND seriona_frontend_lyrics_model_semantic_golden_tests dumpSemanticGolden)
+                 COMMAND seriona_frontend_lyrics_model_semantic_golden_tests backendSnapshotRendersProvidedPairs)
+        add_test(NAME seriona_frontend_lyrics_model_semantic_golden_diff
+                 COMMAND seriona_frontend_lyrics_model_semantic_golden_tests diffAgainstFrozenGoldenHitsOnlyWhitelistCategories)
 
         add_executable(seriona_frontend_backend_bridge_tests
             tests/frontend/adapter/tst_backend_bridge.cpp
             src/app/backend_bridge.cpp
             src/app/backend_bridge.h
+            src/app/lyric_split_boundary.h
             src/app/settings_controller.cpp
             src/app/app_settings_storage.cpp
             src/app/app_settings_storage.h
@@ -1403,6 +1491,8 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
         add_test(NAME seriona_frontend_backend_bridge_play_next_empty COMMAND seriona_frontend_backend_bridge_tests playNextTrackRejectsEmptyIdWithoutDispatch)
         add_test(NAME seriona_frontend_backend_bridge_remove_from_queue COMMAND seriona_frontend_backend_bridge_tests removeFromQueueBuildsIndexedCommand)
         add_test(NAME seriona_frontend_backend_bridge_set_lyrics_target_language COMMAND seriona_frontend_backend_bridge_tests setLyricsTargetLanguageReachesBackendAndRejectsUnsupported)
+        add_test(NAME seriona_frontend_backend_bridge_lyric_split_correction COMMAND seriona_frontend_backend_bridge_tests lyricSplitCorrectionCommandsCarrySnapshotConvention)
+        add_test(NAME seriona_frontend_backend_bridge_lyric_split_boundary_chain COMMAND seriona_frontend_backend_bridge_tests lyricSplitBoundaryChainWritesConvertedPartsAndRepublishes)
         # T9 conformance：本地乐观合成（equalizer_curve_synth）与后端 reducer 快照
         # 逐点一致（≤0.05dB×181×全部测试组）。真 makeMediaController 内嵌 harness，
         # 链路与 tst_backend_bridge 相同：submitEqualizerConfig → reducer → 镜像读回。

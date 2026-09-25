@@ -4,11 +4,11 @@ Seriona 前端 QML 不直接持有后端状态；中间层 owners 负责把后�
 
 - `PlaybackController`：播放 read model 与播放命令提交。
 - `LibraryController`：曲库扫描、曲库树快照、浏览投影、空曲库和后端不可用状态。
-- `LyricsModel`：歌词 read model 与本地歌词显示状态。
+- `LyricsModel`：歌词 read model；透传后端 `TrackLyricsSnapshot` 的每行 original/translation，并持有本地歌词显示状态（当前行、播放位置、译文显隐）。
 - `NavigationController`：启动/主界面、本地导航和 sidebar 状态。
 - `SettingsController`：音频输出与播放过渡设置；经 `BackendBridge::submitConfigureOutput` / `submitTransitionConfig` 提交，设备能力过滤状态见下；均衡器设置与频谱显示同经真实命令链外发、状态与快照订阅镜像回本控制器只读面（见「均衡器与频谱显示域契约」）。UI 自本版起仅 Mixed 输出模式（无 Direct 选择，灰化机制已移除）。
 
-后端 `PlayerStateSnapshot`、`LibraryStateSnapshot`、`PlaylistTreeSnapshot` 和命令结果仍是权威事实来源；前端不得用生产假数据替代缺失的后端曲库内容。
+后端 `PlayerStateSnapshot`、`LibraryStateSnapshot`、`PlaylistTreeSnapshot`、`TrackLyricsSnapshot` 和命令结果仍是权威事实来源；前端不得用生产假数据替代缺失的后端曲库内容。
 
 ## 播放过渡配置命令：SetTransitionConfig
 
@@ -54,6 +54,33 @@ Seriona 前端 QML 不直接持有后端状态；中间层 owners 负责把后�
 - 启用预载/过渡后，自动前进由后端内部预解码交接完成：快照流表现为新曲 `TrackChanged`（位置从交接点延续，无 `PlaybackEnded`、无整轨重载）。
 - 手动切歌（`SkipNext`/`SkipPrevious`/`SelectTrack`）在 Mixed + 档位下由 dip/交叉短暂延迟后完成（Loading → TrackChanged → Ready → Playing 背靠背呈现）；Direct 恒即时硬切。
 - 未启用（默认全关）时自然播完仍走 `PlaybackEnded` → 控制层自动下一曲的既有流程；默认配置下整体行为与过渡引擎引入前一致。
+
+## 歌词域契约（TrackLyricsSnapshot → LyricsModel）
+
+歌词正文的切分（原文/译文判定、文档级约定推断）由后端完成；前端 `LyricsModel` 是透传 read model，不含按分隔符切分的逻辑，也没有兜底切分分支。
+
+- 数据来源：`BackendBridge::registerSubscriptions` 注册的 **6 路订阅**（player / library / notification / equalizer / spectrum / trackLyrics）之一 `subscribeTrackLyrics` 回调 `TrackLyricsSnapshot`；`BackendBridge::trackLyricsChanged` → `AppFacade::handleTrackLyricsChanged` 把快照整份投给 `LyricsModel::applyTrackLyricsSnapshot`。`SERIONA_HAS_BACKEND=0`（mock-only）时该订阅不编译，`LyricsModel` 呈现空态。
+- 前端消费字段：`trackId`（空则视为无快照、清空模型）、`convention`（仅 `BackendBridge` 读取并序列化为纠错命令载荷，见下），以及每行的 `timestamp` / `text`（`cleanLine` 之后的清洗行）/ `original` / `translation`（空串表示该行无译文）/ `manualOverride` / `autoOriginal` / `autoTranslation`。`targetLanguage`、`position`、`freshness` 属快照契约字段，前端当前不读取。
+- 模型角色：既有 5 个（`RawLineRole` = `text`、`DisplayLineRole` = `original`、`TranslationRole` = `translation`、`CurrentRole`、`TimestampRole`）角色名与值不变；W3 起追加 `ManualOverrideRole` / `AutoOriginalRole` / `AutoTranslationRole`。`autoOriginal` / `autoTranslation` 是被 manual 覆盖之前的自动判定结果，仅在 `manualOverride` 为 true 时有值（未覆盖时后端留空）。
+- 内容去重谓词为 `timestamp + text + original + translation`（仅译文变化也触发整份替换）。
+- 行推进：`currentIndex` 由 `playbackPosition` 与各行 `timestamp` 计算，与内容来源无关。`LyricsModel::lines()` 供 QML 切歌动画取行快照（既有 3 键不变，另附 W3 三键）。
+
+### 三层纠错入口（同一后端命令面）
+
+| 层级 | 入口 | 前端链路 |
+|---|---|---|
+| 行级 | `qml/components/LyricLineContextMenu.qml`（`MainContent.qml` 在歌词行右键打开） | `AppFacade::commitLyricSplitCorrection(rawLine, original, translation)` → `BackendBridge::upsertLyricSplitCorrection` → `UpsertLyricSplitCorrection`；恢复本行 → `AppFacade::removeLyricSplitCorrection` → `RemoveLyricSplitCorrection` |
+| 整首 | `qml/windows/LyricSplitEditorWindow.qml`（`Main.qml` 实例化） | 拖动分界 → `AppFacade::lyricSplitBoundaryParts` / `lyricSplitBoundaryCut` / `commitLyricSplitBoundary`（分界换算为 header-only 纯函数 `src/app/lyric_split_boundary.h`），仍落到同一条 upsert 命令 |
+| 管理列表 | `qml/windows/SettingsWindow.qml` 内的 `LyricCorrectionManager`（`qml/components/LyricCorrectionManager.qml`） | 当前曲目 `manualOverride` 行的呈现层；逐行恢复对每行调用一次 `RemoveLyricSplitCorrection`（键为 `rawLine`，即快照 `text`） |
+
+- 行级与整首两处的提交门同源：`AppFacade::isLyricOriginalSubmittable`（原文非空，含全空白视为空）与 `AppFacade::lyricSplitBoundaryCommitAllowed`（原文非空且构成真实变更）；未过门时不外发命令。
+- `lyricConvention` 载荷取自**当前** `TrackLyricsSnapshot.convention`，经 `seriona::control::conventionToken` 序列化；快照未命中时按约定为 None（token `-`），前端不自造约定值。
+- 纠错管理列表的范围限定为当前曲目；切歌或列表增删后由 `LyricCorrectionManager::refresh()` 整份重建。
+
+### 译文语言设置
+
+- `SettingsController` 键组 `lyrics` / 键 `targetLanguage`（默认 `zh`），QML 在设置面板「译文语言」下拉绑定；变更即经注入的 executor → `BackendBridge::setLyricsTargetLanguage` 外发 `SetLyricsTargetLanguage` 真命令，载荷为语言 token（`zh` / `ja` / `ko` / `en`）。
+- 启动路径在设置 reload 后经 `SettingsController::applyLyricsTargetLanguage()` 同步一次。
 
 ## 均衡器与频谱显示域契约
 

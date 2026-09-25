@@ -48,6 +48,25 @@ void expectInOrder(const QString &source, const std::initializer_list<const char
     }
 }
 
+// 截取 source 中 [startNeedle, endNeedle) 的文本（用于把单个菜单项/单个属性块隔离出来，
+// 断言「该项不发命令」而不会被同文件其它项的命令调用污染）。
+QString sliceBetween(const QString &source, const QString &startNeedle, const QString &endNeedle)
+{
+    const qsizetype start = source.indexOf(startNeedle);
+    if (start < 0) {
+        QTest::qFail(qPrintable(QStringLiteral("Missing slice start: %1").arg(startNeedle)), __FILE__, __LINE__);
+        return {};
+    }
+
+    const qsizetype end = source.indexOf(endNeedle, start + startNeedle.size());
+    if (end <= start) {
+        QTest::qFail(qPrintable(QStringLiteral("Missing slice end '%1' after '%2'").arg(endNeedle, startNeedle)),
+                     __FILE__, __LINE__);
+        return {};
+    }
+    return source.mid(start, end - start);
+}
+
 QString menuBlock(const QString &source, const QString &label, const QString &nextLabel)
 {
     const QString startNeedle = QStringLiteral("text: qsTr(\"%1\")").arg(label);
@@ -117,6 +136,9 @@ private slots:
     void qmlLayoutSourceContractsStayStable();
     void auxiliaryWindowLayeringContractsStayStable();
     void equalizerWindowSourceContractsStayStable();
+    void lyricLineCorrectionMenuSourceContractsStayStable();
+    void lyricSplitEditorWindowSourceContractsStayStable();
+    void lyricCorrectionManagerSourceContractsStayStable();
 };
 
 void UiOnlyHandlerPolicyTest::uiOnlyHandlersDoNotUseBackendCommands()
@@ -520,6 +542,246 @@ void UiOnlyHandlerPolicyTest::auxiliaryWindowLayeringContractsStayStable()
 
     // ③ 主窗关闭链路：显式退出（辅助窗不再参与 lastWindowClosed 判定）
     expectContains(mainQml, QStringLiteral("Qt.quit();"));
+}
+
+// 歌词行右键菜单（W3/D14）源契约：四项齐备 + 前三项走控制命令 + 第 4 项只读接
+// autoOriginal/autoTranslation（不接当前值）+ 右键不 seek 且左键 seek/手势 park 不回归。
+// 文件机制边界：GUILESS 纯文本断言；运行时交互（真实右键弹菜单、命令外发、快照时机③）
+// 由 C++ 侧 backend_bridge / lyrics_model 用例覆盖，交互本身由终局波 F3 人工 QA 覆盖（本 todo 选 (C)）。
+void UiOnlyHandlerPolicyTest::lyricLineCorrectionMenuSourceContractsStayStable()
+{
+    const QString mainContentQml = sourceFile(QStringLiteral("qml/views/MainContent.qml"));
+    const QString menuQml = sourceFile(QStringLiteral("qml/components/LyricLineContextMenu.qml"));
+    const QString mainQml = sourceFile(QStringLiteral("qml/Main.qml"));
+
+    // 右键接入：显式纳入右键，且右键分支在 seek 之前 return（右键不 seek）。
+    expectInOrder(mainContentQml, {
+        "acceptedButtons: Qt.LeftButton | Qt.RightButton",
+        "if (mouse.button === Qt.RightButton) {",
+        "root.openLyricLineContextMenu(delegateItem, mouse);",
+        "return;",
+        "root.playbackController.seek(delegateItem.timestampSec);"
+    });
+
+    // 左键 seek 与手势 park 行为保持不变（回归锁定）。
+    expectContainsAll(mainContentQml, {
+        "onFlickStarted: parkLyricsFollow()",
+        "onDragStarted: parkLyricsFollow()",
+        "onMovementStarted: parkLyricsFollow()",
+        "required property bool manualOverride",
+        "required property string autoOriginal",
+        "required property string autoTranslation",
+        "required property string rawLine",
+        "LyricLineContextMenu {",
+        "appFacade: root.appFacade"
+    });
+    expectContains(mainQml, QStringLiteral("appFacade: window.appFacade"));
+
+    // D14 四项齐备（文本逐字）。
+    expectContainsAll(menuQml, {
+        "text: qsTr(\"修正原文/译文\")",
+        "text: qsTr(\"此行无译文\")",
+        "text: qsTr(\"恢复本行自动识别\")",
+        "text: qsTr(\"查看本行自动判定\")"
+    });
+
+    // 前三项分支：修正 → 输入弹窗；此行无译文 → Upsert（译文显式空串）；
+    // 恢复 → Remove；三项均经 appFacade 控制命令（不直连 DB）。
+    expectContainsAll(menuQml, {
+        "correctionDialog.openFor(root.lineData);",
+        "root.appFacade.upsertLyricSplitCorrection(root.lineData.rawLine,",
+        "root.lineData.displayLine,",
+        "root.appFacade.removeLyricSplitCorrection(root.lineData.rawLine);"
+    });
+
+    // 第 4 项：只读弹窗，且该分支【不】调用 appFacade / 不 submitCommand。
+    // A1 修复：autoJudgeDialog 是 Window，只有 show() 没有 open()；此前断言
+    // autoJudgeDialog.open() 是把运行时 TypeError 逐字断言为正确（S19 A5）。
+    const QString autoJudgeItem = sliceBetween(menuQml,
+                                               QStringLiteral("objectName: \"lyricAutoJudgementItem\""),
+                                               QStringLiteral("// 修正原文/译文：真实用户输入"));
+    expectContains(autoJudgeItem, QStringLiteral("autoJudgeDialog.show();"));
+    expectAbsent(autoJudgeItem, QStringLiteral("autoJudgeDialog.open();"));
+    expectAbsent(autoJudgeItem, QStringLiteral("appFacade"));
+    expectAbsent(autoJudgeItem, QStringLiteral("upsertLyricSplitCorrection"));
+    expectAbsent(autoJudgeItem, QStringLiteral("removeLyricSplitCorrection"));
+
+    // A2 修复：两个弹窗的居中基准必须是 Window 自己的 transientParent。
+    // 本组件根是 Item（没有 transientParent 属性），写成 root.transientParent 会让
+    // 三元条件恒假 → x/y 恒 0（居中成为死代码）。逐字锁定不得回归。
+    expectAbsent(menuQml, QStringLiteral("root.transientParent ?"));
+    expectContainsAll(menuQml, {
+        "x: correctionDialog.transientParent ?",
+        "y: correctionDialog.transientParent ?",
+        "x: autoJudgeDialog.transientParent ?",
+        "y: autoJudgeDialog.transientParent ?"
+    });
+
+    // A6 修复：行级「修正原文/译文」保存必须与拖动路径同一口径 —— 空原文（含全空白）
+    // 不提交、不关窗、就地给出原因；提交经门函数而非直发 upsert。
+    expectContainsAll(menuQml, {
+        "function saveFromFields()",
+        "root.appFacade.isLyricOriginalSubmittable(originalField.text)",
+        "originalError = qsTr(\"原文不能为空（含全空白）\")",
+        "root.appFacade.commitLyricSplitCorrection(rawLine,",
+        "onClicked: correctionDialog.saveFromFields()"
+    });
+
+    // 第 4 项【不接当前值】：只读展示绑定必须取被覆盖前的 autoOriginal/autoTranslation；
+    // 若改成 displayLine/translation（当前值），本断言失败。
+    expectContainsAll(menuQml, {
+        "lineIsManual ? (lineData.autoOriginal || \"\") : (lineData.displayLine || \"\")",
+        "lineIsManual ? (lineData.autoTranslation || \"\") : (lineData.translation || \"\")",
+        "qsTr(\"当前显示的就是自动结果\")"
+    });
+    expectAbsent(menuQml, QStringLiteral("submitCommand"));
+}
+
+// 整首纠错窗口（todo 33）的源契约：入口用户可达、打开即定格、分界走文本度量、
+// 保存经 appFacade 控制命令，且不引入 karaoke 光标定位 / DB / FS。
+void UiOnlyHandlerPolicyTest::lyricSplitEditorWindowSourceContractsStayStable()
+{
+    const QString mainContentQml = sourceFile(QStringLiteral("qml/views/MainContent.qml"));
+    const QString mainQml = sourceFile(QStringLiteral("qml/Main.qml"));
+    const QString editorQml = sourceFile(QStringLiteral("qml/windows/LyricSplitEditorWindow.qml"));
+
+    expectContainsAll(mainContentQml, {
+        "signal openLyricSplitEditorRequested()",
+        "text: qsTr(\"整首纠错\")",
+        "root.openLyricSplitEditorRequested()"
+    });
+    expectContainsAll(mainQml, {
+        "LyricSplitEditorWindow {",
+        "onOpenLyricSplitEditorRequested:",
+        "lyricSplitEditorWindow.openEditor()"
+    });
+
+    // 打开时定格：openEditor() 一次性把 lyrics.lines() 快照进 ListModel（非持续绑定）。
+    expectContainsAll(editorQml, {
+        "objectName: \"lyricSplitEditorWindow\"",
+        "function openEditor()",
+        "appFacade.lyrics.lines()",
+        "frozenModel.clear()",
+        "frozenModel.append("
+    });
+
+    // 分界像素定位走 Qt 文本度量（TextMetrics.advanceWidth），不硬编码字宽。
+    expectContainsAll(editorQml, {
+        "TextMetrics {",
+        "boundaryMetrics.advanceWidth"
+    });
+
+    // 初始分界由 C++ 反解（复现当前展示对），QML 里没有任何分隔符字形参与切分。
+    expectContainsAll(editorQml, {
+        "appFacade.lyricSplitBoundaryCut(raw, shown, trans)",
+        "row.touched !== true",
+        "frozenModel.setProperty(rowRect.index, \"touched\", true)"
+    });
+    expectAbsent(editorQml, QStringLiteral("\" / \""));
+    expectAbsent(editorQml, QStringLiteral("\"/\""));
+
+    // A4 修复：保存门必须对**拖动结果**判定（同一 Q_INVOKABLE 门），不得再用打开时那个
+    // 展示对的 reproducible 标志 —— 后者对「译文来自其它行的参照行」必然为假，
+    // 会让整类行即使拖动也永远无法保存。逐字锁定可保存性判定的唯一来源。
+    expectContainsAll(editorQml, {
+        "function commitAllowed(row)",
+        "root.appFacade.lyricSplitBoundaryCommitAllowed(row.rawLine, row.boundaryIndex,",
+        "root.commitAllowed(selectedRow)",
+        "if (!root.commitAllowed(row))"
+    });
+    expectAbsent(editorQml, QStringLiteral("selectedRow.reproducible === true"));
+    expectAbsent(editorQml, QStringLiteral("row.reproducible !== true"));
+
+    // 保存经 appFacade 控制命令（内容寻址写 manual），不直连 DB/FS、不做 karaoke 光标定位。
+    expectContainsAll(editorQml, {
+        "commitLyricSplitBoundary(row.rawLine, row.boundaryIndex,"
+    });
+    expectAbsent(editorQml, QStringLiteral("submitCommand"));
+    expectAbsent(editorQml, QStringLiteral("positionAt"));
+    expectAbsent(editorQml, QStringLiteral("QSql"));
+    expectAbsent(editorQml, QStringLiteral("QFile"));
+}
+
+// 纠错管理列表（todo 34）的源契约：范围 = 当前曲目、数据取自 lyrics.lines() 的 manual 行、
+// 逐行外发 Remove、批量不碰全库清理；auto 判定槽接被覆盖前的 autoOriginal/autoTranslation。
+// 运行时交互（真实点「恢复本行/恢复自动识别」）由 tst_lyric_ui_runtime 的实例化用例覆盖。
+void UiOnlyHandlerPolicyTest::lyricCorrectionManagerSourceContractsStayStable()
+{
+    const QString settingsQml = sourceFile(QStringLiteral("qml/windows/SettingsWindow.qml"));
+    const QString managerQml = sourceFile(QStringLiteral("qml/components/LyricCorrectionManager.qml"));
+    const QString cmakeLists = sourceFile(QStringLiteral("CMakeLists.txt"));
+    const QString gateScript = sourceFile(QStringLiteral("scripts/verify-middle-layer.sh"));
+    const QString artworkTest = sourceFile(QStringLiteral("tests/frontend/adapter/tst_artwork_transition.cpp"));
+
+    // 入口：设置面板内实例化，注入 root.appFacade，打开设置时刷新（切曲目后列表跟随当前曲目）。
+    expectContainsAll(settingsQml, {
+        "LyricCorrectionManager {",
+        "objectName: \"lyricCorrectionManager\"",
+        "appFacade: root.appFacade",
+        "correctionManager.refresh();"
+    });
+
+    // 数据来源 = lyrics.lines() 的 manual 行；范围过滤在 refresh 里显式写死。
+    expectContainsAll(managerQml, {
+        "appFacade.lyrics.lines()",
+        "row.manualOverride !== true",
+        "function refresh()"
+    });
+
+    // 单条删除：键取 rawLine（回传键），经 removeLyricSplitCorrection 外发。
+    // F3：与 restoreAll 同口径——空键不外发（后端会拒绝），故守卫与调用点一并锁定。
+    expectContainsAll(managerQml, {
+        "function removeRow(rawLine)",
+        "const key = (rawLine !== undefined && rawLine !== null) ? String(rawLine) : \"\";",
+        "if (key.length === 0)",
+        "root.appFacade.removeLyricSplitCorrection(key);"
+    });
+
+    // 批量「恢复自动识别」：逐行发同一个命令（键取自该行 rawLine），不走全库清理；
+    // 空 rawLine 无有效回传键，跳过不发（见 F6）。
+    expectContainsAll(managerQml, {
+        "function restoreAll()",
+        "const key = (row.rawLine !== undefined && row.rawLine !== null) ? String(row.rawLine) : \"\";",
+        "if (key.length === 0)",
+        "root.appFacade.removeLyricSplitCorrection(key);"
+    });
+
+    // 列表不订阅高频的 dataChanged（它只订阅结构性变化）：整份重建挂上去会在播放行推进时
+    // 反复打回滚动位置（见 F4）。运行期由 seriona_frontend_lyric_correction_scroll_kept 覆盖。
+    expectAbsent(managerQml, QStringLiteral("onDataChanged"));
+
+    // delegate 的按钮调用点也必须传 rawLine（回传键），不能传展示值 ——
+    // 单条删除的键往返是「删除静默失效」唯一的可判负面（运行期用例走的是
+    // removeRow 直调，覆盖不到这一行接线）。
+    expectContains(managerQml, QStringLiteral("onClicked: root.removeRow(rowRect.rawLine)"));
+
+    // 每条的自动判定可对照：auto 槽接被覆盖前的 autoOriginal/autoTranslation，不是当前值。
+    const QString autoTextBlock = sliceBetween(managerQml,
+                                               QStringLiteral("objectName: \"lyricCorrectionAutoText\""),
+                                               QStringLiteral("objectName: \"lyricCorrectionRemoveButton\""));
+    expectContainsAll(autoTextBlock, {
+        "rowRect.autoOriginal",
+        "rowRect.autoTranslation"
+    });
+    expectAbsent(autoTextBlock, QStringLiteral("rowRect.original"));
+    expectAbsent(autoTextBlock, QStringLiteral("rowRect.translation"));
+
+    // 边界：不调用全库读命令、不走全库清理、不直连 DB/FS、不重引入分隔符切分。
+    expectAbsent(managerQml, QStringLiteral("listManual"));
+    expectAbsent(managerQml, QStringLiteral("clearManual"));
+    expectAbsent(managerQml, QStringLiteral("submitCommand"));
+    expectAbsent(managerQml, QStringLiteral("QSql"));
+    expectAbsent(managerQml, QStringLiteral("QFile"));
+    expectAbsent(managerQml, QStringLiteral("\" / \""));
+    expectAbsent(managerQml, QStringLiteral("\"/\""));
+    // P9：不给纠错表设上限，也不在列表里自动清理（不擅自 remove 模型行）。
+    expectAbsent(managerQml, QStringLiteral("splice"));
+    expectAbsent(managerQml, QStringLiteral("manualModel.remove("));
+
+    // 新组件必须在三处登记，否则门禁/测试模块会漏掉它。
+    expectContains(cmakeLists, QStringLiteral("qml/components/LyricCorrectionManager.qml"));
+    expectContains(gateScript, QStringLiteral("qml/components/LyricCorrectionManager.qml"));
+    expectContains(artworkTest, QStringLiteral("\"LyricCorrectionManager\""));
 }
 
 QTEST_GUILESS_MAIN(UiOnlyHandlerPolicyTest)

@@ -16,11 +16,15 @@ Item {
     signal exitRequested()
     signal openSettingsRequested()
     signal openEqualizerRequested()
+    signal openLyricSplitEditorRequested()
     property bool isSidebarOpen: false
     required property PlaybackController playbackController
     required property NotificationController notifications
     required property LibraryController libraryController
     readonly property bool hasOpenMenu: mainMenu.visible
+    // 行级纠错命令入口（W3/D14）：由 Main.qml 注入（AppFacade 的 Q_INVOKABLE）。
+    // var + 默认 null，使只加载 MainContent 的既有集成测试（不注册/不注入 AppFacade）仍可实例化。
+    property var appFacade: null
 
     // 切换歌曲动画方向
     // 1: 切换下一首 (歌词从右滑入)，-1: 切换上一首 (歌词从左滑入)
@@ -55,10 +59,27 @@ Item {
             rows.push({
                 displayLine: arr[i].displayLine,
                 translation: arr[i].translation,
-                timestampSec: arr[i].timestampSec
+                timestampSec: arr[i].timestampSec,
+                rawLine: arr[i].rawLine,
+                manualOverride: arr[i].manualOverride,
+                autoOriginal: arr[i].autoOriginal,
+                autoTranslation: arr[i].autoTranslation
             });
         }
         return rows;
+    }
+
+    // 歌词行右键：弹出 D14 四项菜单（不 seek）。全局坐标定位（Wayland 双屏约束）。
+    function openLyricLineContextMenu(item, mouse) {
+        var globalPos = item.mapToGlobal(mouse.x, mouse.y);
+        lyricLineMenu.openForLine({
+            rawLine: item.rawLine,
+            displayLine: item.displayLine,
+            translation: item.translation,
+            manualOverride: item.manualOverride,
+            autoOriginal: item.autoOriginal,
+            autoTranslation: item.autoTranslation
+        }, globalPos.x, globalPos.y);
     }
 
     function applyRowsToView(rows) {
@@ -826,6 +847,10 @@ Item {
                     required property string displayLine
                     required property string translation
                     required property real timestampSec
+                    required property string rawLine
+                    required property bool manualOverride
+                    required property string autoOriginal
+                    required property string autoTranslation
                     width: lyricsContainer.width
                     height: lyricColumn.implicitHeight + Theme.paddingLarge
 
@@ -986,7 +1011,14 @@ Item {
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: function () {
+                        // 默认只接左键；显式纳入右键以支持 D14 行级纠错菜单。
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                        onClicked: function (mouse) {
+                            if (mouse.button === Qt.RightButton) {
+                                // 右键 = 打开纠错菜单，绝不 seek（与左键语义分离）。
+                                root.openLyricLineContextMenu(delegateItem, mouse);
+                                return;
+                            }
                             if (delegateItem.timestampSec > 0) {
                                 // 点击跳转 = 明确的跟随意图，恢复自动跟随
                                 lyricsContainer.lyricsSyncToPlayback = true;
@@ -1439,6 +1471,14 @@ Item {
                         }
                     }
                     BubbleMenuItem {
+                        objectName: "lyricSplitEditorMenuItem"
+                        text: qsTr("整首纠错")
+                        onTriggered: {
+                            mainMenu.close();
+                            root.openLyricSplitEditorRequested();
+                        }
+                    }
+                    BubbleMenuItem {
                         text: qsTr("退出")
                         onTriggered: {
                             mainMenu.close();
@@ -1849,5 +1889,11 @@ Item {
     AboutOverlay {
         id: aboutOverlay
         objectName: "aboutOverlay"
+    }
+
+    // 歌词行右键菜单 + 行级纠错/自动判定弹窗（W3/D14）：单实例，右键时按全局坐标弹出。
+    LyricLineContextMenu {
+        id: lyricLineMenu
+        appFacade: root.appFacade
     }
 }

@@ -16,27 +16,6 @@ QString fromBackendString(const std::string &value)
 }
 #endif
 
-struct DelimiterHit {
-    qsizetype index = -1;
-    qsizetype size = 0;
-};
-
-DelimiterHit earliestDelimiterHit(const QString &line, const QStringList &delimiters)
-{
-    DelimiterHit earliest;
-    for (const QString &delimiter : delimiters) {
-        if (delimiter.isEmpty()) {
-            continue;
-        }
-
-        const qsizetype delimiterIndex = line.indexOf(delimiter);
-        if (delimiterIndex >= 0 && (earliest.index < 0 || delimiterIndex < earliest.index)) {
-            earliest = DelimiterHit{delimiterIndex, delimiter.size()};
-        }
-    }
-    return earliest;
-}
-
 }
 
 LyricsModel::LyricsModel(QObject *parent)
@@ -59,19 +38,29 @@ QVariant LyricsModel::data(const QModelIndex &index, int role) const
         return {};
     }
 
-    const QString &line = m_lines.at(index.row()).text;
+    const Line &line = m_lines.at(index.row());
     switch (role) {
     case Qt::DisplayRole:
     case DisplayLineRole:
-        return displayLine(line);
+        // 原文直接取后端快照的 original；前端不做任何切分
+        return line.original;
     case RawLineRole:
-        return line;
+        return line.text;
     case TranslationRole:
-        return translationLine(line);
+        // 译文直接取后端快照的 translation（空串 = 此行无译文）
+        return line.translation;
     case CurrentRole:
         return index.row() == m_currentIndex;
     case LyricsModel::TimestampRole:
-        return m_lines.at(index.row()).timestamp.count() / 1000.0;
+        return line.timestamp.count() / 1000.0;
+    case ManualOverrideRole:
+        return line.manualOverride;
+    case AutoOriginalRole:
+        // 被 manual 覆盖【之前】的自动判定原文；未命中 manual 的行后端留空
+        return line.autoOriginal;
+    case AutoTranslationRole:
+        // 被 manual 覆盖【之前】的自动判定译文；未命中 manual 的行后端留空
+        return line.autoTranslation;
     default:
         return {};
     }
@@ -83,7 +72,10 @@ QHash<int, QByteArray> LyricsModel::roleNames() const
             {DisplayLineRole, "displayLine"},
             {TranslationRole, "translation"},
             {CurrentRole, "isCurrent"},
-            {LyricsModel::TimestampRole, "timestampSec"}};
+            {LyricsModel::TimestampRole, "timestampSec"},
+            {ManualOverrideRole, "manualOverride"},
+            {AutoOriginalRole, "autoOriginal"},
+            {AutoTranslationRole, "autoTranslation"}};
 }
 
 int LyricsModel::currentIndex() const
@@ -145,46 +137,26 @@ void LyricsModel::setShowTranslation(bool showTranslation)
 }
 
 #if SERIONA_HAS_BACKEND
-void LyricsModel::applyPlayerStateSnapshot(
-    const seriona::control::PlayerStateSnapshot &snapshot,
-    const seriona::control::LibraryStateSnapshot *library)
+void LyricsModel::applyTrackLyricsSnapshot(const seriona::control::TrackLyricsSnapshot &snapshot)
 {
-    if (!snapshot.currentTrack || snapshot.currentTrack->trackId.empty()) {
+    // 空行快照（后端在无当前曲目/曲目不在树中/清洗后无正文行/store 失败时发布的权威回退结论）
+    // 与空 trackId 快照都整份清空，使订阅面不保留上一首/上次的行。
+    if (snapshot.lines.empty() || fromBackendString(snapshot.trackId).isEmpty()) {
         clearLyrics();
         return;
     }
 
-    const QString visibleTrackId = fromBackendString(snapshot.currentTrack->trackId);
-    if (library == nullptr || !library->libraryTree) {
-        applyMissingTrackSnapshot(visibleTrackId);
-        return;
-    }
-
-    const std::string &trackId = snapshot.currentTrack->trackId;
-    const seriona::scanner::SongMetadata *song = nullptr;
-    for (const seriona::scanner::PlaylistNode &node : library->libraryTree->nodes) {
-        if (node.song && node.song->trackId == trackId) {
-            song = &(*node.song);
-            break;
-        }
-    }
-
-    if (song == nullptr) {
-        applyMissingTrackSnapshot(visibleTrackId);
-        return;
-    }
-
-    m_visibleTrackId = visibleTrackId;
-    if (song->effectiveLyrics.empty()) {
-        replaceLyrics({}, false);
-        return;
-    }
-
     QVector<Line> lines;
-    lines.reserve(static_cast<qsizetype>(song->effectiveLyrics.size()));
+    lines.reserve(static_cast<qsizetype>(snapshot.lines.size()));
     bool hasTimedLyrics = false;
-    for (const seriona::scanner::LyricLine &line : song->effectiveLyrics) {
-        lines.append(Line{line.timestamp, fromBackendString(line.text)});
+    for (const seriona::control::SplitLyricLine &line : snapshot.lines) {
+        lines.append(Line{line.timestamp,
+                          fromBackendString(line.text),
+                          fromBackendString(line.original),
+                          fromBackendString(line.translation),
+                          line.manualOverride,
+                          fromBackendString(line.autoOriginal),
+                          fromBackendString(line.autoTranslation)});
         hasTimedLyrics = hasTimedLyrics || line.timestamp.count() > 0;
     }
 
@@ -208,54 +180,34 @@ QVariantList LyricsModel::lines() const
     out.reserve(m_lines.size());
     for (const auto &line : m_lines) {
         QVariantMap entry;
-        entry.insert(QStringLiteral("displayLine"), displayLine(line.text));
-        entry.insert(QStringLiteral("translation"), translationLine(line.text));
+        entry.insert(QStringLiteral("displayLine"), line.original);
+        entry.insert(QStringLiteral("translation"), line.translation);
         entry.insert(QStringLiteral("timestampSec"), line.timestamp.count() / 1000.0);
+        entry.insert(QStringLiteral("rawLine"), line.text);
+        entry.insert(QStringLiteral("manualOverride"), line.manualOverride);
+        entry.insert(QStringLiteral("autoOriginal"), line.autoOriginal);
+        entry.insert(QStringLiteral("autoTranslation"), line.autoTranslation);
         out.append(entry);
     }
     return out;
 }
 
-QString LyricsModel::displayLine(const QString &line) const
-{
-    const DelimiterHit hit = earliestDelimiterHit(line, m_lyricDelimiters);
-    if (hit.index < 0) {
-        return line;
-    }
-
-    return line.left(hit.index).trimmed();
-}
-
-QString LyricsModel::translationLine(const QString &line) const
-{
-    const DelimiterHit hit = earliestDelimiterHit(line, m_lyricDelimiters);
-    if (hit.index < 0) {
-        return {};
-    }
-
-    return line.mid(hit.index + hit.size).trimmed();
-}
-
 void LyricsModel::clearLyrics()
 {
-    m_visibleTrackId.clear();
     replaceLyrics({}, false);
-}
-
-void LyricsModel::applyMissingTrackSnapshot(const QString &trackId)
-{
-    if (!trackId.isEmpty() && trackId == m_visibleTrackId) {
-        return;
-    }
-
-    clearLyrics();
 }
 
 void LyricsModel::replaceLyrics(QVector<Line> lines, bool hasTimedLyrics)
 {
     bool sameLyrics = m_hasTimedLyrics == hasTimedLyrics && m_lines.size() == lines.size();
     for (qsizetype i = 0; sameLyrics && i < m_lines.size(); ++i) {
-        sameLyrics = m_lines.at(i).timestamp == lines.at(i).timestamp && m_lines.at(i).text == lines.at(i).text;
+        const Line &current = m_lines.at(i);
+        const Line &incoming = lines.at(i);
+        sameLyrics = current.timestamp == incoming.timestamp && current.text == incoming.text
+                     && current.original == incoming.original && current.translation == incoming.translation
+                     && current.manualOverride == incoming.manualOverride
+                     && current.autoOriginal == incoming.autoOriginal
+                     && current.autoTranslation == incoming.autoTranslation;
     }
     if (sameLyrics) {
         syncCurrentIndexToPlaybackPosition();

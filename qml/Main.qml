@@ -364,6 +364,7 @@ Window {
                         libraryController: window.appFacade.library
                         lyricsState: window.appFacade.lyrics
                         settings: window.appFacade.settings
+                        appFacade: window.appFacade
 
                         onCoverClicked: {
                             window.navigationController.showLyricsView();
@@ -404,6 +405,16 @@ Window {
                                 equalizerWindow.y = window.y + (window.height - equalizerWindow.height) / 2;
                             }
                             equalizerWindow.show();
+                        }
+
+                        onOpenLyricSplitEditorRequested: {
+                            // 首次打开时居中(一次性定位,不跟随主窗口)
+                            if (!lyricSplitEditorWindow.visible) {
+                                lyricSplitEditorWindow.x = window.x + (window.width - lyricSplitEditorWindow.width) / 2;
+                                lyricSplitEditorWindow.y = window.y + (window.height - lyricSplitEditorWindow.height) / 2;
+                            }
+                            // openEditor() 打开时定格当前曲目的全部行(关闭重开才刷新)。
+                            lyricSplitEditorWindow.openEditor();
                         }
                     }
 
@@ -561,6 +572,11 @@ Window {
         // transientParent: null:显式解除嵌套 Window 的自动 transient 关联(与设置窗同策),
         // 使主窗口可以覆盖均衡器窗口(不再被其挡住)。
         transientParent: null
+    }
+
+    LyricSplitEditorWindow {
+        id: lyricSplitEditorWindow
+        appFacade: window.appFacade
     }
 
     Timer {

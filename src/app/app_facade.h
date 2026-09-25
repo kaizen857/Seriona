@@ -84,6 +84,44 @@ public:
     // 详情窗口路径（T14）：按 nodeId 返回条目绝对路径——歌曲=音频文件，文件夹=完整目录；
     // 未知/无法可靠重建（cue 容器等）节点返回空。删除链（deleteTarget）与详情展示共用。
     Q_INVOKABLE QString filePathForNodeId(const QString &nodeId);
+    // 歌词行级纠错（W3，D14 菜单前三项）：经 BackendBridge 外发控制命令写 manual，
+    // 约定值由桥层从当前 TrackLyricsSnapshot 取；不在前端直连 DB。返回是否被后端接受。
+    // mock-only 下走本地不支持反馈，不伪造命令。
+    Q_INVOKABLE bool upsertLyricSplitCorrection(const QString &rawText,
+                                                const QString &original,
+                                                const QString &translation);
+    Q_INVOKABLE bool removeLyricSplitCorrection(const QString &rawText);
+    // 行级右键「修正原文/译文」弹窗的提交门（A6）：与拖动路径共用
+    // lyricOriginalIsSubmittable —— 原文为空（含全空白）时拒绝提交并返回 false，
+    // QML 据此给出可见反馈（不发出命令）。返回是否真的提交了命令。
+    Q_INVOKABLE bool commitLyricSplitCorrection(const QString &rawText,
+                                                const QString &original,
+                                                const QString &translation);
+    // 提交门的判定本身（同一口径来源）：原文非空（含全空白判定）。
+    // QML 用它决定是否给出「原文不能为空」的可见反馈，避免在 QML 里重写 trim 规则。
+    Q_INVOKABLE bool isLyricOriginalSubmittable(const QString &original) const;
+    // 整首纠错窗口保存按钮的启用条件（A4）：对**拖动结果**（boundaryIndex 换算出的两段）
+    // 判定，而不是打开时那个展示对。未拖动由 touched 独立保证。QML 用它决定按钮可用性，
+    // 与 commitLyricSplitBoundary 的 C++ 门同源（原文非空且构成真实变更）。
+    Q_INVOKABLE bool lyricSplitBoundaryCommitAllowed(const QString &rawLine,
+                                                     int boundaryIndex,
+                                                     const QString &currentOriginal,
+                                                     const QString &currentTranslation) const;
+    // 整首纠错窗口（W3/D23）：把拖动分界换算成 (原文, 译文) 供拖动时实时预览。
+    // 返回 {valid, original, translation}；纯换算，不发命令。QML 侧分界的像素定位
+    // 由窗口用 TextMetrics 完成，字符索引→两段的换算复用同一 C++ 口径（可判负单测）。
+    Q_INVOKABLE QVariantMap lyricSplitBoundaryParts(const QString &rawLine, int boundaryIndex) const;
+    // 整首纠错窗口打开时定位初始分界：反解「能复现当前展示对 (original, translation)」的
+    // 分界（返回 {valid, leftEnd, rightStart}）。纯换算，不发命令；分界字形不出现在前端。
+    Q_INVOKABLE QVariantMap lyricSplitBoundaryCut(const QString &rawLine,
+                                                  const QString &original,
+                                                  const QString &translation) const;
+    // 整首纠错窗口的提交入口：分界 → 换算 → 仅当与当前展示值不同才经
+    // upsertLyricSplitCorrection 外发命令（无操作不发命令）。返回是否真的提交了命令。
+    Q_INVOKABLE bool commitLyricSplitBoundary(const QString &rawLine,
+                                              int boundaryIndex,
+                                              const QString &currentOriginal,
+                                              const QString &currentTranslation);
 
 private:
 #if SERIONA_HAS_BACKEND
@@ -97,6 +135,8 @@ private:
     // curveFrequencies/spectrumBins）；快照经 bridge 访问器取回，主线程落地。
     void handleEqualizerStateChanged();
     void handleSpectrumChanged();
+    // W3：当前曲目切分歌词快照 → LyricsModel（后端已切分，前端只透传渲染）。
+    void handleTrackLyricsChanged();
 #endif
 
     PlaybackController m_playback;

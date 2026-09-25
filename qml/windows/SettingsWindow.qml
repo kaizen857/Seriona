@@ -1823,6 +1823,47 @@ Window {
                         }
                     }
                 }
+
+                // ==========================================
+                // Card 4: 歌词纠错管理 (Lyric Correction Manager Card)
+                // ==========================================
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: correctionCardLayout.implicitHeight + Theme.spacing16 * 2
+                    color: Theme.raisedSurfaceColor
+                    radius: Theme.radiusMedium
+                    border.color: Theme.borderSubtle
+                    border.width: 1
+
+                    ColumnLayout {
+                        id: correctionCardLayout
+                        anchors.fill: parent
+                        anchors.margins: Theme.spacing16
+                        spacing: Theme.spacing12
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: qsTr("歌词纠错管理")
+                            color: Theme.textPrimary
+                            font.pixelSize: Theme.fontBody
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: qsTr("范围：当前曲目；恢复后该行立即回到自动识别结果")
+                            color: Theme.secondaryTextColor
+                            font.pixelSize: Theme.fontCaption
+                            wrapMode: Text.WordWrap
+                        }
+
+                        LyricCorrectionManager {
+                            id: correctionManager
+                            objectName: "lyricCorrectionManager"
+                            Layout.fillWidth: true
+                            appFacade: root.appFacade
+                        }
+                    }
+                }
             }
         }
     }
@@ -1830,6 +1871,7 @@ Window {
     onVisibleChanged: {
         if (visible) {
             settings.enumerateDevices();
+            correctionManager.refresh();
             root.requestActivate();
             contentRect.forceActiveFocus();
         }

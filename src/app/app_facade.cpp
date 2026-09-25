@@ -1,6 +1,7 @@
 #include "app_facade.h"
 
 #include "backend_bridge.h"
+#include "lyric_split_boundary.h"
 
 #if SERIONA_HAS_BACKEND
 #include "waveform_provider.h"
@@ -66,7 +67,6 @@ void AppFacade::handlePlayerSnapshotChanged(
     const seriona::control::LibraryStateSnapshot &library)
 {
     m_playback.applyPlayerStateSnapshot(player, &library);
-    m_lyrics.applyPlayerStateSnapshot(player, &library);
     m_library.applyPlayerStateSnapshot(player, false);
     m_waveformProvider->requestForSnapshots(player, library);
 }
@@ -77,7 +77,6 @@ void AppFacade::handleLibrarySnapshotChanged(
 {
     m_library.applyLibraryStateSnapshot(library);
     m_playback.applyPlayerStateSnapshot(player, &library);
-    m_lyrics.applyPlayerStateSnapshot(player, &library);
     m_library.applyPlayerStateSnapshot(player, true);
     m_waveformProvider->requestForSnapshots(player, library);
 }
@@ -99,6 +98,11 @@ void AppFacade::handleSpectrumChanged()
     // 快照按契约 120 桶落地（generation=0 的默认空快照同样按契约镜像，UI 空态由
     // EqualizerWindow 呈现）。更新频率 = 后端发布频率，此处不节流不放大。
     m_settings.mirrorSpectrumBins(floatArrayToVariantList(snapshot.binsDb));
+}
+
+void AppFacade::handleTrackLyricsChanged()
+{
+    m_lyrics.applyTrackLyricsSnapshot(m_backendBridge->trackLyricsSnapshot());
 }
 #endif
 
@@ -161,6 +165,12 @@ AppFacade::AppFacade(QObject *parent)
             return;
         }
         handleSpectrumChanged();
+    });
+    connect(m_backendBridge.get(), &BackendBridge::trackLyricsChanged, this, [this] {
+        if (m_shuttingDown) {
+            return;
+        }
+        handleTrackLyricsChanged();
     });
     connect(m_backendBridge.get(), &BackendBridge::domainNotificationQueued, this, [this] {
         const auto &notifications = m_backendBridge->notifications();
@@ -357,6 +367,93 @@ bool AppFacade::removeFromQueue(quint64 queueIndex)
 QString AppFacade::filePathForNodeId(const QString &nodeId)
 {
     return m_library.model()->absoluteFilePathForNode(nodeId);
+}
+
+bool AppFacade::upsertLyricSplitCorrection(const QString &rawText,
+                                           const QString &original,
+                                           const QString &translation)
+{
+#if SERIONA_HAS_BACKEND
+    if (m_shuttingDown) {
+        return false;
+    }
+    return m_backendBridge->upsertLyricSplitCorrection(rawText, original, translation).accepted;
+#else
+    m_notifications.showUnsupportedAction(tr("修正歌词原文/译文"));
+    return false;
+#endif
+}
+
+bool AppFacade::removeLyricSplitCorrection(const QString &rawText)
+{
+#if SERIONA_HAS_BACKEND
+    if (m_shuttingDown) {
+        return false;
+    }
+    return m_backendBridge->removeLyricSplitCorrection(rawText).accepted;
+#else
+    m_notifications.showUnsupportedAction(tr("恢复本行自动识别"));
+    return false;
+#endif
+}
+
+bool AppFacade::commitLyricSplitCorrection(const QString &rawText,
+                                           const QString &original,
+                                           const QString &translation)
+{
+    // 与拖动路径同一口径：原文为空（含全空白）拒绝提交，不发命令。
+    if (!lyricOriginalIsSubmittable(original)) {
+        return false;
+    }
+    return upsertLyricSplitCorrection(rawText, original, translation);
+}
+
+bool AppFacade::isLyricOriginalSubmittable(const QString &original) const
+{
+    return lyricOriginalIsSubmittable(original);
+}
+
+bool AppFacade::lyricSplitBoundaryCommitAllowed(const QString &rawLine,
+                                                int boundaryIndex,
+                                                const QString &currentOriginal,
+                                                const QString &currentTranslation) const
+{
+    const LyricSplitBoundaryParts parts = splitLyricLineAtBoundary(rawLine, boundaryIndex);
+    return lyricSplitBoundaryShouldCommit(parts, currentOriginal, currentTranslation);
+}
+
+QVariantMap AppFacade::lyricSplitBoundaryParts(const QString &rawLine, int boundaryIndex) const
+{
+    const LyricSplitBoundaryParts parts = splitLyricLineAtBoundary(rawLine, boundaryIndex);
+    QVariantMap result;
+    result.insert(QStringLiteral("valid"), parts.valid);
+    result.insert(QStringLiteral("original"), parts.original);
+    result.insert(QStringLiteral("translation"), parts.translation);
+    return result;
+}
+
+QVariantMap AppFacade::lyricSplitBoundaryCut(const QString &rawLine,
+                                             const QString &original,
+                                             const QString &translation) const
+{
+    const LyricSplitBoundaryCut cut = findLyricSplitBoundaryCut(rawLine, original, translation);
+    QVariantMap result;
+    result.insert(QStringLiteral("valid"), cut.valid);
+    result.insert(QStringLiteral("leftEnd"), cut.leftEnd);
+    result.insert(QStringLiteral("rightStart"), cut.rightStart);
+    return result;
+}
+
+bool AppFacade::commitLyricSplitBoundary(const QString &rawLine,
+                                         int boundaryIndex,
+                                         const QString &currentOriginal,
+                                         const QString &currentTranslation)
+{
+    const LyricSplitBoundaryParts parts = splitLyricLineAtBoundary(rawLine, boundaryIndex);
+    if (!lyricSplitBoundaryShouldCommit(parts, currentOriginal, currentTranslation)) {
+        return false;
+    }
+    return upsertLyricSplitCorrection(rawLine, parts.original, parts.translation);
 }
 
 bool AppFacade::backendBridgeStartedForTests() const

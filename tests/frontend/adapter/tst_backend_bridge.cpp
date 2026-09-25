@@ -1,9 +1,11 @@
 #include "backend_bridge.h"
 
+#include "lyric_split_boundary.h"
 #include "settings_controller.h"
 
 #include "seriona/audio/audio_contracts.h"
 #include "seriona/control/folder_sort_settings_store.h"
+#include "seriona/control/lyric_split_store.h"
 #include "seriona/metadata/metadata_contracts.h"
 #include "seriona/scanner/scanner_contracts.h"
 
@@ -416,11 +418,62 @@ private:
     std::shared_ptr<FakeMetadataState> m_state;
 };
 
+// 歌词切分 store 记录器：捕获后端实际落库的 manual 行/删除调用，供断言命令载荷
+// （rawText/original/translation/convention）——含「约定取自当前快照」这一核心判据。
+class RecordingLyricSplitStore final : public seriona::control::LyricSplitStore
+{
+public:
+    struct RemoveCall {
+        std::string rawText;
+        std::string targetLanguage;
+        seriona::control::LyricSplitConvention convention{seriona::control::LyricSplitConvention::None};
+    };
+
+    void putAuto(seriona::control::LyricSplitEntry) override {}
+
+    void upsertManual(seriona::control::LyricSplitEntry entry) override
+    {
+        upsertCalls.push_back(std::move(entry));
+    }
+
+    std::optional<seriona::control::LyricSplitEntry> load(std::string_view,
+                                                          std::string_view,
+                                                          seriona::control::LyricSplitConvention) const override
+    {
+        return std::nullopt;
+    }
+
+    void removeManual(std::string_view rawText,
+                      std::string_view targetLanguage,
+                      seriona::control::LyricSplitConvention convention) override
+    {
+        removeCalls.push_back(RemoveCall{std::string(rawText), std::string(targetLanguage), convention});
+    }
+
+    void clearManual() override {}
+
+    std::vector<seriona::control::LyricSplitEntry> listManual() const override
+    {
+        return {};
+    }
+
+    std::string algoVersion() const override
+    {
+        return "recording-lyric-split-store";
+    }
+
+    std::vector<seriona::control::LyricSplitEntry> upsertCalls;
+    std::vector<RemoveCall> removeCalls;
+};
+
 struct ControllerHarness {
     std::shared_ptr<FakeAudioPlaybackService> audio = std::make_shared<FakeAudioPlaybackService>();
     std::shared_ptr<FakeFileScannerService> scanner = std::make_shared<FakeFileScannerService>();
     std::shared_ptr<FakeMetadataState> metadata = std::make_shared<FakeMetadataState>();
     std::shared_ptr<RecordingFolderSortSettingsStore> folderSortStore = std::make_shared<RecordingFolderSortSettingsStore>();
+    // 歌词切分 store：默认空（装配期注入 Noop）；行级纠错用例注入 Recording 实现以捕获
+    // 后端实际收到的 manual 行（含约定），从而断言命令载荷。
+    std::shared_ptr<RecordingLyricSplitStore> lyricSplitStore;
 
     Seriona::App::BackendBridge::ControllerFactory factory(bool runInlineForTests)
     {
@@ -434,6 +487,7 @@ struct ControllerHarness {
         state->dependencies.scanner = scanner;
         state->dependencies.metadata = std::make_unique<FakeMetadataSharingService>(metadata);
         state->dependencies.folderSortSettingsStore = folderSortStore;
+        state->dependencies.lyricSplitStore = lyricSplitStore;
         state->options.runInlineForTests = runInlineForTests;
 
         return [state] {
@@ -570,6 +624,8 @@ private slots:
     void playNextTrackRejectsEmptyIdWithoutDispatch();
     void removeFromQueueBuildsIndexedCommand();
     void setLyricsTargetLanguageReachesBackendAndRejectsUnsupported();
+    void lyricSplitCorrectionCommandsCarrySnapshotConvention();
+    void lyricSplitBoundaryChainWritesConvertedPartsAndRepublishes();
     void enumeratePlaybackDevicesMapsDeviceIds();
     void settingsPushOnStart();
     void submitTransitionConfigBuildsTypedBackendCommand();
@@ -1112,6 +1168,149 @@ void BackendBridgeTest::setLyricsTargetLanguageReachesBackendAndRejectsUnsupport
     QCOMPARE(harness.audio->configureOutputCalls(), 0);
     QCOMPARE(harness.audio->loadTrackCalls(), 0);
     QCOMPARE(harness.audio->stopCalls(), 0);
+
+    bridge.shutdown();
+}
+
+void BackendBridgeTest::lyricSplitCorrectionCommandsCarrySnapshotConvention()
+{
+    ControllerHarness harness;
+    harness.lyricSplitStore = std::make_shared<RecordingLyricSplitStore>();
+    Seriona::App::BackendBridge bridge(harness.factory(true));
+    waitForInitialPlayerSnapshot(bridge);
+    drainEventsUntilIdle();
+
+    // 当前快照的约定必须非 None：S: /  = StrongSlashSpaced（token "S: / "）。
+    // 每次提交前就地注入，保证命令读到的就是这份快照（排空/重发布不会引入竞态）。
+    seriona::control::TrackLyricsSnapshot injected;
+    injected.trackId = "track-lyric";
+    injected.targetLanguage = "zh";
+    injected.convention = seriona::control::LyricSplitConvention::StrongSlashSpaced;
+    const auto injectConvention = [&bridge, &injected] {
+        bridge.applyTrackLyricsSnapshotForTests(injected);
+        QCOMPARE(bridge.trackLyricsSnapshot().convention, seriona::control::LyricSplitConvention::StrongSlashSpaced);
+    };
+
+    QSignalSpy lyricsSpy(&bridge, &Seriona::App::BackendBridge::trackLyricsChanged);
+
+    // 修正原文/译文：命令被发出 → 后端接受 → store 收到 manual 行，约定取自当前快照。
+    injectConvention();
+    const seriona::control::MediaControllerCommandResult upsert =
+        bridge.upsertLyricSplitCorrection(QStringLiteral("raw / line"), QStringLiteral("raw"), QStringLiteral("句"));
+    QVERIFY(upsert.accepted);
+    QCOMPARE(harness.lyricSplitStore->upsertCalls.size(), std::size_t{1});
+    const auto &upsertEntry = harness.lyricSplitStore->upsertCalls.front();
+    QCOMPARE(QString::fromStdString(upsertEntry.rawText), QStringLiteral("raw / line"));
+    QCOMPARE(QString::fromStdString(upsertEntry.original), QStringLiteral("raw"));
+    QCOMPARE(QString::fromStdString(upsertEntry.translation), QStringLiteral("句"));
+    QCOMPARE(QString::fromStdString(seriona::control::conventionToken(upsertEntry.convention)), QStringLiteral("S: / "));
+    // 时机③：命令成功后后端重发布一次完整快照。
+    QTRY_VERIFY_WITH_TIMEOUT(lyricsSpy.count() > 0, 10000);
+
+    // 此行无译文：保留当前原文，译文为显式空串（不折叠成缺字段）。
+    injectConvention();
+    const seriona::control::MediaControllerCommandResult emptyTranslation =
+        bridge.upsertLyricSplitCorrection(QStringLiteral("raw / line"), QStringLiteral("raw"), QString());
+    QVERIFY(emptyTranslation.accepted);
+    QCOMPARE(harness.lyricSplitStore->upsertCalls.size(), std::size_t{2});
+    QCOMPARE(QString::fromStdString(harness.lyricSplitStore->upsertCalls.back().translation), QString());
+    QCOMPARE(QString::fromStdString(seriona::control::conventionToken(harness.lyricSplitStore->upsertCalls.back().convention)),
+             QStringLiteral("S: / "));
+
+    // 恢复本行自动识别：Remove 命令同样携带当前快照约定。
+    injectConvention();
+    const seriona::control::MediaControllerCommandResult remove =
+        bridge.removeLyricSplitCorrection(QStringLiteral("raw / line"));
+    QVERIFY(remove.accepted);
+    QCOMPARE(harness.lyricSplitStore->removeCalls.size(), std::size_t{1});
+    QCOMPARE(QString::fromStdString(harness.lyricSplitStore->removeCalls.front().rawText), QStringLiteral("raw / line"));
+    QCOMPARE(QString::fromStdString(seriona::control::conventionToken(harness.lyricSplitStore->removeCalls.front().convention)),
+             QStringLiteral("S: / "));
+
+    // 空 rawText 本地拒绝，不外发（store 不再收到新调用）。
+    injectConvention();
+    const seriona::control::MediaControllerCommandResult rejected =
+        bridge.upsertLyricSplitCorrection(QString(), QStringLiteral("raw"), QStringLiteral("句"));
+    QCOMPARE(rejected.accepted, false);
+    QCOMPARE(harness.lyricSplitStore->upsertCalls.size(), std::size_t{2});
+    QCOMPARE(harness.lyricSplitStore->removeCalls.size(), std::size_t{1});
+
+    bridge.shutdown();
+}
+
+// todo 33：整首纠错窗口拖动分界的链路——窗口口径的初始分界 → 前端换算出的
+// (original, translation) → 经命令外发且被后端接受 → store 收到换算后的两段、
+// 约定取自当前快照 → 快照按时机③重发布。
+// 初始分界由 findLyricSplitBoundaryCut 反解（不是手写 indexOf），并断言它复现当前展示对。
+void BackendBridgeTest::lyricSplitBoundaryChainWritesConvertedPartsAndRepublishes()
+{
+    ControllerHarness harness;
+    harness.lyricSplitStore = std::make_shared<RecordingLyricSplitStore>();
+    Seriona::App::BackendBridge bridge(harness.factory(true));
+    waitForInitialPlayerSnapshot(bridge);
+    drainEventsUntilIdle();
+
+    seriona::control::TrackLyricsSnapshot injected;
+    injected.trackId = "track-boundary";
+    injected.targetLanguage = "zh";
+    injected.convention = seriona::control::LyricSplitConvention::StrongSlashSpaced;
+    bridge.applyTrackLyricsSnapshotForTests(injected);
+    QCOMPARE(bridge.trackLyricsSnapshot().convention, seriona::control::LyricSplitConvention::StrongSlashSpaced);
+
+    QSignalSpy lyricsSpy(&bridge, &Seriona::App::BackendBridge::trackLyricsChanged);
+
+    const QString rawLine = QStringLiteral("揺るぎない Spirit / 坚定不移的Spirit");
+    const QString currentOriginal = QStringLiteral("揺るぎない Spirit");
+    const QString currentTranslation = QStringLiteral("坚定不移的Spirit");
+
+    // 窗口口径的初始分界：反解出的分界必须复现当前展示对，否则「未拖动即保存」会写错值。
+    const Seriona::App::LyricSplitBoundaryCut initialCut =
+        Seriona::App::findLyricSplitBoundaryCut(rawLine, currentOriginal, currentTranslation);
+    QVERIFY(initialCut.valid);
+    const Seriona::App::LyricSplitBoundaryParts parts =
+        Seriona::App::splitLyricLineAtBoundary(rawLine, initialCut);
+    QCOMPARE(parts.original, currentOriginal);
+    QCOMPARE(parts.translation, currentTranslation);
+    QVERIFY(parts.valid);
+    QCOMPARE(Seriona::App::boundaryDiffersFromCurrent(parts, currentOriginal, currentTranslation), false);
+
+    // 无操作：用户「不拖动、直接保存」时，上层门函数不发命令。
+    // 门谓词由生产头文件提供（与 AppFacade::commitLyricSplitBoundary 同源），
+    // 不是恒真式：这里用当前展示对作为「当前值」调用真实门谓词，断言它拒绝提交。
+    // （S19 A3：此前的写法 boundaryDiffersFromCurrent(parts, parts.original, parts.translation)
+    //  恒为 false，if 体是死代码，断言不可能失败，等于假覆盖。）
+    QCOMPARE(Seriona::App::lyricSplitBoundaryShouldCommit(parts, currentOriginal, currentTranslation), false);
+
+    // 门谓词必须能判负（否则又是恒真）：同一 parts 换成不同「当前值」即应放行。
+    QCOMPARE(Seriona::App::lyricSplitBoundaryShouldCommit(parts, currentOriginal, QStringLiteral("旧译")), true);
+    // 原文为空（含全空白）时门谓词同样拒绝（与行级弹窗 A6 同口径）。
+    const Seriona::App::LyricSplitBoundaryParts blankOriginal =
+        Seriona::App::splitLyricLineAtBoundary(rawLine, 0);
+    QCOMPARE(blankOriginal.valid, false);
+    QCOMPARE(Seriona::App::lyricSplitBoundaryShouldCommit(blankOriginal, currentOriginal, currentTranslation), false);
+
+    QCOMPARE(harness.lyricSplitStore->upsertCalls.size(), std::size_t{0});
+
+    // 真实变更：模拟一次拖动（单点分界）→ 换算出的两段与预览一致 → 命令外发 → 后端接受
+    // → store 收到这两段。拖动所见与所写同源（不做任何再切分）。
+    const int draggedIndex = initialCut.rightStart;
+    const Seriona::App::LyricSplitBoundaryParts edited =
+        Seriona::App::splitLyricLineAtBoundary(rawLine, draggedIndex);
+    QVERIFY(edited.valid);
+    QCOMPARE(edited.original, QStringLiteral("揺るぎない Spirit /"));
+    QCOMPARE(edited.translation, currentTranslation);
+    QCOMPARE(Seriona::App::boundaryDiffersFromCurrent(edited, currentOriginal, currentTranslation), true);
+
+    const seriona::control::MediaControllerCommandResult result =
+        bridge.upsertLyricSplitCorrection(rawLine, edited.original, edited.translation);
+    QVERIFY(result.accepted);
+    QCOMPARE(harness.lyricSplitStore->upsertCalls.size(), std::size_t{1});
+    const auto &entry = harness.lyricSplitStore->upsertCalls.back();
+    QCOMPARE(QString::fromStdString(entry.rawText), rawLine);
+    QCOMPARE(QString::fromStdString(entry.original), edited.original);
+    QCOMPARE(QString::fromStdString(entry.translation), edited.translation);
+    QCOMPARE(QString::fromStdString(seriona::control::conventionToken(entry.convention)), QStringLiteral("S: / "));
+    QTRY_VERIFY_WITH_TIMEOUT(lyricsSpy.count() > 0, 10000);
 
     bridge.shutdown();
 }

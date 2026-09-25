@@ -579,6 +579,58 @@ seriona::control::MediaControllerCommandResult BackendBridge::setLyricsTargetLan
     return result;
 }
 
+seriona::control::MediaControllerCommandResult BackendBridge::upsertLyricSplitCorrection(
+    const QString &rawText,
+    const QString &original,
+    const QString &translation)
+{
+    if (rawText.isEmpty()) {
+        seriona::control::MediaControllerCommandResult result =
+            invalidCommandResult("UpsertLyricSplitCorrection requires a non-empty lyricRawText");
+        enqueueCommandFailureNotification(result);
+        return result;
+    }
+
+    seriona::control::MediaControlCommand command;
+    command.kind = seriona::control::MediaControlCommandKind::UpsertLyricSplitCorrection;
+    command.lyricRawText = toBackendString(rawText);
+    command.lyricOriginal = toBackendString(original);
+    // 显式空串 = 「此行无译文」（契约语义）；不把空串折叠成「缺字段」。
+    command.lyricTranslation = toBackendString(translation);
+    // 约定是内容寻址键的组成部分：唯一来源 = 当前快照，绝不恒填 None 或漏填。
+    command.lyricConvention = seriona::control::conventionToken(m_trackLyricsSnapshot.convention);
+    const seriona::control::MediaControllerCommandResult result = submitCommand(command);
+    if (!result.accepted) {
+        spdlog::warn("UpsertLyricSplitCorrection command rejected: {}", result.message);
+    }
+    return result;
+}
+
+seriona::control::MediaControllerCommandResult BackendBridge::removeLyricSplitCorrection(const QString &rawText)
+{
+    if (rawText.isEmpty()) {
+        seriona::control::MediaControllerCommandResult result =
+            invalidCommandResult("RemoveLyricSplitCorrection requires a non-empty lyricRawText");
+        enqueueCommandFailureNotification(result);
+        return result;
+    }
+
+    seriona::control::MediaControlCommand command;
+    command.kind = seriona::control::MediaControlCommandKind::RemoveLyricSplitCorrection;
+    command.lyricRawText = toBackendString(rawText);
+    command.lyricConvention = seriona::control::conventionToken(m_trackLyricsSnapshot.convention);
+    const seriona::control::MediaControllerCommandResult result = submitCommand(command);
+    if (!result.accepted) {
+        spdlog::warn("RemoveLyricSplitCorrection command rejected: {}", result.message);
+    }
+    return result;
+}
+
+void BackendBridge::applyTrackLyricsSnapshotForTests(seriona::control::TrackLyricsSnapshot snapshot)
+{
+    m_trackLyricsSnapshot = std::move(snapshot);
+}
+
 QList<QPair<QString, QString>> BackendBridge::enumeratePlaybackDevices()
 {
     const QList<PlaybackDeviceCapabilities> devices = enumeratePlaybackDeviceCapabilities();
@@ -694,6 +746,11 @@ const seriona::audio::SpectrumSnapshot &BackendBridge::spectrumSnapshot() const
     return m_spectrumSnapshot;
 }
 
+const seriona::control::TrackLyricsSnapshot &BackendBridge::trackLyricsSnapshot() const
+{
+    return m_trackLyricsSnapshot;
+}
+
 const std::deque<seriona::control::ControlDomainNotification> &BackendBridge::notifications() const
 {
     return m_notifications;
@@ -803,6 +860,19 @@ void BackendBridge::registerSubscriptions()
             receiver->applySpectrumSnapshot(std::move(snapshot));
         }, Qt::QueuedConnection);
     });
+    // W3 第 6 路：当前曲目切分歌词订阅（仿 spectrum 一路，订阅即回调当前快照）。
+    m_trackLyricsSubscription = m_controller->subscribeTrackLyrics([receiver](seriona::control::TrackLyricsSnapshot snapshot) mutable {
+        if (receiver.isNull()) {
+            return;
+        }
+
+        QMetaObject::invokeMethod(receiver.data(), [receiver, snapshot = std::move(snapshot)]() mutable {
+            if (receiver.isNull() || receiver->m_shuttingDown) {
+                return;
+            }
+            receiver->applyTrackLyricsSnapshot(std::move(snapshot));
+        }, Qt::QueuedConnection);
+    });
 }
 
 void BackendBridge::unsubscribeAll()
@@ -812,6 +882,7 @@ void BackendBridge::unsubscribeAll()
     unsubscribe(m_notificationSubscription);
     unsubscribe(m_equalizerSubscription);
     unsubscribe(m_spectrumSubscription);
+    unsubscribe(m_trackLyricsSubscription);
 }
 
 void BackendBridge::submitShutdownStop()
@@ -847,6 +918,12 @@ void BackendBridge::applySpectrumSnapshot(seriona::audio::SpectrumSnapshot snaps
 {
     m_spectrumSnapshot = std::move(snapshot);
     emit spectrumChanged();
+}
+
+void BackendBridge::applyTrackLyricsSnapshot(seriona::control::TrackLyricsSnapshot snapshot)
+{
+    m_trackLyricsSnapshot = std::move(snapshot);
+    emit trackLyricsChanged();
 }
 
 void BackendBridge::enqueueCommandFailureNotification(const seriona::control::MediaControllerCommandResult &result)
