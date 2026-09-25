@@ -412,7 +412,10 @@ if(BUILD_TESTING)
     add_test(NAME seriona_frontend_settings_set_defaults COMMAND seriona_frontend_settings_controller_tests setDefaultsLandsPropertiesWithoutPersistenceOrPush)
     add_test(NAME seriona_frontend_settings_enumerate_devices COMMAND seriona_frontend_settings_controller_tests enumerateDevicesUpdatesList)
     add_test(NAME seriona_frontend_settings_startup_push COMMAND seriona_frontend_settings_controller_tests startupPushSequence)
-    add_test(NAME seriona_frontend_settings_lyrics_persist COMMAND seriona_frontend_settings_controller_tests lyricDelimitersPersistRoundTrip)
+    add_test(NAME seriona_frontend_settings_legacy_lyric_delimiter_key_removed COMMAND seriona_frontend_settings_controller_tests legacyLyricDelimiterKeyRemovedOnReload)
+    add_test(NAME seriona_frontend_settings_target_language_defaults COMMAND seriona_frontend_settings_controller_tests targetLanguageDefaultsAndWhitelist)
+    add_test(NAME seriona_frontend_settings_target_language_persist COMMAND seriona_frontend_settings_controller_tests targetLanguagePersistRoundTrip)
+    add_test(NAME seriona_frontend_settings_target_language_push COMMAND seriona_frontend_settings_controller_tests targetLanguagePushAndDefense)
     add_test(NAME seriona_frontend_settings_sample_format COMMAND seriona_frontend_settings_controller_tests sampleFormatPersistRoundTrip)
     add_test(NAME seriona_frontend_settings_apply_sample_format COMMAND seriona_frontend_settings_controller_tests applyIncludesSampleFormat)
     add_test(NAME seriona_frontend_settings_rollback COMMAND seriona_frontend_settings_controller_tests rollbackRejectedOutputConfigRestoresSnapshot)
@@ -1331,7 +1334,6 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
 
         add_test(NAME seriona_frontend_lyrics_trackid_lookup COMMAND seriona_frontend_lyrics_model_tests trackidLookup)
         add_test(NAME seriona_frontend_lyrics_missing_empty COMMAND seriona_frontend_lyrics_model_tests missingEmpty)
-        add_test(NAME seriona_frontend_lyrics_delimiter_resolution COMMAND seriona_frontend_lyrics_model_tests delimiterResolution)
 
         # 歌词渲染语义基线（todo 1）：把钉死的输入集喂给**当前** LyricsModel，
         # 逐行 dump (原文, 译文) 到仓库内 fixtures，作为切分改造前的对照基线。
@@ -1400,7 +1402,7 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
         add_test(NAME seriona_frontend_backend_bridge_play_next_track COMMAND seriona_frontend_backend_bridge_tests playNextTrackBuildsQueueCommand)
         add_test(NAME seriona_frontend_backend_bridge_play_next_empty COMMAND seriona_frontend_backend_bridge_tests playNextTrackRejectsEmptyIdWithoutDispatch)
         add_test(NAME seriona_frontend_backend_bridge_remove_from_queue COMMAND seriona_frontend_backend_bridge_tests removeFromQueueBuildsIndexedCommand)
-
+        add_test(NAME seriona_frontend_backend_bridge_set_lyrics_target_language COMMAND seriona_frontend_backend_bridge_tests setLyricsTargetLanguageReachesBackendAndRejectsUnsupported)
         # T9 conformance：本地乐观合成（equalizer_curve_synth）与后端 reducer 快照
         # 逐点一致（≤0.05dB×181×全部测试组）。真 makeMediaController 内嵌 harness，
         # 链路与 tst_backend_bridge 相同：submitEqualizerConfig → reducer → 镜像读回。

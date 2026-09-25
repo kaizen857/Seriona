@@ -144,22 +144,6 @@ void LyricsModel::setShowTranslation(bool showTranslation)
     emit showTranslationChanged();
 }
 
-QStringList LyricsModel::lyricDelimiters() const
-{
-    return m_lyricDelimiters;
-}
-
-void LyricsModel::setLyricDelimiters(const QStringList &delimiters)
-{
-    if (m_lyricDelimiters == delimiters) {
-        return;
-    }
-
-    m_lyricDelimiters = delimiters;
-    emit lyricDelimitersChanged();
-    emitAllLyricsChanged({DisplayLineRole, TranslationRole});
-}
-
 #if SERIONA_HAS_BACKEND
 void LyricsModel::applyPlayerStateSnapshot(
     const seriona::control::PlayerStateSnapshot &snapshot,

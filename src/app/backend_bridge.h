@@ -102,6 +102,9 @@ public:
     seriona::control::MediaControllerCommandResult playNextTrack(const QString &trackId);
     // 从临时队列移除（T14）：RemoveFromQueue 命令按 queueEntries 下标移除。
     seriona::control::MediaControllerCommandResult removeFromQueue(quint64 queueIndex);
+    // 译文语言（W3）：SetLyricsTargetLanguage 真命令，载荷 = 语言 token（zh/ja/ko/en）。
+    // 前端只传值、不做语言判定；非法值由后端命令拒绝路径反馈。
+    seriona::control::MediaControllerCommandResult setLyricsTargetLanguage(const QString &language);
     QList<QPair<QString, QString>> enumeratePlaybackDevices();
     QList<PlaybackDeviceCapabilities> enumeratePlaybackDeviceCapabilities();
     void setLogLevel(int level);

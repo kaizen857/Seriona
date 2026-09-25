@@ -23,7 +23,6 @@ class LyricsModel : public QAbstractListModel
     Q_PROPERTY(int currentIndex READ currentIndex WRITE setCurrentIndex NOTIFY currentIndexChanged)
     Q_PROPERTY(qreal playbackPosition READ playbackPosition WRITE setPlaybackPosition NOTIFY playbackPositionChanged)
     Q_PROPERTY(bool showTranslation READ showTranslation WRITE setShowTranslation NOTIFY showTranslationChanged)
-    Q_PROPERTY(QStringList lyricDelimiters READ lyricDelimiters WRITE setLyricDelimiters NOTIFY lyricDelimitersChanged)
     QML_ELEMENT
 
 public:
@@ -51,9 +50,6 @@ public:
     bool showTranslation() const;
     void setShowTranslation(bool showTranslation);
 
-    QStringList lyricDelimiters() const;
-    void setLyricDelimiters(const QStringList &delimiters);
-
 #if SERIONA_HAS_BACKEND
     void applyPlayerStateSnapshot(
         const seriona::control::PlayerStateSnapshot &snapshot,
@@ -71,7 +67,6 @@ signals:
     void currentIndexChanged();
     void playbackPositionChanged();
     void showTranslationChanged();
-    void lyricDelimitersChanged();
 
 private:
     struct Line {

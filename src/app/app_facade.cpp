@@ -211,6 +211,9 @@ AppFacade::AppFacade(QObject *parent)
     m_settings.setLogLevelExecutor([this](int level) {
         return m_backendBridge->setLogLevel(level);
     });
+    m_settings.setLyricsTargetLanguageExecutor([this](const QString &language) {
+        return m_backendBridge->setLyricsTargetLanguage(language);
+    });
     // 应用设置存储：接入后端时经 BackendBridge → MediaController 键值存储；
     // mock-only 不注入，各控制器回退内存存储（进程内有效）。
     const AppSettingsBackend settingsBackend{
@@ -234,19 +237,15 @@ AppFacade::AppFacade(QObject *parent)
             return;
         }
         m_settings.reloadFromSettings();
-        m_lyrics.setLyricDelimiters(m_settings.lyricDelimiters());
         m_settings.apply();
         // 播放过渡组随输出组在启动/重连后 apply 一次（含持久化的 9 键，仿 m_settings.apply()）
         m_settings.applyTransitionConfig();
         // 持久化的日志等级在启动时同步到后端（initializeApplicationLogging 默认之后覆盖）
         m_settings.applyLogLevel();
+        // 持久化的译文语言在启动/重连后同步到后端（reload 后目标语言已就位）
+        m_settings.applyLyricsTargetLanguage();
     });
 #endif
-
-    // 歌词分隔符联动：设置变化立即同步到 LyricsModel（歌词解析立即生效）。
-    connect(&m_settings, &SettingsController::lyricDelimitersChanged, this, [this] {
-        m_lyrics.setLyricDelimiters(m_settings.lyricDelimiters());
-    });
 
     if (backendBridgeAutostartEnabled()) {
         m_backendBridge->start();

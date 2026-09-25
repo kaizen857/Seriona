@@ -97,8 +97,10 @@ class SettingsController : public QObject
     Q_PROPERTY(int sampleRate READ sampleRate WRITE setSampleRate NOTIFY sampleRateChanged)
     Q_PROPERTY(int sampleFormat READ sampleFormat WRITE setSampleFormat NOTIFY sampleFormatChanged)
     Q_PROPERTY(int bufferDurationMs READ bufferDurationMs WRITE setBufferDurationMs NOTIFY bufferDurationMsChanged)
-    Q_PROPERTY(QStringList lyricDelimiters READ lyricDelimiters WRITE setLyricDelimiters NOTIFY lyricDelimitersChanged)
     Q_PROPERTY(int followRestoreDelayMs READ followRestoreDelayMs WRITE setFollowRestoreDelayMs NOTIFY followRestoreDelayMsChanged)
+    // 歌词切分目标语言（译文语言）：默认中文；白名单 zh/ja/ko/en（与后端
+    // isSupportedLyricsLanguage 一致），非法值不落盘、不推送。
+    Q_PROPERTY(QString targetLanguage READ targetLanguage WRITE setTargetLanguage NOTIFY targetLanguageChanged)
     Q_PROPERTY(int logLevel READ logLevel WRITE setLogLevel NOTIFY logLevelChanged)
     Q_PROPERTY(QVariantList sampleRateOptions READ sampleRateOptions NOTIFY sampleRateOptionsChanged)
     Q_PROPERTY(QVariantList sampleFormatOptions READ sampleFormatOptions NOTIFY sampleFormatOptionsChanged)
@@ -161,6 +163,9 @@ public:
                                                             bool spectrumEnabled)>;
     using EnumerateDevicesExecutor = std::function<QList<PlaybackDeviceCapabilities>()>;
     using LogLevelExecutor = std::function<void(int level)>;
+    // 译文语言推送（SetLyricsTargetLanguage 真命令，载荷 = 语言 token）；
+    // 未绑定（mock-only）时各推送点为 no-op。
+    using LyricsTargetLanguageExecutor = std::function<void(const QString &language)>;
 
     explicit SettingsController(QObject *parent = nullptr);
 
@@ -213,12 +218,15 @@ public:
     // 过渡滑块步进（100ms）：QML from/to/stepSize 与此常量对齐。
     int transitionSliderStepMs() const;
 
-    QStringList lyricDelimiters() const;
-    void setLyricDelimiters(const QStringList &delimiters);
-
     // 歌词跟随恢复延迟（毫秒）：纯本地项，仅持久化不推送；QML 歌词容器绑定为恢复计时器 interval。
     int followRestoreDelayMs() const;
     void setFollowRestoreDelayMs(int delayMs);
+
+    // 歌词切分目标语言：变更立即经 LyricsTargetLanguageExecutor 推送；QML 在设置
+    // 面板「译文语言」下拉绑定。applyLyricsTargetLanguage() 供启动路径 reload 后同步。
+    QString targetLanguage() const;
+    void setTargetLanguage(const QString &language);
+    void applyLyricsTargetLanguage();
 
     // 均衡器设置（键组 "equalizer"，默认/量程/预设表见 equalizer_presets.h 与 cpp
     // 常量区；值域：bandMode 10/31、preGainDb ±15、bandGains 逐项 ±15）。
@@ -303,6 +311,7 @@ public:
     void setApplyEqualizerConfigExecutor(ApplyEqualizerConfigExecutor executor);
     void setEnumerateDevicesExecutor(EnumerateDevicesExecutor executor);
     void setLogLevelExecutor(LogLevelExecutor executor);
+    void setLyricsTargetLanguageExecutor(LyricsTargetLanguageExecutor executor);
 
 signals:
     void playbackDevicesChanged();
@@ -312,8 +321,8 @@ signals:
     void sampleRateChanged();
     void sampleFormatChanged();
     void bufferDurationMsChanged();
-    void lyricDelimitersChanged();
     void followRestoreDelayMsChanged();
+    void targetLanguageChanged();
     void logLevelChanged();
     void autoAdvanceFadeModeChanged();
     void fadeOnTransportChanged();
@@ -345,8 +354,8 @@ private:
     void setSampleFormatInternal(int sampleFormat);
     void setBufferDurationMsInternal(int bufferDurationMs);
     void setPreferredDeviceIdInternal(const QString &deviceId);
-    void setLyricDelimitersInternal(const QStringList &delimiters);
     void setFollowRestoreDelayMsInternal(int delayMs);
+    void setTargetLanguageInternal(const QString &language);
     void setLogLevelInternal(int level);
     void setAutoAdvanceFadeModeInternal(int mode);
     void setFadeOnTransportInternal(bool enabled);
@@ -395,8 +404,8 @@ private:
     int m_sampleRate = 48000;
     int m_sampleFormat = 0;
     int m_bufferDurationMs = 300;
-    QStringList m_lyricDelimiters = {QStringLiteral(" / ")};
     int m_followRestoreDelayMs = 5000;
+    QString m_targetLanguage = QStringLiteral("zh");
     int m_logLevel = 2;
     int m_autoAdvanceFadeMode = 0;   // 无
     bool m_fadeOnTransport = false;  // 关
@@ -440,6 +449,7 @@ private:
     ApplyEqualizerConfigExecutor m_applyEqualizerConfigExecutor;
     EnumerateDevicesExecutor m_enumerateDevicesExecutor;
     LogLevelExecutor m_logLevelExecutor;
+    LyricsTargetLanguageExecutor m_lyricsTargetLanguageExecutor;
 };
 
 }

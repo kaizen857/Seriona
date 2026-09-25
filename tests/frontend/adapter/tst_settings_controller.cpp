@@ -61,7 +61,10 @@ private slots:
     void outputDeviceOptionsMarkDefaultDevice();
     void legacyNumericPreferredDeviceIdResetOnEnumerate();
     void startupPushSequence();
-    void lyricDelimitersPersistRoundTrip();
+    void legacyLyricDelimiterKeyRemovedOnReload();
+    void targetLanguageDefaultsAndWhitelist();
+    void targetLanguagePersistRoundTrip();
+    void targetLanguagePushAndDefense();
     void sampleFormatPersistRoundTrip();
     void applyIncludesSampleFormat();
     void rollbackRejectedOutputConfigRestoresSnapshot();
@@ -149,8 +152,6 @@ void SettingsControllerTest::defaults()
     QCOMPARE(settings.sampleRate(), 48000);
     QCOMPARE(settings.sampleFormat(), 0);
     QCOMPARE(settings.bufferDurationMs(), 300);
-    const QStringList defaultDelimiters{QStringLiteral(" / ")};
-    QCOMPARE(settings.lyricDelimiters(), defaultDelimiters);
     // 日志等级默认 info（与前端持久化默认一致，启动后经 applyLogLevel 同步后端）
     QCOMPARE(settings.logLevel(), 2);
     // 歌词跟随恢复延迟默认 5s（与前端持久化默认一致）
@@ -165,39 +166,31 @@ void SettingsControllerTest::propertySettersPersistAndNotify()
     QSignalSpy formatSpy(&settings, &Seriona::App::SettingsController::sampleFormatChanged);
     QSignalSpy durationSpy(&settings, &Seriona::App::SettingsController::bufferDurationMsChanged);
     QSignalSpy deviceSpy(&settings, &Seriona::App::SettingsController::preferredDeviceIdChanged);
-    QSignalSpy delimiterSpy(&settings, &Seriona::App::SettingsController::lyricDelimitersChanged);
 
     settings.setSampleRate(96000);
     settings.setSampleFormat(2);
     settings.setBufferDurationMs(500);
     settings.setPreferredDeviceId(QStringLiteral("dev-1"));
-    settings.setLyricDelimiters(QStringList{QStringLiteral(" / "), QStringLiteral(" | ")});
 
     QCOMPARE(settings.sampleRate(), 96000);
     QCOMPARE(settings.sampleFormat(), 2);
     QCOMPARE(settings.bufferDurationMs(), 500);
     QCOMPARE(settings.preferredDeviceId(), QStringLiteral("dev-1"));
-    const QStringList expectedDelimiters{QStringLiteral(" / "), QStringLiteral(" | ")};
-    QCOMPARE(settings.lyricDelimiters(), expectedDelimiters);
     QCOMPARE(rateSpy.count(), 1);
     QCOMPARE(formatSpy.count(), 1);
     QCOMPARE(durationSpy.count(), 1);
     QCOMPARE(deviceSpy.count(), 1);
-    QCOMPARE(delimiterSpy.count(), 1);
 
     // 相同值不重复 NOTIFY
     settings.setSampleRate(96000);
     settings.setSampleFormat(2);
-    settings.setLyricDelimiters(expectedDelimiters);
     QCOMPARE(rateSpy.count(), 1);
     QCOMPARE(formatSpy.count(), 1);
-    QCOMPARE(delimiterSpy.count(), 1);
 
     QCOMPARE(storedValue(QStringLiteral("output"), QStringLiteral("sampleRate")).toInt(), 96000);
     QCOMPARE(storedValue(QStringLiteral("output"), QStringLiteral("sampleFormat")).toInt(), 2);
     QCOMPARE(storedValue(QStringLiteral("output"), QStringLiteral("bufferDurationMs")).toInt(), 500);
     QCOMPARE(storedValue(QStringLiteral("output"), QStringLiteral("preferredDeviceId")).toString(), QStringLiteral("dev-1"));
-    QCOMPARE(storedValue(QStringLiteral("lyrics"), QStringLiteral("delimiters")).toStringList(), expectedDelimiters);
 }
 
 void SettingsControllerTest::invalidValuesRejected()
@@ -795,32 +788,21 @@ void SettingsControllerTest::logLevelPushAndDefense()
     QCOMPARE(corruptReader.logLevel(), 2);
 }
 
-void SettingsControllerTest::lyricDelimitersPersistRoundTrip()
+void SettingsControllerTest::legacyLyricDelimiterKeyRemovedOnReload()
 {
-    const QStringList delimiters{QStringLiteral(" / "), QStringLiteral(" | "), QStringLiteral(" - ")};
-    {
-        Seriona::App::SettingsController writer;
-        writer.setSettingsStorageBackend(testBackend());
-        writer.setLyricDelimiters(delimiters);
-        QCOMPARE(writer.lyricDelimiters(), delimiters);
-    }
+    m_store.insert(storageKey(QStringLiteral("lyrics"), QStringLiteral("delimiters")),
+                   QStringList{QStringLiteral(" / "), QStringLiteral(" | ")});
+    m_store.insert(storageKey(QStringLiteral("lyrics"), QStringLiteral("followRestoreDelayMs")), 7000);
 
-    Seriona::App::SettingsController reader;
-    reader.setSettingsStorageBackend(testBackend());
-    reader.reloadFromSettings();
-    QCOMPARE(reader.lyricDelimiters(), delimiters);
+    Seriona::App::SettingsController settings;
+    settings.setSettingsStorageBackend(testBackend());
+    settings.reloadFromSettings();
 
-    // 空列表语义：合法（清空后歌词不切分），持久化并重读一致，不得崩溃
-    {
-        Seriona::App::SettingsController emptyWriter;
-        emptyWriter.setSettingsStorageBackend(testBackend());
-        emptyWriter.setLyricDelimiters({});
-        QVERIFY(emptyWriter.lyricDelimiters().isEmpty());
-    }
-    Seriona::App::SettingsController emptyReader;
-    emptyReader.setSettingsStorageBackend(testBackend());
-    emptyReader.reloadFromSettings();
-    QVERIFY(emptyReader.lyricDelimiters().isEmpty());
+    // 迁移桥：遗留分隔符键在 reload 时被真正删除，不再经 listByGroup 冒泡到 UI
+    QVERIFY(!storedContains(QStringLiteral("lyrics"), QStringLiteral("delimiters")));
+    // 同组其它键不受影响
+    QCOMPARE(storedValue(QStringLiteral("lyrics"), QStringLiteral("followRestoreDelayMs")).toInt(), 7000);
+    QCOMPARE(settings.followRestoreDelayMs(), 7000);
 }
 
 void SettingsControllerTest::followRestoreDelayPersistRoundTrip()
@@ -853,6 +835,99 @@ void SettingsControllerTest::followRestoreDelayPersistRoundTrip()
     corruptReader.setSettingsStorageBackend(testBackend());
     corruptReader.reloadFromSettings();
     QCOMPARE(corruptReader.followRestoreDelayMs(), 5000);
+}
+
+void SettingsControllerTest::targetLanguageDefaultsAndWhitelist()
+{
+    Seriona::App::SettingsController settings;
+
+    // 默认中文（分支 A：发布四语言，但默认值仍为 zh）
+    QCOMPARE(settings.targetLanguage(), QStringLiteral("zh"));
+
+    // 白名单四 token 全部接受（分支 A 的控制器侧：zh/ja/ko/en 均可设为当前值）
+    const QStringList whitelist{QStringLiteral("ja"), QStringLiteral("ko"), QStringLiteral("en"), QStringLiteral("zh")};
+    for (const QString &language : whitelist) {
+        settings.setTargetLanguage(language);
+        QCOMPARE(settings.targetLanguage(), language);
+    }
+}
+
+void SettingsControllerTest::targetLanguagePushAndDefense()
+{
+    Seriona::App::SettingsController settings;
+    settings.setSettingsStorageBackend(testBackend());
+    QSignalSpy spy(&settings, &Seriona::App::SettingsController::targetLanguageChanged);
+    QStringList pushed;
+    settings.setLyricsTargetLanguageExecutor([&pushed](const QString &language) {
+        pushed.append(language);
+    });
+
+    // 离散变更立即推送一次，值正确
+    settings.setTargetLanguage(QStringLiteral("ja"));
+    QCOMPARE(pushed, QStringList({QStringLiteral("ja")}));
+    QCOMPARE(spy.count(), 1);
+
+    // 相同值不重复推送、不发信号
+    settings.setTargetLanguage(QStringLiteral("ja"));
+    QCOMPARE(pushed.size(), 1);
+    QCOMPARE(spy.count(), 1);
+
+    settings.setTargetLanguage(QStringLiteral("en"));
+    QCOMPARE(pushed, QStringList({QStringLiteral("ja"), QStringLiteral("en")}));
+    QCOMPARE(storedValue(QStringLiteral("lyrics"), QStringLiteral("targetLanguage")).toString(), QStringLiteral("en"));
+
+    // 白名单外（zh-Hans / 其它语言 / 大写 / 空串）一律拒绝：不改值、不推送、不落盘
+    for (const QString &invalid :
+         {QStringLiteral("zh-Hans"), QStringLiteral("fr"), QStringLiteral("ZH"), QString()}) {
+        settings.setTargetLanguage(invalid);
+    }
+    QCOMPARE(settings.targetLanguage(), QStringLiteral("en"));
+    QCOMPARE(pushed.size(), 2);
+
+    // applyLyricsTargetLanguage：推送当前值，不落盘（启动路径：reload 后同步后端）
+    removeStored(QStringLiteral("lyrics"), QStringLiteral("targetLanguage"));
+    settings.applyLyricsTargetLanguage();
+    QCOMPARE(pushed.size(), 3);
+    QCOMPARE(pushed.at(2), QStringLiteral("en"));
+    QVERIFY(!storedContains(QStringLiteral("lyrics"), QStringLiteral("targetLanguage")));
+
+    // 无 executor（mock-only）时 setter/apply 无副作用
+    Seriona::App::SettingsController mockController;
+    mockController.setTargetLanguage(QStringLiteral("ko"));
+    mockController.applyLyricsTargetLanguage();
+    QCOMPARE(mockController.targetLanguage(), QStringLiteral("ko"));
+}
+
+void SettingsControllerTest::targetLanguagePersistRoundTrip()
+{
+    {
+        Seriona::App::SettingsController writer;
+        writer.setSettingsStorageBackend(testBackend());
+        writer.setTargetLanguage(QStringLiteral("ko"));
+        QCOMPARE(writer.targetLanguage(), QStringLiteral("ko"));
+    }
+
+    // 持久化键 targetLanguage 位于 lyrics 组
+    QCOMPARE(storedValue(QStringLiteral("lyrics"), QStringLiteral("targetLanguage")).toString(), QStringLiteral("ko"));
+
+    Seriona::App::SettingsController reader;
+    reader.setSettingsStorageBackend(testBackend());
+    reader.reloadFromSettings();
+    QCOMPARE(reader.targetLanguage(), QStringLiteral("ko"));
+
+    // 未写入时默认 zh
+    removeStored(QStringLiteral("lyrics"), QStringLiteral("targetLanguage"));
+    Seriona::App::SettingsController defaultReader;
+    defaultReader.setSettingsStorageBackend(testBackend());
+    defaultReader.reloadFromSettings();
+    QCOMPARE(defaultReader.targetLanguage(), QStringLiteral("zh"));
+
+    // reload 防御：存储中的白名单外值回退默认 zh
+    m_store.insert(storageKey(QStringLiteral("lyrics"), QStringLiteral("targetLanguage")), QStringLiteral("zh-Hans"));
+    Seriona::App::SettingsController corruptReader;
+    corruptReader.setSettingsStorageBackend(testBackend());
+    corruptReader.reloadFromSettings();
+    QCOMPARE(corruptReader.targetLanguage(), QStringLiteral("zh"));
 }
 
 void SettingsControllerTest::sampleFormatPersistRoundTrip()

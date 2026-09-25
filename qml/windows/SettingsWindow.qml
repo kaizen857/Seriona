@@ -1614,190 +1614,21 @@ Window {
                 }
 
                 // ==========================================
-                // Card 3: 歌词分隔符配置 (Lyric Delimiters Card)
+                // Card 3: 歌词跟随恢复延迟 (Lyric Follow Restore Delay Card)
                 // ==========================================
                 Rectangle {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: delimiterCardLayout.implicitHeight + Theme.spacing16 * 2
+                    Layout.preferredHeight: lyricsCardLayout.implicitHeight + Theme.spacing16 * 2
                     color: Theme.raisedSurfaceColor
                     radius: Theme.radiusMedium
                     border.color: Theme.borderSubtle
                     border.width: 1
 
                     ColumnLayout {
-                        id: delimiterCardLayout
+                        id: lyricsCardLayout
                         anchors.fill: parent
                         anchors.margins: Theme.spacing16
                         spacing: Theme.spacing12
-
-                        // Row 6: Lyric Delimiters Group
-                        ColumnLayout {
-                            id: delimiterListGroup
-                            objectName: "delimiterList"
-                            Layout.fillWidth: true
-                            spacing: Theme.spacing8
-                            
-                            Text {
-                                text: qsTr("歌词分隔符")
-                                color: Theme.textPrimary
-                                font.pixelSize: Theme.fontTitle
-                                font.weight: Font.DemiBold
-                                Layout.bottomMargin: Theme.spacing4
-                            }
-                            
-                            Repeater {
-                                id: delimiterRepeater
-                                model: settings.lyricDelimiters
-                                
-                                delegate: RowLayout {
-                                    required property int index
-                                    required property string modelData
-                                    
-                                    Layout.fillWidth: true
-                                    spacing: Theme.spacing8
-                                    
-                                    TextField {
-                                        id: delimiterInput
-                                        Layout.fillWidth: true
-                                        Layout.preferredHeight: 32
-                                        text: modelData
-                                        color: Theme.textPrimary
-                                        font.pixelSize: Theme.fontBody
-                                        
-                                        background: Rectangle {
-                                            color: Theme.baseColor
-                                            radius: Theme.radiusSmall
-                                            border.color: delimiterInput.activeFocus ? Theme.borderAccent : Theme.borderColor
-                                            border.width: 1
-                                        }
-                                        
-                                        onEditingFinished: {
-                                            if (text === "") {
-                                                var list = [];
-                                                for (var i = 0; i < settings.lyricDelimiters.length; i++) {
-                                                    if (i !== index) {
-                                                        list.push(settings.lyricDelimiters[i]);
-                                                    }
-                                                }
-                                                settings.lyricDelimiters = list;
-                                            } else {
-                                                var list = [];
-                                                for (var i = 0; i < settings.lyricDelimiters.length; i++) {
-                                                    if (i !== index) {
-                                                        list.push(settings.lyricDelimiters[i]);
-                                                    }
-                                                }
-                                                list[index] = text;
-                                                settings.lyricDelimiters = list;
-                                            }
-                                        }
-                                    }
-                                    
-                                    StyleButton {
-                                        iconSource: "qrc:/qt/qml/Seriona/qml/assets/close.svg"
-                                        Layout.preferredWidth: 32
-                                        Layout.preferredHeight: 32
-                                        iconSize: 12
-                                        textColor: Theme.textSecondary
-                                        onClicked: {
-                                            var list = [];
-                                            for (var i = 0; i < settings.lyricDelimiters.length; i++) {
-                                                if (i !== index) {
-                                                    list.push(settings.lyricDelimiters[i]);
-                                                }
-                                            }
-                                            settings.lyricDelimiters = list;
-                                        }
-                                    }
-                                }
-                            }
-                            
-                            RowLayout {
-                                Layout.fillWidth: true
-                                spacing: Theme.spacing8
-                                
-                                TextField {
-                                    id: newDelimiterInput
-                                    Layout.fillWidth: true
-                                    Layout.preferredHeight: 32
-                                    placeholderText: qsTr("输入新分隔符...")
-                                    placeholderTextColor: Theme.textDisabled
-                                    color: Theme.textPrimary
-                                    font.pixelSize: Theme.fontBody
-                                    
-                                    background: Rectangle {
-                                        id: newDelimiterBg
-                                        color: Theme.baseColor
-                                        radius: Theme.radiusSmall
-                                        border.color: Theme.borderColor
-                                        border.width: 1
-                                        
-                                        states: [
-                                            State {
-                                                name: "error"
-                                                PropertyChanges {
-                                                    newDelimiterBg.border.color: Theme.dangerColor
-                                                }
-                                            }
-                                        ]
-                                        
-                                        transitions: [
-                                            Transition {
-                                                from: ""
-                                                to: "error"
-                                                ColorAnimation { duration: Theme.animationFast }
-                                            }
-                                        ]
-                                    }
-                                    
-                                    Timer {
-                                        id: errorTimer
-                                        interval: 1000
-                                        onTriggered: {
-                                            newDelimiterBg.state = "";
-                                        }
-                                    }
-                                }
-                                
-                                Button {
-                                    id: addBtn
-                                    Layout.preferredHeight: 32
-                                    Layout.preferredWidth: 60
-                                    
-                                    background: Rectangle {
-                                        color: addBtn.pressed ? Theme.pressedColor : (addBtn.hovered ? Theme.hoverColor : Theme.baseColor)
-                                        radius: Theme.radiusSmall
-                                        border.color: Theme.borderColor
-                                        border.width: 1
-                                    }
-                                    
-                                    contentItem: Text {
-                                        text: qsTr("添加")
-                                        color: Theme.accentColor
-                                        font.pixelSize: Theme.fontBody
-                                        font.weight: Font.DemiBold
-                                        horizontalAlignment: Text.AlignHCenter
-                                        verticalAlignment: Text.AlignVCenter
-                                    }
-                                    
-                                    onClicked: {
-                                        if (newDelimiterInput.text === "") {
-                                            newDelimiterBg.state = "error";
-                                            errorTimer.restart();
-                                            return;
-                                        }
-                                        
-                                        var list = [];
-                                        for (var i = 0; i < settings.lyricDelimiters.length; i++) {
-                                            list.push(settings.lyricDelimiters[i]);
-                                        }
-                                        list.push(newDelimiterInput.text);
-                                        settings.lyricDelimiters = list;
-                                        newDelimiterInput.text = "";
-                                    }
-                                }
-                            }
-                        }
 
                         // Row: Lyric Follow Restore Delay
                         RowLayout {
@@ -1860,6 +1691,134 @@ Window {
                                     Layout.preferredWidth: 50
                                     horizontalAlignment: Text.AlignRight
                                 }
+                            }
+                        }
+
+                        // Row: Target Language
+                        RowLayout {
+                            Layout.fillWidth: true
+
+                            Text {
+                                text: qsTr("译文语言")
+                                color: Theme.textPrimary
+                                font.pixelSize: Theme.fontBody
+                                Layout.preferredWidth: 100
+                            }
+
+                            ComboBox {
+                                id: targetLanguageCombo
+                                Layout.preferredWidth: 200
+                                Layout.preferredHeight: 32
+
+                                model: [
+                                    { value: "zh", label: qsTr("中文") },
+                                    { value: "ja", label: qsTr("日语") },
+                                    { value: "ko", label: qsTr("韩语") },
+                                    { value: "en", label: qsTr("英语") }
+                                ]
+                                textRole: "label"
+                                valueRole: "value"
+
+                                Binding {
+                                    target: targetLanguageCombo
+                                    property: "currentIndex"
+                                    value: {
+                                        for (var i = 0; i < targetLanguageCombo.model.length; i++) {
+                                            if (targetLanguageCombo.model[i].value === settings.targetLanguage) {
+                                                return i;
+                                            }
+                                        }
+                                        return 0;
+                                    }
+                                    restoreMode: Binding.RestoreBindingOrValue
+                                }
+
+                                onActivated: function(index) {
+                                    settings.targetLanguage = model[index].value;
+                                }
+
+                                background: Rectangle {
+                                    color: targetLanguageCombo.hovered ? Theme.hoverColor : Theme.baseColor
+                                    radius: Theme.radiusSmall
+                                    border.color: Theme.borderColor
+                                    border.width: 1
+                                }
+
+                                contentItem: Text {
+                                    text: targetLanguageCombo.displayText
+                                    color: Theme.textPrimary
+                                    font.pixelSize: Theme.fontBody
+                                    verticalAlignment: Text.AlignVCenter
+                                    leftPadding: Theme.spacing8
+                                    rightPadding: targetLanguageCombo.indicator.width + Theme.spacing8
+                                    elide: Text.ElideRight
+                                }
+
+                                indicator: Text {
+                                    text: "▼"
+                                    color: Theme.secondaryTextColor
+                                    font.pixelSize: 10
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: Theme.spacing8
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+
+                                delegate: ItemDelegate {
+                                    width: targetLanguageCombo.width
+                                    height: 32
+                                    required property var modelData
+                                    required property int index
+
+                                    contentItem: Text {
+                                        text: modelData.label
+                                        color: Theme.textPrimary
+                                        font.pixelSize: Theme.fontBody
+                                        verticalAlignment: Text.AlignVCenter
+                                        leftPadding: Theme.spacing8
+                                    }
+
+                                    background: Rectangle {
+                                        color: parent.hovered ? Theme.hoverColor : Theme.raisedSurfaceColor
+                                    }
+                                }
+
+                                popup: Popup {
+                                    width: targetLanguageCombo.width
+                                    height: fullListHeight
+                                    margins: Theme.spacing8
+                                    padding: Theme.spacing4
+                                    readonly property real fullListHeight: contentItem.implicitHeight + topPadding + bottomPadding
+                                    readonly property real comboTopInWindow: targetLanguageCombo.mapToItem(null, 0, 0).y
+                                    readonly property real preferredY: targetLanguageCombo.height
+                                    readonly property real windowTopLimit: margins
+                                    readonly property real windowBottomLimit: targetLanguageCombo.Window.window ? targetLanguageCombo.Window.window.height - margins : comboTopInWindow + preferredY + fullListHeight
+                                    readonly property real minY: windowTopLimit - comboTopInWindow
+                                    readonly property real maxY: windowBottomLimit - comboTopInWindow - fullListHeight
+                                    y: Math.max(minY, Math.min(preferredY, maxY))
+
+                                    contentItem: ListView {
+                                        clip: true
+                                        implicitHeight: contentHeight
+                                        model: targetLanguageCombo.popup.visible ? targetLanguageCombo.delegateModel : null
+                                        currentIndex: targetLanguageCombo.highlightedIndex
+                                    }
+
+                                    background: Rectangle {
+                                        color: Theme.raisedSurfaceColor
+                                        radius: Theme.radiusSmall
+                                        border.color: Theme.borderColor
+                                        border.width: 1
+                                    }
+                                }
+                            }
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: qsTr("非 zh 目标语言只有 fixture 覆盖、无语料级验证")
+                                color: Theme.secondaryTextColor
+                                font.pixelSize: Theme.fontCaption
+                                wrapMode: Text.WordWrap
+                                verticalAlignment: Text.AlignVCenter
                             }
                         }
                     }

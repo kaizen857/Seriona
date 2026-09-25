@@ -214,10 +214,6 @@ void LyricsModelSemanticGoldenTest::dumpSemanticGolden()
 
     Seriona::App::LyricsModel model;
 
-    // 不调用 setLyricDelimiters：保持 lyrics_model.h 的默认分隔符 {QStringLiteral(" / ")}，
-    // 这样 dump 记录的是"今天"的默认切分路径。
-    QCOMPARE(model.lyricDelimiters(), QStringList{QStringLiteral(" / ")});
-
     model.applyPlayerStateSnapshot(player, &library);
 
     QCOMPARE(model.rowCount(), static_cast<int>(inputs.size()));

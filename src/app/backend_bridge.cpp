@@ -565,6 +565,20 @@ seriona::control::MediaControllerCommandResult BackendBridge::removeFromQueue(qu
     return submitCommand(command);
 }
 
+seriona::control::MediaControllerCommandResult BackendBridge::setLyricsTargetLanguage(const QString &language)
+{
+    seriona::control::MediaControlCommand command;
+    command.kind = seriona::control::MediaControlCommandKind::SetLyricsTargetLanguage;
+    command.lyricsTargetLanguage = toBackendString(language);
+    const seriona::control::MediaControllerCommandResult result = submitCommand(command);
+    if (!result.accepted) {
+        // 无缓存去重/重试语义：失败经 submitCommand 的 CommandRejected 通知链反馈，
+        // 此处仅留一条日志便于定位（下一次 setter 变更会重新提交）。
+        spdlog::warn("SetLyricsTargetLanguage command rejected: {}", result.message);
+    }
+    return result;
+}
+
 QList<QPair<QString, QString>> BackendBridge::enumeratePlaybackDevices()
 {
     const QList<PlaybackDeviceCapabilities> devices = enumeratePlaybackDeviceCapabilities();

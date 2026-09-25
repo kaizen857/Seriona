@@ -21,8 +21,8 @@ constexpr auto kSampleRateKey = "sampleRate";
 constexpr auto kSampleFormatKey = "sampleFormat";
 constexpr auto kBufferDurationMsKey = "bufferDurationMs";
 constexpr auto kPreferredDeviceIdKey = "preferredDeviceId";
-constexpr auto kLyricsDelimitersKey = "delimiters";
 constexpr auto kFollowRestoreDelayMsKey = "followRestoreDelayMs";
+constexpr auto kTargetLanguageKey = "targetLanguage";
 constexpr auto kLogLevelKey = "logLevel";
 constexpr auto kAutoAdvanceFadeModeKey = "autoAdvanceFadeMode";
 constexpr auto kFadeOnTransportKey = "fadeOnTransport";
@@ -63,6 +63,9 @@ constexpr int kMaxBufferDurationMs = 1000;
 constexpr int kDefaultFollowRestoreDelayMs = 5000;
 constexpr int kMinFollowRestoreDelayMs = 1000;
 constexpr int kMaxFollowRestoreDelayMs = 15000;
+// 歌词切分目标语言（译文语言）：默认中文；白名单四 token（zh/ja/ko/en，不硬编码
+// zh-Hans），与后端 isSupportedLyricsLanguage 一致——前端只传值，不做语言判定。
+constexpr auto kDefaultTargetLanguage = "zh";
 // 播放过渡组默认值/量程（与用户裁定表一致；滑块步进 kTransitionSliderStepMs=100ms，
 // QML from/to/stepSize 与本常量对齐）：
 constexpr int kDefaultAutoAdvanceFadeMode = 0; // 无
@@ -96,8 +99,6 @@ constexpr double kDefaultEqPreGainDb = 0.0;
 constexpr int kDefaultEqLimiterEnabled = 0;
 constexpr int kDefaultEqSpectrumEnabled = 0;
 constexpr int kMaxEqPresetNameLength = 64;
-
-const QStringList kDefaultLyricDelimiters = {QStringLiteral(" / ")};
 
 // 标准采样率/位深选项（0 = 跟随设备，恒保留；与既有 QML 硬编码模型一致）
 const QList<int> kStandardSampleRates = {0, 44100, 48000, 96000, 192000};
@@ -157,6 +158,12 @@ bool isValidBufferDurationMs(int bufferDurationMs)
 bool isValidFollowRestoreDelayMs(int delayMs)
 {
     return delayMs >= kMinFollowRestoreDelayMs && delayMs <= kMaxFollowRestoreDelayMs;
+}
+
+bool isValidTargetLanguage(const QString &language)
+{
+    return language == QLatin1String("zh") || language == QLatin1String("ja")
+        || language == QLatin1String("ko") || language == QLatin1String("en");
 }
 
 bool isValidLogLevel(int level)
@@ -378,14 +385,14 @@ int SettingsController::bufferDurationMs() const
     return m_bufferDurationMs;
 }
 
-QStringList SettingsController::lyricDelimiters() const
-{
-    return m_lyricDelimiters;
-}
-
 int SettingsController::followRestoreDelayMs() const
 {
     return m_followRestoreDelayMs;
+}
+
+QString SettingsController::targetLanguage() const
+{
+    return m_targetLanguage;
 }
 
 int SettingsController::logLevel() const
@@ -413,15 +420,6 @@ void SettingsController::setSampleFormat(int sampleFormat)
     apply();
 }
 
-void SettingsController::setLyricDelimiters(const QStringList &delimiters)
-{
-    if (m_lyricDelimiters == delimiters) {
-        return;
-    }
-    setLyricDelimitersInternal(delimiters);
-    persistValue(kLyricsGroup, kLyricsDelimitersKey, delimiters);
-}
-
 void SettingsController::setFollowRestoreDelayMs(int delayMs)
 {
     if (!isValidFollowRestoreDelayMs(delayMs) || m_followRestoreDelayMs == delayMs) {
@@ -429,6 +427,16 @@ void SettingsController::setFollowRestoreDelayMs(int delayMs)
     }
     setFollowRestoreDelayMsInternal(delayMs);
     persistValue(kLyricsGroup, kFollowRestoreDelayMsKey, delayMs);
+}
+
+void SettingsController::setTargetLanguage(const QString &language)
+{
+    if (!isValidTargetLanguage(language) || m_targetLanguage == language) {
+        return;
+    }
+    setTargetLanguageInternal(language);
+    persistValue(kLyricsGroup, kTargetLanguageKey, language);
+    applyLyricsTargetLanguage();
 }
 
 void SettingsController::setLogLevel(int level)
@@ -467,6 +475,14 @@ void SettingsController::applyLogLevel()
         return;
     }
     m_logLevelExecutor(m_logLevel);
+}
+
+void SettingsController::applyLyricsTargetLanguage()
+{
+    if (!m_lyricsTargetLanguageExecutor) {
+        return;
+    }
+    m_lyricsTargetLanguageExecutor(m_targetLanguage);
 }
 
 void SettingsController::setBufferDurationMs(int bufferDurationMs)
@@ -980,15 +996,18 @@ void SettingsController::reloadFromSettings()
                                                     QString())
                                  .toString();
 
-    const QStringList delimiters = m_settingsStorage.read(QString::fromUtf8(kLyricsGroup),
-                                                          QString::fromUtf8(kLyricsDelimitersKey),
-                                                          kDefaultLyricDelimiters)
-                                       .toStringList();
+    // 遗留键清理（数据迁移桥）：早期版本把「歌词分隔符」存为该组的一个键，该用户配置项
+    // 已移除；此处删除一次，避免残留行继续经 listByGroup 冒泡到 UI。
+    m_settingsStorage.remove(QString::fromUtf8(kLyricsGroup), QStringLiteral("delimiters"));
 
     const int followRestoreDelayMs = m_settingsStorage.read(QString::fromUtf8(kLyricsGroup),
                                                             QString::fromUtf8(kFollowRestoreDelayMsKey),
                                                             kDefaultFollowRestoreDelayMs)
                                          .toInt();
+    const QString targetLanguage = m_settingsStorage.read(QString::fromUtf8(kLyricsGroup),
+                                                          QString::fromUtf8(kTargetLanguageKey),
+                                                          QLatin1String(kDefaultTargetLanguage))
+                                       .toString();
 
     const int logLevel = m_settingsStorage.read(QString::fromUtf8(kLoggingGroup),
                                                 QString::fromUtf8(kLogLevelKey),
@@ -1037,8 +1056,8 @@ void SettingsController::reloadFromSettings()
     setSampleFormatInternal(sampleFormat);
     setBufferDurationMsInternal(bufferDurationMs);
     setPreferredDeviceIdInternal(deviceId);
-    setLyricDelimitersInternal(delimiters);
     setFollowRestoreDelayMsInternal(followRestoreDelayMs);
+    setTargetLanguageInternal(targetLanguage);
     setLogLevelInternal(logLevel);
     setAutoAdvanceFadeModeInternal(autoAdvanceFadeMode);
     setFadeOnTransportInternal(fadeOnTransport);
@@ -1251,6 +1270,11 @@ void SettingsController::setLogLevelExecutor(LogLevelExecutor executor)
     m_logLevelExecutor = std::move(executor);
 }
 
+void SettingsController::setLyricsTargetLanguageExecutor(LyricsTargetLanguageExecutor executor)
+{
+    m_lyricsTargetLanguageExecutor = std::move(executor);
+}
+
 void SettingsController::setSampleRateInternal(int sampleRate)
 {
     if (!isValidSampleRate(sampleRate) || m_sampleRate == sampleRate) {
@@ -1269,15 +1293,6 @@ void SettingsController::setSampleFormatInternal(int sampleFormat)
     emit sampleFormatChanged();
 }
 
-void SettingsController::setLyricDelimitersInternal(const QStringList &delimiters)
-{
-    if (m_lyricDelimiters == delimiters) {
-        return;
-    }
-    m_lyricDelimiters = delimiters;
-    emit lyricDelimitersChanged();
-}
-
 void SettingsController::setFollowRestoreDelayMsInternal(int delayMs)
 {
     if (!isValidFollowRestoreDelayMs(delayMs) || m_followRestoreDelayMs == delayMs) {
@@ -1285,6 +1300,15 @@ void SettingsController::setFollowRestoreDelayMsInternal(int delayMs)
     }
     m_followRestoreDelayMs = delayMs;
     emit followRestoreDelayMsChanged();
+}
+
+void SettingsController::setTargetLanguageInternal(const QString &language)
+{
+    if (!isValidTargetLanguage(language) || m_targetLanguage == language) {
+        return;
+    }
+    m_targetLanguage = language;
+    emit targetLanguageChanged();
 }
 
 void SettingsController::setLogLevelInternal(int level)

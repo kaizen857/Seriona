@@ -343,14 +343,13 @@ void WaveformWorkerTest::staleLyricsSnapshotForDifferentTrackIsIgnored()
     const seriona::control::PlayerStateSnapshot currentPlayer = lyricsPlayer("current-track");
     const seriona::control::LibraryStateSnapshot currentLibrary = lyricsLibrary(
         "current-track",
-        "Current lyric | 当前歌词");
+        "Current lyric / 当前歌词");
     const seriona::control::LibraryStateSnapshot staleLibrary = lyricsLibrary(
         "previous-track",
-        "Stale lyric | 过期歌词");
+        "Stale lyric / 过期歌词");
 
     Seriona::App::LyricsModel model;
     model.setShowTranslation(false);
-    model.setLyricDelimiters({QStringLiteral(" | ")});
     model.applyPlayerStateSnapshot(currentPlayer, &currentLibrary);
 
     QCOMPARE(model.rowCount(), 1);

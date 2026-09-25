@@ -569,6 +569,7 @@ private slots:
     void playNextTrackBuildsQueueCommand();
     void playNextTrackRejectsEmptyIdWithoutDispatch();
     void removeFromQueueBuildsIndexedCommand();
+    void setLyricsTargetLanguageReachesBackendAndRejectsUnsupported();
     void enumeratePlaybackDevicesMapsDeviceIds();
     void settingsPushOnStart();
     void submitTransitionConfigBuildsTypedBackendCommand();
@@ -1083,6 +1084,34 @@ void BackendBridgeTest::removeFromQueueBuildsIndexedCommand()
     QCOMPARE(result.code, seriona::control::MediaControllerErrorCode::None);
     QTRY_COMPARE(bridge.playerSnapshot().queueEntries.size(), std::size_t{1});
     QCOMPARE(QString::fromStdString(bridge.playerSnapshot().queueEntries.at(0).trackId), QStringLiteral("track-x-id"));
+
+    bridge.shutdown();
+}
+
+void BackendBridgeTest::setLyricsTargetLanguageReachesBackendAndRejectsUnsupported()
+{
+    ControllerHarness harness;
+    Seriona::App::BackendBridge bridge(harness.factory(true));
+    waitForInitialPlayerSnapshot(bridge);
+
+    // 白名单四 token 均送到后端 reducer 并获接受（accepted/code 只可能来自后端处理）
+    const QStringList whitelist{QStringLiteral("zh"), QStringLiteral("ja"), QStringLiteral("ko"), QStringLiteral("en")};
+    for (const QString &language : whitelist) {
+        const seriona::control::MediaControllerCommandResult result = bridge.setLyricsTargetLanguage(language);
+        QVERIFY(result.accepted);
+        QCOMPARE(result.code, seriona::control::MediaControllerErrorCode::None);
+    }
+
+    // 白名单外：前端不校验，命令到达后端后被后端拒绝——证明连接的是后端白名单
+    const seriona::control::MediaControllerCommandResult unsupported =
+        bridge.setLyricsTargetLanguage(QStringLiteral("fr"));
+    QCOMPARE(unsupported.accepted, false);
+    QCOMPARE(unsupported.code, seriona::control::MediaControllerErrorCode::InvalidCommand);
+
+    // 语言命令不触碰音频输出/加载/停止（与 ConfigureOutput 语义隔离）
+    QCOMPARE(harness.audio->configureOutputCalls(), 0);
+    QCOMPARE(harness.audio->loadTrackCalls(), 0);
+    QCOMPARE(harness.audio->stopCalls(), 0);
 
     bridge.shutdown();
 }

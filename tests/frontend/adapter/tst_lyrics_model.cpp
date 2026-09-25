@@ -84,25 +84,22 @@ class LyricsModelTest : public QObject
 private slots:
     void trackidLookup();
     void missingEmpty();
-    void delimiterResolution();
 };
 
 void LyricsModelTest::trackidLookup()
 {
     const seriona::control::PlayerStateSnapshot player = makePlayer("selected-track");
     seriona::control::LibraryStateSnapshot library = makeLibrary({
-        makeLyricLine(std::chrono::milliseconds{0}, "Intro | 开场"),
-        makeLyricLine(std::chrono::milliseconds{5000}, "Verse | 主歌"),
-        makeLyricLine(std::chrono::milliseconds{10000}, "Chorus | 副歌")});
+        makeLyricLine(std::chrono::milliseconds{0}, "Intro / 开场"),
+        makeLyricLine(std::chrono::milliseconds{5000}, "Verse / 主歌"),
+        makeLyricLine(std::chrono::milliseconds{10000}, "Chorus / 副歌")});
     Seriona::App::LyricsModel model;
     model.setShowTranslation(false);
-    model.setLyricDelimiters({QStringLiteral(" | ")});
 
     model.applyPlayerStateSnapshot(player, &library);
 
     QCOMPARE(model.rowCount(), 3);
     QCOMPARE(model.showTranslation(), false);
-    QCOMPARE(model.lyricDelimiters(), QStringList{QStringLiteral(" | ")});
     QCOMPARE(modelValue(model, 0, Seriona::App::LyricsModel::DisplayLineRole).toString(), QStringLiteral("Intro"));
     QCOMPARE(modelValue(model, 0, Seriona::App::LyricsModel::TranslationRole).toString(), QStringLiteral("开场"));
 
@@ -130,7 +127,6 @@ void LyricsModelTest::trackidLookup()
 void LyricsModelTest::missingEmpty()
 {
     Seriona::App::LyricsModel model;
-    model.setLyricDelimiters({QStringLiteral(" | ")});
     model.setShowTranslation(false);
 
     seriona::control::PlayerStateSnapshot emptyPlayer;
@@ -154,46 +150,6 @@ void LyricsModelTest::missingEmpty()
     model.toggleTranslation();
     QCOMPARE(model.currentIndex(), 0);
     QCOMPARE(model.showTranslation(), true);
-    QCOMPARE(model.lyricDelimiters(), QStringList{QStringLiteral(" | ")});
-}
-
-void LyricsModelTest::delimiterResolution()
-{
-    const seriona::control::PlayerStateSnapshot player = makePlayer("selected-track");
-    const seriona::control::LibraryStateSnapshot library = makeLibrary({
-        makeLyricLine(std::chrono::milliseconds{0}, "Verse | 主歌 / 译"),
-        makeLyricLine(std::chrono::milliseconds{5000}, "Plain line without delimiter"),
-        makeLyricLine(std::chrono::milliseconds{10000}, "One | 一 / 译一")});
-    Seriona::App::LyricsModel model;
-
-    // 默认值：{" / "}
-    QCOMPARE(model.lyricDelimiters(), QStringList{QStringLiteral(" / ")});
-
-    model.applyPlayerStateSnapshot(player, &library);
-
-    // 多分隔符最早匹配：[" / ", " | "] 对 "Verse | 主歌 / 译" 应命中 " | "（index 6 < " / " 的 index 11）
-    model.setLyricDelimiters({QStringLiteral(" / "), QStringLiteral(" | ")});
-    QCOMPARE(modelValue(model, 0, Seriona::App::LyricsModel::DisplayLineRole).toString(), QStringLiteral("Verse"));
-    QCOMPARE(modelValue(model, 0, Seriona::App::LyricsModel::TranslationRole).toString(), QStringLiteral("主歌 / 译"));
-
-    // 无匹配：整行作 display，translation 为空
-    QCOMPARE(modelValue(model, 1, Seriona::App::LyricsModel::DisplayLineRole).toString(), QStringLiteral("Plain line without delimiter"));
-    QCOMPARE(modelValue(model, 1, Seriona::App::LyricsModel::TranslationRole).toString(), QString());
-
-    // 空列表：返回原行，translation 为空
-    model.setLyricDelimiters({});
-    QCOMPARE(modelValue(model, 0, Seriona::App::LyricsModel::DisplayLineRole).toString(), QStringLiteral("Verse | 主歌 / 译"));
-    QCOMPARE(modelValue(model, 0, Seriona::App::LyricsModel::TranslationRole).toString(), QString());
-
-    // 空分隔符被跳过（不按每字符切分），仅 " / " 生效
-    model.setLyricDelimiters({QString(), QStringLiteral(" / ")});
-    QCOMPARE(modelValue(model, 0, Seriona::App::LyricsModel::DisplayLineRole).toString(), QStringLiteral("Verse | 主歌"));
-    QCOMPARE(modelValue(model, 0, Seriona::App::LyricsModel::TranslationRole).toString(), QStringLiteral("译"));
-
-    // 全空分隔符等价于空列表
-    model.setLyricDelimiters({QString(), QString()});
-    QCOMPARE(modelValue(model, 0, Seriona::App::LyricsModel::DisplayLineRole).toString(), QStringLiteral("Verse | 主歌 / 译"));
-    QCOMPARE(modelValue(model, 0, Seriona::App::LyricsModel::TranslationRole).toString(), QString());
 }
 
 QTEST_GUILESS_MAIN(LyricsModelTest)
