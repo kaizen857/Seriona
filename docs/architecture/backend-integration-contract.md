@@ -62,8 +62,8 @@ Seriona 前端 QML 不直接持有后端状态；中间层 owners 负责把后�
 - 数据来源：`BackendBridge::registerSubscriptions` 注册的 **6 路订阅**（player / library / notification / equalizer / spectrum / trackLyrics）之一 `subscribeTrackLyrics` 回调 `TrackLyricsSnapshot`；`BackendBridge::trackLyricsChanged` → `AppFacade::handleTrackLyricsChanged` 把快照整份投给 `LyricsModel::applyTrackLyricsSnapshot`。`SERIONA_HAS_BACKEND=0`（mock-only）时该订阅不编译，`LyricsModel` 呈现空态。
 - 前端消费字段：`trackId`（空则视为无快照、清空模型）、`convention`（仅 `BackendBridge` 读取并序列化为纠错命令载荷，见下），以及每行的 `timestamp` / `text`（`cleanLine` 之后的清洗行）/ `original` / `translation`（空串表示该行无译文）/ `manualOverride` / `autoOriginal` / `autoTranslation`。`targetLanguage`、`position`、`freshness` 属快照契约字段，前端当前不读取。
 - 模型角色：既有 5 个（`RawLineRole` = `text`、`DisplayLineRole` = `original`、`TranslationRole` = `translation`、`CurrentRole`、`TimestampRole`）角色名与值不变；W3 起追加 `ManualOverrideRole` / `AutoOriginalRole` / `AutoTranslationRole`。`autoOriginal` / `autoTranslation` 是被 manual 覆盖之前的自动判定结果，仅在 `manualOverride` 为 true 时有值（未覆盖时后端留空）。
-- 内容去重谓词为 `timestamp + text + original + translation`（仅译文变化也触发整份替换）。
-- 行推进：`currentIndex` 由 `playbackPosition` 与各行 `timestamp` 计算，与内容来源无关。`LyricsModel::lines()` 供 QML 切歌动画取行快照（既有 3 键不变，另附 W3 三键）。
+- 内容去重谓词为 `timestamp + text + original + translation + manualOverride + autoOriginal + autoTranslation` 共 7 个字段（任一字段变化即触发整份替换，仅译文变化也包含在内）。
+- 行推进：`currentIndex` 由 `playbackPosition` 与各行 `timestamp` 计算，与内容来源无关。`LyricsModel::lines()` 供 QML 切歌动画取行快照，**每行 7 键**（逐字对照 `src/app/lyrics_model.cpp:177-193`）：`displayLine` / `translation` / `timestampSec` / `rawLine` / `manualOverride` / `autoOriginal` / `autoTranslation`（`rawLine` 也计入）。
 
 ### 三层纠错入口（同一后端命令面）
 
@@ -81,6 +81,69 @@ Seriona 前端 QML 不直接持有后端状态；中间层 owners 负责把后�
 
 - `SettingsController` 键组 `lyrics` / 键 `targetLanguage`（默认 `zh`），QML 在设置面板「译文语言」下拉绑定；变更即经注入的 executor → `BackendBridge::setLyricsTargetLanguage` 外发 `SetLyricsTargetLanguage` 真命令，载荷为语言 token（`zh` / `ja` / `ko` / `en`）。
 - 启动路径在设置 reload 后经 `SettingsController::applyLyricsTargetLanguage()` 同步一次。
+
+### 快照契约（`TrackLyricsSnapshot` / `SplitLyricLine`）
+
+类型定义于 Seriona_Backend `inc/seriona/control/control_contracts.h`；以下字段名与类型逐字对齐该头。
+
+`TrackLyricsSnapshot` 字段：
+
+| 字段 | 类型 | 语义 |
+|---|---|---|
+| `freshness` | `SnapshotFreshness`（`version` + `sampledAt`） | 每次发布本快照都递增 `version`，并把 `sampledAt` 置为发布时间 |
+| `trackId` | `string` | 空则视为无快照 |
+| `targetLanguage` | `string` | 产出本结果时所用目标语言 |
+| `convention` | `LyricSplitConvention` | 本曲目的文档级约定（整首推断一次），是内容寻址键的组成部分；前端做单条 Upsert/Remove 时必须回传它 |
+| `position` | `TranslationPosition` | 译文位置策略，当前仅 `LastLanguageSegment`，不暴露为用户设置 |
+| `lines` | `vector<SplitLyricLine>` | 全量行快照 |
+
+`SplitLyricLine` 对外可消费字段：`timestamp` / `text`（`cleanLine` 之后的清洗行，即 `rawText` 口径）/ `original` / `translation`（空 = 无译文）/ `split` / `manualOverride` / `autoOriginal` / `autoTranslation`。`autoOriginal` / `autoTranslation` 仅当 `manualOverride` 为 true 时有值（被 manual 覆盖之前的自动判定结果）。**`confidence` 不在快照内**（D24：置信度只在算法层以字符串记号表示并仅用于路由判定，不向用户暴露）。
+
+文档级约定枚举 `LyricSplitConvention` 共 11 值（含 `None`）；序列化经 `conventionToken` / `conventionFromToken`，未知记号无对应取值。
+
+### 订阅面（`subscribeTrackLyrics`）
+
+`MediaController::subscribeTrackLyrics(TrackLyricsSnapshotCallback)`（`inc/seriona/control/media_controller.h`）返回 `SubscriptionHandle`。注册后立即以当前快照回调一次，此后当前曲目变更、目标语言变更、该曲目手工纠错增删、**曲库树版本变化（重扫产生新的 `PlaylistTreeSnapshot`）**时各重发布一次全量行快照（对齐 `Seriona_Backend/src/control/media_controller.cpp:869-889` 的 `shouldRefreshTrackLyrics`：只看树版本 `libraryTreeVersionLocked() != publishedTrackLyricsTreeVersion_` 是否变化，与歌词内容是否变化无关）。回调别名 `TrackLyricsSubscriptionCallback` = `TrackLyricsSnapshotCallback`（`std::function<void(TrackLyricsSnapshot)>`）。
+
+### 控制命令面（歌词切分 4 条）
+
+`MediaControlCommandKind` 末尾追加区块（追加末尾保持序列化兼容），载荷字段见 `MediaControlCommand`：
+
+| 命令 | 载荷 | 语义 |
+|---|---|---|
+| `SetLyricsTargetLanguage` | `lyricsTargetLanguage` | 改目标语言，取值限 `zh` / `ja` / `ko` / `en`，非法值走命令拒绝路径 |
+| `UpsertLyricSplitCorrection` | `lyricRawText` + `lyricOriginal` + `lyricTranslation` + `lyricConvention` | 对当前曲目单行手工纠错做增/改 |
+| `RemoveLyricSplitCorrection` | 同 `UpsertLyricSplitCorrection`（键字段） | 删除当前曲目单行手工纠错 |
+| `ClearLyricSplitCorrections` | 无 | 清空全部手工纠错（全库语义），**store 层单测专用，不供前端调用** |
+
+- `ClearLyricSplitCorrections` 是全库语义，仅供 store 层单测使用、不供前端调用；前端的「恢复自动识别」按当前曲目逐行走 `UpsertLyricSplitCorrection` / `RemoveLyricSplitCorrection` 的增/删命令。
+- `lyricConvention` 是内容寻址键的组成部分，该字段缺失即拒绝本命令；前端唯一来源是 `TrackLyricsSnapshot.convention`（前端不自造约定值）。
+
+### 目标语言
+
+- 取值限 `zh` / `ja` / `ko` / `en`（仅短语言码，不含区域变体如 `zh-Hans`）；默认 `zh`（`src/control/media_controller.cpp` 的 `lyricsTargetLanguage_{"zh"}`）。
+- 非法取值走命令拒绝路径（`MediaControllerErrorCode::InvalidCommand`，拒绝消息 `SetLyricsTargetLanguage requires one of zh/ja/ko/en`）。
+- 前端设置项见上「译文语言设置」。
+
+### 切分结果持久化：`lyric_split_entries`（控制层内容寻址表）
+
+切分结果（自动结果与手工纠错同型，由 `source` 区分）存放于控制层自建的**内容寻址表** `lyric_split_entries`（`src/control/sqlite_lyric_split_store.cpp`），**不是** `lyrics` 表加列：
+
+| 列 | 语义 |
+|---|---|
+| `text_hash` | 清洗行（`raw_text`）的内容哈希，内容寻址键一维 |
+| `target_lang` | 目标语言，键二维 |
+| `convention` | 文档级约定，键三维 |
+| `source` | `'auto'` / `'manual'`（`CHECK(source IN ('auto','manual'))`），键四维 |
+| `raw_text` / `original` / `translation` | 条目载荷 |
+| `algo_version` | 算法版本（auto 行必填，manual 行空） |
+| `updated_at_ms` | 最近写入时间，仅用于诊断，不参与键与命中判定 |
+
+主键 `PRIMARY KEY(text_hash, target_lang, convention, source)`。
+
+**放置理由（★5）**：`lyrics` 表由 scanner 独占写入，且无任何现成 API 能写新列（`replaceLyricsNoTransaction` 的 `INSERT` 只列 5 列，公共写 API 只收 `LyricLine{timestamp, text}`）；`line_index` 是位置键（向量下标）；控制层无法把曲目可靠映射到缓存行（`trackId` 不恒等于 `locationId`），且两处写者会争用。因此切分结果改放控制层自建的内容寻址表，与手工纠错表合并为一张 `lyric_split_entries`。
+
+**不改 scanner schema**：本方案不动 scanner 的 `lyrics` 表，`PRAGMA user_version` 仍为 3（`src/scanner/cache/schema.sql` 与 `src/scanner/cache/sqlite_cache_connection.cpp` 的 `kSchemaVersion = 3`），`Seriona_Backend/AGENTS.md` 的「schema 固定 v3」约束继续成立；旧库硬拒绝与升级提示一类机制因此不再需要。
 
 ## 均衡器与频谱显示域契约
 
