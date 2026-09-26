@@ -4,6 +4,7 @@
 #include "lyrics_model.h"
 #include "library_model.h"
 #include "settings_controller.h"
+#include "popup_input_guard.h"
 
 #include "seriona/control/control_contracts.h"
 
@@ -5508,6 +5509,7 @@ void registerSerionaModuleForTests(const QString &sourceRoot)
     };
 
     if (qmlRegisterType<PlaybackController>(kModuleUri, 1, 0, "PlaybackController") < 0
+        || qmlRegisterType<PopupInputGuard>(kModuleUri, 1, 0, "PopupInputGuard") < 0
         || qmlRegisterType<NotificationController>(kModuleUri, 1, 0, "NotificationController") < 0
         || qmlRegisterType<LyricsModel>(kModuleUri, 1, 0, "LyricsModel") < 0
         || qmlRegisterType<LibraryController>(kModuleUri, 1, 0, "LibraryController") < 0

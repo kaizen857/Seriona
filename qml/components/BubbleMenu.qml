@@ -27,6 +27,7 @@ Window {
     height: pageStack.implicitHeight + contentPadding * 2 + arrowOffset
 
     property bool isPositioning: false
+    property PopupInputGuard inputGuard: PopupInputGuard { window: root }
 
     Behavior on height {
         NumberAnimation { duration: Theme.animationFast; easing.type: Theme.easingDecelerate }
@@ -299,4 +300,3 @@ Window {
             close();
     }
 }
-

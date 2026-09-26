@@ -317,6 +317,8 @@ private slots:
     void switchBackToFolderRestoresFolderView();
     void queueEntriesRenderWithPlayingHighlight();
     void queueContextMenuItemVisibleOnlyInQueueContext();
+    void contextMenuRepositionsOnRepeatedRightClick();
+    void queueMenuRepositionsOnRepeatedRightClick();
     void scrollRetentionAcrossFolderNavigation();
     void rootScrollRetentionRegression();
     void rootScrollAnchorRetentionAcrossTreeRefresh();
@@ -561,6 +563,54 @@ void SidebarQueueSwitchTest::queueContextMenuItemVisibleOnlyInQueueContext()
     clickSwitch(QStringLiteral("folderViewButton"));
     QCOMPARE(sidebar->property("queueViewActive").toBool(), false);
     QTRY_VERIFY(!qobject_cast<QQuickItem *>(removeFromQueueItem)->isVisible());
+}
+
+void SidebarQueueSwitchTest::contextMenuRepositionsOnRepeatedRightClick()
+{
+    resetNavigationState();
+    applyRichTree();
+    QVERIFY(QTest::qWaitForWindowExposed(window));
+    auto *list = qobject_cast<QQuickItem *>(findItem(QStringLiteral("playlistView")));
+    QVERIFY(list);
+    QTRY_VERIFY(itemAt(list, 0));
+    auto *delegate = itemAt(list, 0);
+    QTRY_VERIFY(delegateAtClickablePoint(delegate));
+    auto *popup = qobject_cast<QQuickWindow *>(findItem(QStringLiteral("trackContextMenuPopup")));
+    QVERIFY(popup);
+    const QPoint first = delegate->mapToScene(QPointF(delegate->width() / 2, delegate->height() / 2)).toPoint();
+    for (const QPoint point : {first, first, first + QPoint(0, 8), first + QPoint(30, 8)}) {
+        const QPoint global = window->mapToGlobal(point);
+        const QPoint expected(global.x() - popup->width() / 2, global.y() + 12);
+        QTest::mouseClick(window, Qt::RightButton, Qt::NoModifier, point);
+        QVERIFY(QTest::qWaitForWindowExposed(popup));
+        QTest::qWait(150);
+        qInfo() << "SIDEBAR global=" << global << "expected=" << expected << "actual=" << popup->position();
+        QVERIFY((popup->position() - expected).manhattanLength() <= 10);
+    }
+    QVERIFY(popup->close());
+}
+
+void SidebarQueueSwitchTest::queueMenuRepositionsOnRepeatedRightClick()
+{
+    applyQueueSnapshot({makeQueueEntry(QStringLiteral("menu-track"), QStringLiteral("菜单定位"), QString(), false)});
+    clickSwitch(QStringLiteral("queueViewButton"));
+    QVERIFY(QTest::qWaitForWindowExposed(window));
+    QTest::qWait(300);
+    auto *delegate = qobject_cast<QQuickItem *>(findItem(QStringLiteral("queueDelegate0")));
+    auto *popup = qobject_cast<QQuickWindow *>(findItem(QStringLiteral("trackContextMenuPopup")));
+    QVERIFY(delegate && popup);
+    const QPoint first = delegate->mapToScene(QPointF(delegate->width() / 2, delegate->height() / 2)).toPoint();
+    for (const QPoint point : {first, first, first + QPoint(0, 8), first + QPoint(30, 8)}) {
+        const QPoint global = window->mapToGlobal(point);
+        const QPoint expected(global.x() - popup->width() / 2, global.y() + 12);
+        QTest::mouseClick(window, Qt::RightButton, Qt::NoModifier, point);
+        QVERIFY(QTest::qWaitForWindowExposed(popup));
+        QTest::qWait(150);
+        qInfo() << "QUEUE global=" << global << "expected=" << expected << "actual=" << popup->position();
+        QVERIFY((popup->position() - expected).manhattanLength() <= 10);
+    }
+    QVERIFY(popup->close());
+    clickSwitch(QStringLiteral("folderViewButton"));
 }
 
 void SidebarQueueSwitchTest::applyDeepFolderTree()

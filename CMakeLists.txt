@@ -152,6 +152,7 @@ qt_add_executable(seriona
 set_source_files_properties(qml/theme/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
 set(SERIONA_APP_LAYER_SOURCES
+    src/app/popup_input_guard.h
     src/app/path_text.h
     src/app/app_facade.cpp
     src/app/track_stats_controller.cpp
@@ -549,6 +550,7 @@ add_test(NAME seriona_frontend_settings_transition_startup_apply COMMAND seriona
     # 纠错管理列表的范围/逐行删除/delegate 按钮真实点击/渲染槽/滚动位置保持）。
     # 纯 QML 面（appFacade 用委托到生产头文件谓词的桩），mock-only 构建同样注册。
     add_executable(seriona_frontend_lyric_ui_runtime_tests
+        src/app/popup_input_guard.h
         tests/frontend/adapter/tst_lyric_ui_runtime.cpp
         src/app/lyric_split_boundary.h
     )
@@ -568,6 +570,13 @@ add_test(NAME seriona_frontend_settings_transition_startup_apply COMMAND seriona
     target_sources(seriona_frontend_lyric_ui_runtime_tests PRIVATE ${SERIONA_LYRIC_UI_RUNTIME_TEST_QRC})
     add_dependencies(seriona_frontend_lyric_ui_runtime_tests seriona)
     add_test(NAME seriona_frontend_lyric_ui_runtime_auto_judge COMMAND seriona_frontend_lyric_ui_runtime_tests autoJudgementItemShowsVisibleWindow)
+    add_test(NAME seriona_frontend_lyric_ui_runtime_reposition COMMAND seriona_frontend_lyric_ui_runtime_tests lyricLineContextMenuRepositionOnRepeatedRightClick)
+    add_test(NAME seriona_frontend_menu_settings_compatibility COMMAND seriona_frontend_lyric_ui_runtime_tests settingsMenuStillAcceptsClicks)
+    set_tests_properties(
+        seriona_frontend_lyric_ui_runtime_reposition
+        seriona_frontend_menu_settings_compatibility
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
     add_test(NAME seriona_frontend_lyric_ui_runtime_correction_dialog COMMAND seriona_frontend_lyric_ui_runtime_tests correctionDialogCentersAndRejectsBlankOriginal)
     add_test(NAME seriona_frontend_lyric_ui_runtime_split_editor COMMAND seriona_frontend_lyric_ui_runtime_tests splitEditorSavesNonReproducibleRowAfterDrag)
     add_test(NAME seriona_frontend_lyric_correction_scope COMMAND seriona_frontend_lyric_ui_runtime_tests correctionManagerScopeFollowsCurrentTrackOnly)
@@ -1036,6 +1045,7 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
         add_test(NAME seriona_frontend_playback_queue_mapping COMMAND seriona_frontend_playback_snapshot_tests queueEntriesMapping)
 
         add_executable(seriona_frontend_sidebar_queue_tests
+            src/app/popup_input_guard.h
             tests/frontend/adapter/tst_sidebar_queue_switch.cpp
             src/app/app_facade.cpp
             src/app/app_settings_storage.cpp
@@ -1114,10 +1124,11 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
         # 这是"超差机器必须能过"的主动代价；--timeout 900 的 CI 保护意图对其余用例不变。
         set_tests_properties(seriona_frontend_sidebar_queue_switch PROPERTIES
             TIMEOUT 5400
-            ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=5400000;QTEST_DISABLE_STACK_DUMP=1"
+            ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=5400000;QTEST_DISABLE_STACK_DUMP=1;QT_QPA_PLATFORM=offscreen"
         )
 
         add_executable(seriona_frontend_folder_page_tests
+            src/app/popup_input_guard.h
             tests/frontend/adapter/tst_folder_page.cpp
             src/app/app_facade.cpp
             src/app/app_settings_storage.cpp
@@ -1352,6 +1363,7 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
         add_test(NAME seriona_frontend_current_track_cue_path COMMAND seriona_frontend_current_track_lookup_tests cuePathDoesNotDriveHighlight)
 
         add_executable(seriona_frontend_artwork_transition_tests
+            src/app/popup_input_guard.h
             tests/frontend/adapter/tst_artwork_transition.cpp
             src/app/playback_controller.cpp
             src/app/playback_controller.h

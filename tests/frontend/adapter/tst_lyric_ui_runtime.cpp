@@ -27,6 +27,7 @@
 // 依赖构建目录的 Seriona QML 模块产物，故 CMake 侧 add_dependencies(seriona)。
 #include "lyric_split_boundary.h"
 #include "lyrics_model.h"
+#include "popup_input_guard.h"
 
 #include <QAbstractItemModel>
 #include <QGuiApplication>
@@ -251,11 +252,37 @@ Window {
     width: 800
     height: 600
     visible: true
+    property int menuClicks: 0
 
     LyricLineContextMenu {
         id: menu
         objectName: "lyricLineContextMenuUnderTest"
         appFacade: testFacade
+    }
+
+    MouseArea {
+        id: clickTarget
+        x: 200; y: 80; width: 400; height: 200
+        acceptedButtons: Qt.RightButton
+        onClicked: mouse => {
+            const point = mapToGlobal(mouse.x, mouse.y);
+            menu.openForLine({rawLine: "Test Line", displayLine: "Test Line"}, point.x, point.y);
+        }
+    }
+
+    BubbleMenu {
+        id: settingsMenu
+        objectName: "settingsMenuUnderTest"
+        targetItem: clickTarget
+        arrowDirection: "down"
+        BubbleMenuItem {
+            objectName: "settingsActionUnderTest"
+            text: qsTr("设置")
+            onTriggered: {
+                host.menuClicks++;
+                settingsMenu.close();
+            }
+        }
     }
 
     LyricSplitEditorWindow {
@@ -309,6 +336,8 @@ class LyricUiRuntimeTest : public QObject
 private slots:
     void initTestCase();
     void autoJudgementItemShowsVisibleWindow();
+    void lyricLineContextMenuRepositionOnRepeatedRightClick();
+    void settingsMenuStillAcceptsClicks();
     void correctionDialogCentersAndRejectsBlankOriginal();
     void splitEditorSavesNonReproducibleRowAfterDrag();
 
@@ -347,6 +376,7 @@ private:
 
 void LyricUiRuntimeTest::initTestCase()
 {
+    qmlRegisterType<Seriona::App::PopupInputGuard>("Seriona", 1, 0, "PopupInputGuard");
     engine.rootContext()->setContextProperty(QStringLiteral("testFacade"), &facade);
     engine.addImportPath(QCoreApplication::applicationDirPath());
     engine.loadData(QByteArray(kHostQml), QUrl(QStringLiteral("qrc:/seriona_lyric_ui_runtime_test.qml")));
@@ -481,6 +511,61 @@ void LyricUiRuntimeTest::autoJudgementItemShowsVisibleWindow()
     // 合成鼠标事件被它截获（host 的 item 收不到），是测试卫生问题、与产品行为无关。
     autoJudgeDialog->setProperty("visible", false);
     QTRY_VERIFY(!autoJudgeDialog->property("visible").toBool());
+}
+
+void LyricUiRuntimeTest::lyricLineContextMenuRepositionOnRepeatedRightClick()
+{
+    QObject *menuHost = child(QStringLiteral("lyricLineContextMenuUnderTest"));
+    QVERIFY2(menuHost != nullptr, "LyricLineContextMenu instance not found");
+    QObject *lineMenu = child(QStringLiteral("lyricLineContextMenu"));
+    QVERIFY2(lineMenu != nullptr, "lineMenu BubbleMenu not found");
+
+    QVERIFY(QTest::qWaitForWindowExposed(host));
+    auto *popup = qobject_cast<QQuickWindow *>(lineMenu);
+    QVERIFY(popup);
+    for (const QPoint &point : {QPoint(300, 150), QPoint(300, 150), QPoint(300, 200), QPoint(400, 200)}) {
+        const QPoint global = host->mapToGlobal(point);
+        const QPoint expected(global.x() - popup->width() / 2, global.y() + 12);
+        QTest::mouseClick(host, Qt::RightButton, Qt::NoModifier, point);
+        QVERIFY(QTest::qWaitForWindowExposed(popup));
+        QTest::qWait(150);
+        qInfo() << "REPOSITION platform=" << QGuiApplication::platformName()
+                << "global=" << global << "expected=" << expected << "actual=" << popup->position();
+        QVERIFY((popup->position() - expected).manhattanLength() <= 2);
+    }
+    QVERIFY(popup->close());
+    const QPoint point(350, 160);
+    const QPoint global = host->mapToGlobal(point);
+    QTest::mouseClick(host, Qt::RightButton, Qt::NoModifier, point);
+    QVERIFY(QTest::qWaitForWindowExposed(popup));
+    QTRY_VERIFY((popup->position() - QPoint(global.x() - popup->width() / 2, global.y() + 12)).manhattanLength() <= 2);
+    QVERIFY(popup->close());
+}
+
+void LyricUiRuntimeTest::settingsMenuStillAcceptsClicks()
+{
+    auto *popup = qobject_cast<QQuickWindow *>(child(QStringLiteral("settingsMenuUnderTest")));
+    auto *action = qobject_cast<QQuickItem *>(child(QStringLiteral("settingsActionUnderTest")));
+    QVERIFY(popup && action);
+    auto *target = popup->property("targetItem").value<QQuickItem *>();
+    QVERIFY(target);
+    target->setY(350);
+    QVERIFY(QTest::qWaitForWindowExposed(host));
+    host->requestActivate();
+    QVERIFY(QTest::qWaitForWindowActive(host));
+    QTest::qWait(200);
+    for (int i = 0; i < 2; ++i) {
+        QVERIFY(QMetaObject::invokeMethod(popup, "showAtTarget"));
+        QVERIFY(QTest::qWaitForWindowExposed(popup));
+        const QPoint global = target->mapToGlobal(QPointF(target->width() / 2, 0)).toPoint();
+        const QPoint expected(global.x() - popup->width() / 2, global.y() - popup->height() - 12);
+        QTRY_VERIFY((popup->position() - expected).manhattanLength() <= 2);
+        const QPoint center = action->mapToScene(QPointF(action->width() / 2, action->height() / 2)).toPoint();
+        QTest::mouseClick(popup, Qt::LeftButton, Qt::NoModifier, center);
+        QTRY_COMPARE(host->property("menuClicks").toInt(), i + 1);
+        QTRY_VERIFY(!popup->isVisible());
+    }
+    target->setY(80);
 }
 
 // A2 + A6：弹窗居中基准取自身 transientParent（不是恒 undefined 的 root.transientParent）；
