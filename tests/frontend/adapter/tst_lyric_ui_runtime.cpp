@@ -253,6 +253,14 @@ Window {
     height: 600
     visible: true
     property int menuClicks: 0
+    property int outsidePresses: 0
+    property int outsideClicks: 0
+
+    MouseArea {
+        x: 650; y: 80; width: 100; height: 100
+        onPressed: host.outsidePresses++
+        onClicked: host.outsideClicks++
+    }
 
     LyricLineContextMenu {
         id: menu
@@ -337,6 +345,8 @@ private slots:
     void initTestCase();
     void autoJudgementItemShowsVisibleWindow();
     void lyricLineContextMenuRepositionOnRepeatedRightClick();
+    void lyricMenuDismissal_data();
+    void lyricMenuDismissal();
     void settingsMenuStillAcceptsClicks();
     void correctionDialogCentersAndRejectsBlankOriginal();
     void splitEditorSavesNonReproducibleRowAfterDrag();
@@ -540,6 +550,58 @@ void LyricUiRuntimeTest::lyricLineContextMenuRepositionOnRepeatedRightClick()
     QVERIFY(QTest::qWaitForWindowExposed(popup));
     QTRY_VERIFY((popup->position() - QPoint(global.x() - popup->width() / 2, global.y() + 12)).manhattanLength() <= 2);
     QVERIFY(popup->close());
+}
+
+void LyricUiRuntimeTest::lyricMenuDismissal_data()
+{
+    QTest::addColumn<bool>("escape");
+    QTest::addColumn<bool>("viaHost");
+    QTest::newRow("outside-host") << false << true;
+    QTest::newRow("outside-popup") << false << false;
+    QTest::newRow("escape-host") << true << true;
+    QTest::newRow("escape-popup") << true << false;
+}
+
+void LyricUiRuntimeTest::lyricMenuDismissal()
+{
+    QFETCH(bool, escape);
+    QFETCH(bool, viaHost);
+    auto *popup = qobject_cast<QQuickWindow *>(child(QStringLiteral("lyricLineContextMenu")));
+    QVERIFY(popup);
+    QVERIFY(QTest::qWaitForWindowExposed(host));
+    QTest::mouseClick(host, Qt::RightButton, Qt::NoModifier, QPoint(500, 150));
+    QVERIFY(QTest::qWaitForWindowExposed(popup));
+    const int presses = host->property("outsidePresses").toInt();
+    const int clicks = host->property("outsideClicks").toInt();
+    if (escape) {
+        QTest::keyClick(viaHost ? host : popup, Qt::Key_Escape);
+    } else {
+        const QPoint outside(700, 100);
+        const QPoint local = viaHost ? outside : popup->mapFromGlobal(host->mapToGlobal(outside));
+        QTest::mousePress(viaHost ? host : popup, Qt::LeftButton, Qt::NoModifier, local);
+        // 关闭应发生在按下时；释放回父窗不能激活底层控件。
+        const bool closedOnPress = !popup->isVisible();
+        QTest::mouseRelease(host, Qt::LeftButton, Qt::NoModifier, outside);
+        QCOMPARE(host->property("outsidePresses").toInt(), presses);
+        QCOMPARE(host->property("outsideClicks").toInt(), clicks);
+        QVERIFY2(closedOnPress, "outside primary press did not dismiss the menu");
+    }
+    QTRY_VERIFY(!popup->isVisible());
+
+    // 关闭后再次右键仍定位正确，真正点击菜单项仍打开只读对话框。
+    const QPoint point(500, 200);
+    QTest::mouseClick(host, Qt::RightButton, Qt::NoModifier, point);
+    QVERIFY(QTest::qWaitForWindowExposed(popup));
+    const QPoint global = host->mapToGlobal(point);
+    QTRY_VERIFY((popup->position() - QPoint(global.x() - popup->width() / 2, global.y() + 12)).manhattanLength() <= 2);
+    auto *action = qobject_cast<QQuickItem *>(child(QStringLiteral("lyricAutoJudgementItem")));
+    auto *dialog = qobject_cast<QQuickWindow *>(child(QStringLiteral("lyricAutoJudgementDialog")));
+    QVERIFY(action && dialog);
+    QTest::mouseClick(popup, Qt::LeftButton, Qt::NoModifier,
+                     action->mapToScene(QPointF(action->width() / 2, action->height() / 2)).toPoint());
+    QTRY_VERIFY(!popup->isVisible());
+    QTRY_VERIFY(dialog->isVisible());
+    QVERIFY(dialog->close());
 }
 
 void LyricUiRuntimeTest::settingsMenuStillAcceptsClicks()

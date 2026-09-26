@@ -572,7 +572,9 @@ add_test(NAME seriona_frontend_settings_transition_startup_apply COMMAND seriona
     add_test(NAME seriona_frontend_lyric_ui_runtime_auto_judge COMMAND seriona_frontend_lyric_ui_runtime_tests autoJudgementItemShowsVisibleWindow)
     add_test(NAME seriona_frontend_lyric_ui_runtime_reposition COMMAND seriona_frontend_lyric_ui_runtime_tests lyricLineContextMenuRepositionOnRepeatedRightClick)
     add_test(NAME seriona_frontend_menu_settings_compatibility COMMAND seriona_frontend_lyric_ui_runtime_tests settingsMenuStillAcceptsClicks)
+    add_test(NAME seriona_frontend_lyric_menu_dismissal COMMAND seriona_frontend_lyric_ui_runtime_tests lyricMenuDismissal)
     set_tests_properties(
+        seriona_frontend_lyric_menu_dismissal
         seriona_frontend_lyric_ui_runtime_reposition
         seriona_frontend_menu_settings_compatibility
         PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
