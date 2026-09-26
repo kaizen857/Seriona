@@ -1118,6 +1118,8 @@ add_test(NAME seriona_frontend_library_scan_backend_unavailable COMMAND seriona_
         )
         add_dependencies(seriona_frontend_sidebar_queue_tests seriona)
         add_test(NAME seriona_frontend_sidebar_queue_switch COMMAND seriona_frontend_sidebar_queue_tests)
+        add_test(NAME seriona_frontend_lyric_menu_shell COMMAND seriona_frontend_sidebar_queue_tests lyricMenuShellDismissal)
+        set_tests_properties(seriona_frontend_lyric_menu_shell PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
         # 慢机（CPU 饥饿）实测：整条二进制 >1095s，远超 CI 命令行 --timeout 900；且
         # deepChainNavigationAndCacheSize 会先撞 QtTest 默认 300s/函数 watchdog（qFatal 中止，
         # 其 gdb 回溯在饥饿下还会停滞数分钟）。CTest 测试属性优先于命令行 --timeout，

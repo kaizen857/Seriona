@@ -21,7 +21,7 @@ Item {
     required property PlaybackController playbackController
     required property NotificationController notifications
     required property LibraryController libraryController
-    readonly property bool hasOpenMenu: mainMenu.visible
+    readonly property bool hasOpenMenu: mainMenu.visible || lyricLineMenu.isOpen
     // 行级纠错命令入口（W3/D14）：由 Main.qml 注入（AppFacade 的 Q_INVOKABLE）。
     // var + 默认 null，使只加载 MainContent 的既有集成测试（不注册/不注入 AppFacade）仍可实例化。
     property var appFacade: null
@@ -218,6 +218,7 @@ Item {
 
     function closeMenus() {
         mainMenu.close();
+        lyricLineMenu.close();
     }
 
     function openMenuForSmoke() {

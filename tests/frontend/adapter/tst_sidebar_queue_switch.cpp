@@ -343,6 +343,8 @@ private slots:
     void rootViewDelegateHover();
     // 对照组：FolderPage 条目 hover 必须保持正常（hoverEnabled: false 不得波及其子树）
     void folderPageDelegateHover();
+    void lyricMenuShellDismissal_data();
+    void lyricMenuShellDismissal();
 
 private:
     QQmlApplicationEngine engine;
@@ -2136,6 +2138,95 @@ void SidebarQueueSwitchTest::folderPageDelegateHover()
         pageDelegate->mapToScene(QPointF(pageDelegate->width() / 2, pageDelegate->height() / 2));
     QTest::mouseMove(window, pageCenter.toPoint());
     QTRY_VERIFY_WITH_TIMEOUT(pageDelegate->property("hovered").toBool(), 5000);
+}
+
+void SidebarQueueSwitchTest::lyricMenuShellDismissal_data()
+{
+    QTest::addColumn<QString>("target");
+    for (const auto *target : {"lyric", "play", "blank", "escape", "closeMenus"})
+        QTest::newRow(target) << QString::fromLatin1(target);
+}
+
+void SidebarQueueSwitchTest::lyricMenuShellDismissal()
+{
+    QFETCH(QString, target);
+    QQmlApplicationEngine shellEngine;
+    shellEngine.addImportPath(QCoreApplication::applicationDirPath());
+    shellEngine.loadFromModule("Seriona", "Main");
+    QVERIFY(!shellEngine.rootObjects().isEmpty());
+    auto *shell = qobject_cast<QQuickWindow *>(shellEngine.rootObjects().first());
+    QVERIFY(shell);
+    auto *app = shell->property("appFacade").value<Seriona::App::AppFacade *>();
+    QVERIFY(app);
+    app->navigation()->restorePlaylistFromStartup();
+    app->navigation()->showLyricsView();
+    app->navigation()->closeSidebar();
+    seriona::control::TrackLyricsSnapshot snapshot;
+    snapshot.trackId = "dismissal-track";
+    for (int i = 0; i < 4; ++i) {
+        seriona::control::SplitLyricLine line;
+        line.timestamp = std::chrono::milliseconds((i + 1) * 10000);
+        line.text = "Line " + std::to_string(i);
+        line.original = line.text;
+        snapshot.lines.push_back(line);
+    }
+    app->lyrics()->applyTrackLyricsSnapshot(snapshot);
+    int commands = 0;
+    app->playback()->setCommandExecutor([&commands](const auto &) {
+        ++commands;
+        return seriona::control::MediaControllerCommandResult{.accepted = true};
+    });
+    auto *popup = shell->findChild<QQuickWindow *>(QStringLiteral("lyricLineContextMenu"));
+    QVERIFY(popup);
+    QQuickItem *content = nullptr;
+    QQuickItem *play = nullptr;
+    for (auto *item : shell->findChildren<QQuickItem *>()) {
+        if (item->property("lyricsState").isValid())
+            content = item;
+        if (item->property("iconSource").toString().endsWith(QStringLiteral("/play.svg")))
+            play = item;
+    }
+    QVERIFY(content && play);
+    QVERIFY(QTest::qWaitForWindowExposed(shell));
+    QTest::qWait(500); // 等待现有 400ms 播放/歌词切换动画结束。
+    const auto findLine = [](auto &&self, QQuickItem *item) -> QQuickItem * {
+        if (item->property("rawLine").toString() == QStringLiteral("Line 0"))
+            return item;
+        for (auto *child : item->childItems()) {
+            if (auto *line = self(self, child))
+                return line;
+        }
+        return nullptr;
+    };
+    auto *line = findLine(findLine, content);
+    QVERIFY(line);
+    const QPoint first = line->mapToScene(QPointF(line->width() / 2, line->height() / 2)).toPoint();
+    for (const QPoint point : {first, first, first + QPoint(25, 0)}) {
+        QTest::mouseClick(shell, Qt::RightButton, Qt::NoModifier, point);
+        QVERIFY(QTest::qWaitForWindowExposed(popup));
+        const QPoint global = shell->mapToGlobal(point);
+        QTRY_VERIFY((popup->position() - QPoint(global.x() - popup->width() / 2, global.y() + 12)).manhattanLength() <= 2);
+    }
+    QCOMPARE(commands, 0);
+    if (target == QStringLiteral("closeMenus")) {
+        QVERIFY(content->property("hasOpenMenu").toBool());
+        QVERIFY(QMetaObject::invokeMethod(content, "closeMenus"));
+    } else if (target == QStringLiteral("escape")) {
+        QTest::keyClick(shell, Qt::Key_Escape);
+    } else {
+        const QPoint outside = target == QStringLiteral("lyric") ? first
+            : target == QStringLiteral("play")
+                ? play->mapToScene(QPointF(play->width() / 2, play->height() / 2)).toPoint()
+                : QPoint(15, 400);
+        QVERIFY(!popup->geometry().contains(shell->mapToGlobal(outside)));
+        QTest::mouseClick(shell, Qt::LeftButton, Qt::NoModifier, outside);
+    }
+    QCOMPARE(commands, 0);
+    QTRY_VERIFY(!popup->isVisible());
+    QVERIFY(!content->property("hasOpenMenu").toBool());
+    // 对照：关闭后相同歌词行左键确实会 seek，而不是控件根本收不到事件。
+    QTest::mouseClick(shell, Qt::LeftButton, Qt::NoModifier, first);
+    QCOMPARE(commands, 1);
 }
 
 QTEST_MAIN(SidebarQueueSwitchTest)
